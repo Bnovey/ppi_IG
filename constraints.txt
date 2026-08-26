@@ -1,0 +1,10 @@
+# Hard pins for the GPU container.
+# torch must match the CUDA 12.6 toolkit in the base image; a mismatch segfaults at runtime.
+torch==2.7.1+cu126
+# boltz is pinned because its internal weight-loading code is version-sensitive.
+boltz==2.2.1
+
+# --- DO NOT INSTALL these packages ---
+# boltzgen, protenix, chai_lab, gnina, and cuequivariance must NEVER be installed.
+# They vendor or depend on incompatible torch builds that clobber the pinned
+# cu126 wheel and cause segfaults on A100 (sm_80).
