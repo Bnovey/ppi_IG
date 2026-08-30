@@ -24,9 +24,9 @@ Full-trunk Boltz-2 backprop with per-block gradient checkpointing fills an entir
 
 | Provider | Instance | GPUs | VRAM/GPU | $/hr | $/day | Notes |
 |----------|----------|------|----------|------|-------|-------|
-| AWS | p4de.24xlarge | 8x A100-80GB | 80 GB | ~$40.97 | ~$983 | Most available |
+| AWS | p4de.24xlarge | 8x A100-80GB | 80 GB | ~$40.97 | ~$983 | AWS has **no single-GPU 80 GB option** -- 8 GPUs is the floor, billed whether used or not. Worth it only for the parallel sweep. |
 | AWS | p5.48xlarge | 8x H100-80GB | 80 GB | ~$98.32 | ~$2,360 | Fastest |
-| GCP | a2-ultragpu-1g | 1x A100-80GB | 80 GB | ~$10.04 | ~$241 | Best for single-dataset runs |
+| GCP | a2-ultragpu-1g | 1x A100-80GB | 80 GB | **~$5.07** | ~$122 | **Recommended start.** The only way to rent a *single* 80 GB GPU. 12 vCPU / 170 GB RAM. |
 | GCP | a2-ultragpu-8g | 8x A100-80GB | 80 GB | ~$80.29 | ~$1,927 | |
 | GCP | a3-highgpu-8g | 8x H100-80GB | 80 GB | ~$98.32 | ~$2,360 | Fastest |
 
@@ -35,6 +35,42 @@ Workload is approximately 40 GPU-hours. GPU stages are 02 (embed), 03 (attribute
 ### On-demand vs. spot
 
 **Use on-demand for GPU stages.** Spot/preemptible instances will kill a running job. Stage 04 (scan) is resumable (skips computed rows), but stage 03 (attribute) is not -- a preemption during attribution loses all progress with no recovery. At ~40 GPU-hours total, the spot savings are not worth the risk of lost runs.
+
+## Which provider: start on GCP
+
+The deciding fact is instance shape, not price per GPU.
+
+**AWS has no single-GPU 80 GB instance.** The smallest option meeting the >= 80 GB
+requirement is `p4de.24xlarge`, which is 8x A100-80GB at ~$41/hr -- billed in full
+even while 7 GPUs sit idle. **GCP `a2-ultragpu-1g` rents exactly one A100-80GB at
+~$5.07/hr.**
+
+That matters because the first milestone is inherently sequential: run stage 07
+(sanity gate), then stage 0 on a single dataset, and look at one number before
+committing to anything else.
+
+| Phase | Instance | Wall clock | Cost |
+|---|---|---|---|
+| Sanity gate + stage 0 go/no-go | GCP `a2-ultragpu-1g` | ~3-4 h | **~$20** |
+| Same on AWS `p4de.24xlarge` | 8 GPUs, 7 idle | ~3-4 h | ~$160 |
+| Full 16-dataset sweep, parallel | AWS `p4de.24xlarge` or GCP `a2-ultragpu-8g` | ~5-6 h | ~$210-250 |
+
+So: **GCP single GPU to find out whether the method works at all; an 8-GPU box
+later only if it does.** Stages 03 and 04 are embarrassingly parallel across
+datasets, so the multi-GPU box genuinely pays off for the sweep -- but only then.
+
+### Do this first, today
+
+GCP `a2`/`a3` GPU quota is **commonly zero on new projects**, and approval takes
+24-48 hours. This is the single most likely thing to block you, and the error
+message when quota is missing is unhelpful. Request it before anything else:
+
+```bash
+gcloud compute regions describe us-central1 \
+  --format="value(quotas[].metric,quotas[].limit)" | tr ';' '\n' | grep -i a2
+```
+If `NVIDIA_A100_80GB_GPUS` is 0, request an increase at
+console.cloud.google.com/iam-admin/quotas before booking time to run this.
 
 ## AWS launch
 
