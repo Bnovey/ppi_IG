@@ -1,0 +1,193 @@
+# Cloud Provisioning Runbook
+
+Run the IG (Boltz-2 gradient attribution) pipeline on AWS or GCP GPU instances.
+
+## Quick reference
+
+| Step | Command |
+|------|---------|
+| 1. Launch instance | `bash scripts/cloud/aws_launch.sh --key-name ... --security-group ...` |
+| 2. SSH in | `ssh -i ~/.ssh/key.pem ubuntu@<IP>` |
+| 3. Clone repo | `git clone ... && cd IG` |
+| 4. Bootstrap | `bash scripts/cloud/bootstrap.sh` |
+| 5. Run pipeline | `tmux new -s igv` then `docker run --rm --gpus all --shm-size=32g --ipc=host -v $(pwd):/app -w /app igv:latest bash scripts/run_all.sh` |
+| 6. Sync results | `bash scripts/cloud/sync_results.sh --host ubuntu@<IP> --remote-dir /home/ubuntu/IG` |
+| 7. Tear down | `bash scripts/cloud/aws_launch.sh --terminate <instance-id>` |
+
+## Instance selection
+
+### Hard requirement: >= 80 GB VRAM per GPU
+
+Full-trunk Boltz-2 backprop with per-block gradient checkpointing fills an entire 80 GB card. A 48 GB GPU (L40S, A40, A6000) is a documented failure -- OOM during the attribution stage (03) with no workaround short of model parallelism, which this pipeline does not implement.
+
+### Cost table (on-demand, as of Aug 2026 -- rates change, verify before launching)
+
+| Provider | Instance | GPUs | VRAM/GPU | $/hr | $/day | Notes |
+|----------|----------|------|----------|------|-------|-------|
+| AWS | p4de.24xlarge | 8x A100-80GB | 80 GB | ~$40.97 | ~$983 | Most available |
+| AWS | p5.48xlarge | 8x H100-80GB | 80 GB | ~$98.32 | ~$2,360 | Fastest |
+| GCP | a2-ultragpu-1g | 1x A100-80GB | 80 GB | ~$10.04 | ~$241 | Best for single-dataset runs |
+| GCP | a2-ultragpu-8g | 8x A100-80GB | 80 GB | ~$80.29 | ~$1,927 | |
+| GCP | a3-highgpu-8g | 8x H100-80GB | 80 GB | ~$98.32 | ~$2,360 | Fastest |
+
+Workload is approximately 40 GPU-hours. GPU stages are 02 (embed), 03 (attribute), 04 (scan), and 07 (sanity). CPU-only stages are 00, 01, 05, 06.
+
+### On-demand vs. spot
+
+**Use on-demand for GPU stages.** Spot/preemptible instances will kill a running job. Stage 04 (scan) is resumable (skips computed rows), but stage 03 (attribute) is not -- a preemption during attribution loses all progress with no recovery. At ~40 GPU-hours total, the spot savings are not worth the risk of lost runs.
+
+## AWS launch
+
+```bash
+# Find the latest Deep Learning AMI:
+aws ec2 describe-images --owners amazon \
+  --filters 'Name=name,Values=Deep Learning Base OSS Nvidia Driver AMI (Ubuntu 22.04)*' \
+  --query 'reverse(sort_by(Images,&CreationDate))[0].[ImageId,Name]' \
+  --output text --region us-east-1
+
+# Launch (dry run first):
+bash scripts/cloud/aws_launch.sh \
+  --key-name my-keypair \
+  --security-group sg-0123456789abcdef0 \
+  --dry-run
+
+# Launch for real:
+bash scripts/cloud/aws_launch.sh \
+  --key-name my-keypair \
+  --security-group sg-0123456789abcdef0
+
+# Terminate when done:
+bash scripts/cloud/aws_launch.sh --terminate i-0123456789abcdef0
+```
+
+See `bash scripts/cloud/aws_launch.sh --help` for all options.
+
+## GCP launch
+
+### GPU quota (read this first)
+
+A2 and A3 GPU quota is **commonly zero on new GCP projects**. You must request quota before launching. The error when quota is zero says "ZONE_RESOURCE_POOL_EXHAUSTED" or "Quota exceeded" -- it does NOT say "you have no quota".
+
+Check and request at: https://console.cloud.google.com/iam-admin/quotas
+
+Filter by "NVIDIA A100 80GB GPUs" or "NVIDIA H100 GPUs" in your target region. Quota requests may take 24-48 hours.
+
+```bash
+# Launch (dry run first):
+bash scripts/cloud/gcp_launch.sh \
+  --project my-project-id \
+  --dry-run
+
+# Launch for real:
+bash scripts/cloud/gcp_launch.sh \
+  --project my-project-id
+
+# Delete when done:
+bash scripts/cloud/gcp_launch.sh --delete igv-gpu --project my-project-id
+```
+
+See `bash scripts/cloud/gcp_launch.sh --help` for all options.
+
+## Bootstrap
+
+After SSH-ing into the instance:
+
+```bash
+git clone <your-repo-url> && cd IG
+bash scripts/cloud/bootstrap.sh
+```
+
+Bootstrap is idempotent. It:
+1. Installs NVIDIA drivers + container toolkit + Docker (if absent)
+2. Builds the Docker image from `docker/Dockerfile`
+3. Runs verification checks and prints a summary table
+
+The verification block fails loudly on any of:
+- Wrong Python version (requires 3.11 final or 3.12+)
+- `torch.__version__` != `2.7.1+cu126`
+- `torch.cuda.is_available()` false
+- GPU 0 VRAM < 80 GiB
+- Any forbidden package importable (boltzgen, protenix, chai_lab, gnina, cuequivariance)
+
+## Running the pipeline
+
+**Always use `tmux` or `nohup`.** Long runs die when SSH drops.
+
+```bash
+tmux new -s igv
+
+docker run --rm --gpus all --shm-size=32g --ipc=host \
+  -v $(pwd):/app -w /app igv:latest \
+  bash scripts/run_all.sh
+
+# Detach: Ctrl-B then D
+# Reattach: tmux attach -t igv
+```
+
+### Critical Docker flags
+
+| Flag | Why |
+|------|-----|
+| `--shm-size=32g` | Docker's default 64 MB `/dev/shm` causes DataLoader workers to be killed, producing a silent hang at 0% GPU. |
+| `--ipc=host` | Allows shared memory between DataLoader workers. |
+| `--gpus all` | Expose all GPUs to the container. |
+
+**Never omit `--shm-size=32g --ipc=host`.** The failure mode is an 18-minute silent hang misreported as "DataLoader worker exited unexpectedly".
+
+### Forbidden packages
+
+These packages must NEVER be installed in the container:
+- `boltzgen` -- vendors incompatible torch build
+- `protenix` -- vendors incompatible torch build
+- `chai_lab` -- vendors incompatible torch build
+- `gnina` -- not needed, pulls conflicting deps
+- `cuequivariance` -- segfaults on A100/sm_80
+
+Installing any of them silently replaces the pinned `torch==2.7.1+cu126` CUDA wheel. Symptoms are never "wrong torch" -- they are exit 1 with empty stderr, or a job hanging 7+ hours.
+
+## Syncing results
+
+```bash
+# Pull results to local machine:
+bash scripts/cloud/sync_results.sh \
+  --host ubuntu@<IP> \
+  --remote-dir /home/ubuntu/IG
+
+# Also push to S3:
+bash scripts/cloud/sync_results.sh \
+  --host ubuntu@<IP> \
+  --remote-dir /home/ubuntu/IG \
+  --s3 s3://my-bucket/ig-results
+
+# Also push to GCS:
+bash scripts/cloud/sync_results.sh \
+  --host ubuntu@<IP> \
+  --remote-dir /home/ubuntu/IG \
+  --gcs gs://my-bucket/ig-results
+```
+
+The sync script explicitly includes `*.prov.json` provenance sidecars and verifies after transfer that every artifact has its sidecar. Results without provenance are not interpretable (see `docs/PIPELINE.md` for why).
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Silent hang at 0% GPU utilization, 18+ minutes | `/dev/shm` exhaustion. Docker's 64 MB default kills DataLoader workers. | Add `--shm-size=32g --ipc=host` to `docker run`. |
+| Exit code 1 with empty stderr | Torch version clobbered. A forbidden package replaced `torch==2.7.1+cu126` with a PyPI wheel. | Rebuild the image from scratch. Check `pip list \| grep torch` inside the container. Never install boltzgen, protenix, chai_lab, gnina, or cuequivariance. |
+| Segfault on A100 | `cuequivariance` present. Multiple versions segfault on sm_80. | `pip uninstall cuequivariance cuequivariance-ops-cu12 cuequivariance-ops-torch-cu12 cuequivariance-torch` |
+| `import torch` fails with missing `sys.get_int_max_str_digits` | Python 3.11.0rc1 or earlier pre-release. | Use Python 3.11 final (3.11.0+) or 3.12. The Dockerfile uses deadsnakes 3.11 which is always final. |
+| Job hangs for 7+ hours | Torch clobber (see "empty stderr" above). | Same fix: rebuild image, avoid forbidden packages. |
+| OOM during stage 03 | GPU has < 80 GB VRAM. | Use an instance with A100-80GB or H100-80GB. No workaround on 48 GB cards. |
+| GCP: "ZONE_RESOURCE_POOL_EXHAUSTED" or "Quota exceeded" | A2/A3 GPU quota is zero. | Request quota at console.cloud.google.com/iam-admin/quotas. May take 24-48 hours. |
+
+## Teardown checklist
+
+Run through this list **every time** you finish a session:
+
+- [ ] Pipeline results synced locally (run `sync_results.sh`)
+- [ ] Provenance sidecars present for all artifacts (sync script reports orphans)
+- [ ] **AWS**: Instance terminated (`aws_launch.sh --terminate <id>` or console)
+- [ ] **GCP**: VM deleted (`gcp_launch.sh --delete <name>` or console)
+- [ ] Verify in cloud console that no instances are running
+- [ ] Check for leftover EBS volumes (AWS) or persistent disks (GCP) that may still incur charges
+- [ ] Revoke any temporary security group rules you added
