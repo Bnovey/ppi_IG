@@ -36,7 +36,42 @@ Workload is approximately 40 GPU-hours. GPU stages are 02 (embed), 03 (attribute
 
 **Use on-demand for GPU stages.** Spot/preemptible instances will kill a running job. Stage 04 (scan) is resumable (skips computed rows), but stage 03 (attribute) is not -- a preemption during attribution loses all progress with no recovery. At ~40 GPU-hours total, the spot savings are not worth the risk of lost runs.
 
-## Which provider: start on GCP
+## Which provider: AWS today (verified for account 516962256450)
+
+**Quota and capacity are different things.** Quota is an account limit you can
+raise by asking. Capacity is whether the zone physically has a free machine
+right now. You can hold quota and still get `InsufficientInstanceCapacity`.
+
+### Verified quota state, checked 2026-08-30
+
+| | Needs | Your quota | Verdict |
+|---|---|---|---|
+| `p4de.24xlarge` (8x A100-80GB) | 96 vCPU | **97 vCPU** | **launchable today, no request needed** |
+| `p5.48xlarge` (8x H100-80GB) | 192 vCPU | 97 vCPU | needs an increase to >= 192 |
+
+"Running On-Demand P instances" is 97 in both `us-east-1` and `us-west-2`, and
+`p4de.24xlarge` is 96 vCPU -- so there is room for exactly one.
+
+`p4de.24xlarge` is offered only in **us-east-1c** and **us-east-1d**.
+`p5.48xlarge` is offered in all six us-east-1 AZs.
+
+GCP quota could not be verified (the local `gcloud` token is expired) and on a
+fresh project `NVIDIA_A100_80GB_GPUS` is commonly 0 with a 24-48h approval wait.
+
+### Therefore
+
+Earlier guidance in this file preferred GCP on cost-per-GPU-hour, and that is
+still true in isolation: `a2-ultragpu-1g` is ~$5.07/hr for one A100-80GB versus
+~$41/hr for eight on AWS. But **having quota now beats being cheaper later.**
+
+Since the AWS box comes with 8 GPUs whether you use them or not, do not run the
+pipeline sequentially on it. Run the sanity gate, then fan the 16 datasets out
+across all 8 GPUs -- that is where p4de earns its rate.
+
+Use GCP instead if you would rather wait for quota and spend ~$20 on the
+go/no-go than ~$150.
+
+
 
 The deciding fact is instance shape, not price per GPU.
 
