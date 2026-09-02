@@ -18,3 +18,6 @@ data/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# Claude Code session state -- must not flip provenance git_dirty
+.claude/
