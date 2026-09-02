@@ -42,7 +42,11 @@ STRUCTURE_FOR_DATASET = {
 IPTM_SCORES = {"iptm", "ptm", "protein_iptm"}
 
 
-def _require_vram(min_gib: float = 80) -> None:
+# 78, not 80: an 80GB-class card reports 81920 MiB to nvidia-smi but
+# torch's total_memory returns the usable framebuffer after the ECC/reserve
+# carve-out -- 79.2 GiB on A100-SXM4-80GB. A gate of 80 is unreachable on
+# the exact hardware this project targets. 78 still rejects a 40GB A100.
+def _require_vram(min_gib: float = 78) -> None:
     if os.environ.get("IGV_SKIP_VRAM_CHECK") == "1":
         return
     import torch
@@ -174,7 +178,7 @@ def main() -> None:
         dataset=dataset, score=score, method=method,
     ))
 
-    _require_vram(min_gib=80)
+    _require_vram(min_gib=78)
 
     # --- 1. Load library and structure ---
     log.info("Building library for %s (chain=%s)", dataset, chain)
