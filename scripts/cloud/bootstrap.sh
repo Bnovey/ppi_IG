@@ -53,6 +53,19 @@ done
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
+# Docker command prefix.  `usermod -aG docker` does not take effect in the
+# session that runs it, so a bare `docker` call fails with a socket
+# permission error on a freshly bootstrapped VM.  Probe instead of assuming.
+DOCKER="docker"
+set_docker_cmd() {
+    if docker info &>/dev/null; then
+        DOCKER="docker"
+    elif sudo -n docker info &>/dev/null || sudo docker info &>/dev/null; then
+        DOCKER="sudo docker"
+        log "  Using 'sudo docker' (docker group not active in this session)."
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Step 1: NVIDIA drivers
 # ---------------------------------------------------------------------------
@@ -90,7 +103,7 @@ install_docker() {
 
 install_nvidia_container_toolkit() {
     log "Checking NVIDIA container toolkit..."
-    if docker info 2>/dev/null | grep -qi "nvidia"; then
+    if ${DOCKER} info 2>/dev/null | grep -qi "nvidia"; then
         log "  NVIDIA container runtime already configured."
         return 0
     fi
@@ -113,8 +126,10 @@ install_nvidia_container_toolkit() {
 # ---------------------------------------------------------------------------
 build_image() {
     log "Building Docker image: ${IMAGE_TAG}"
-    log "  Context: ${REPO_DIR}/docker/"
-    docker build -t "${IMAGE_TAG}" "${REPO_DIR}/docker/"
+    log "  Context: ${REPO_DIR} (dockerfile: docker/Dockerfile)"
+    # Context must be the repo root: the Dockerfile COPYs pyproject.toml
+    # and src/, which do not exist under docker/.
+    ${DOCKER} build -t "${IMAGE_TAG}" -f "${REPO_DIR}/docker/Dockerfile" "${REPO_DIR}"
     log "  Image built successfully."
 }
 
@@ -130,7 +145,7 @@ verify() {
     # --rm: clean up after
     local PASS=true
 
-    VERIFY_OUTPUT=$(docker run --rm --gpus all --shm-size=32g --ipc=host \
+    VERIFY_OUTPUT=$(${DOCKER} run --rm --gpus all --shm-size=32g --ipc=host \
         "${IMAGE_TAG}" python3 -c "
 import sys, json
 
@@ -154,7 +169,7 @@ results['cuda_available'] = {'value': str(cuda_ok), 'ok': cuda_ok}
 
 # 4. GPU 0 VRAM >= ${MIN_VRAM_GIB} GiB
 if cuda_ok:
-    mem_bytes = torch.cuda.get_device_properties(0).total_mem
+    mem_bytes = torch.cuda.get_device_properties(0).total_memory
     mem_gib = mem_bytes / (1024**3)
     gpu_name = torch.cuda.get_device_properties(0).name
     gpu_count = torch.cuda.device_count()
@@ -253,7 +268,9 @@ fi
 
 install_nvidia_drivers
 install_docker
+set_docker_cmd
 install_nvidia_container_toolkit
+set_docker_cmd
 
 if [[ "$SKIP_BUILD" == "false" ]]; then
     build_image

@@ -1,4 +1,4 @@
-# Build: docker build -t igv docker/
+# Build: docker build -t igv -f docker/Dockerfile .   (context = repo root)
 # Run:   docker run --gpus all --shm-size=32g --ipc=host igv
 FROM nvidia/cuda:12.6.2-devel-ubuntu22.04
 
@@ -22,7 +22,7 @@ RUN python3 -m pip install --no-cache-dir \
 RUN python3 -m pip install --no-cache-dir boltz==2.2.1
 
 WORKDIR /app
-COPY .. /app
+COPY . /app
 RUN python3 -m pip install --no-cache-dir -e ".[dev]"
 
 CMD ["python3", "-m", "pytest", "tests/", "-v"]

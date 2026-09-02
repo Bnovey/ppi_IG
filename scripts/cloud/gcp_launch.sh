@@ -8,7 +8,7 @@
 #   bash scripts/cloud/gcp_launch.sh --help
 #
 # COST WARNING:
-#   a2-ultragpu-1g:  1x A100-80GB   ~$10.04/hr on-demand (us-central1, Aug 2026)
+#   a2-ultragpu-1g:  1x A100-80GB   ~$5.07/hr on-demand (us-central1, Sep 2026)
 #   a2-ultragpu-8g:  8x A100-80GB   ~$80.29/hr on-demand
 #   a3-highgpu-8g:   8x H100-80GB   ~$98.32/hr on-demand
 #   ALWAYS delete when done.
@@ -35,8 +35,8 @@ BOOT_DISK_SIZE="${GCP_BOOT_DISK_SIZE:-500}"
 # Deep Learning VM image family -- Ubuntu 22.04 with CUDA pre-installed.
 # To list available images:
 #   gcloud compute images list --project=deeplearning-platform-release \
-#     --filter="family:common-cu126-ubuntu-2204" --format="table(name,family)"
-IMAGE_FAMILY="${GCP_IMAGE_FAMILY:-common-cu126-ubuntu-2204}"
+#     --filter="family~common-cu.*ubuntu-2204" --format="table(name,family)"
+IMAGE_FAMILY="${GCP_IMAGE_FAMILY:-common-cu129-ubuntu-2204-nvidia-580}"
 IMAGE_PROJECT="${GCP_IMAGE_PROJECT:-deeplearning-platform-release}"
 
 DRY_RUN=false
@@ -55,7 +55,7 @@ Options:
   --project PROJECT      GCP project ID (REQUIRED, or set GCP_PROJECT)
   --name NAME            VM name (default: igv-gpu)
   --boot-disk-size GB    Boot disk size in GB (default: 500)
-  --image-family FAMILY  VM image family (default: common-cu126-ubuntu-2204)
+  --image-family FAMILY  VM image family (default: common-cu129-ubuntu-2204-nvidia-580)
   --image-project PROJ   Image project (default: deeplearning-platform-release)
   --dry-run              Print the gcloud command without executing it
   --delete NAME          Delete the specified VM and exit
@@ -69,7 +69,7 @@ To list Deep Learning VM images:
     --filter="family~common-cu.*ubuntu-2204" --format="table(name,family)"
 
 COST WARNING (on-demand, rates as of Aug 2026 -- verify current pricing):
-  a2-ultragpu-1g   1x A100-80GB   ~$10.04/hr   (~$241/day)
+  a2-ultragpu-1g   1x A100-80GB   ~$5.07/hr    (~$122/day)
   a2-ultragpu-8g   8x A100-80GB   ~$80.29/hr   (~$1,927/day)
   a3-highgpu-8g    8x H100-80GB   ~$98.32/hr   (~$2,360/day)
   ALWAYS delete when done.

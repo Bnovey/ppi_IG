@@ -1,0 +1,9 @@
+.git
+.gitignore
+data/
+results/
+**/__pycache__/
+**/*.pyc
+**/.ipynb_checkpoints/
+.DS_Store
+*.prov.json
