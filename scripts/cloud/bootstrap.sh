@@ -11,7 +11,12 @@ REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 IMAGE_TAG="${IMAGE_TAG:-igv:latest}"
 FORBIDDEN_PACKAGES=(boltzgen protenix chai_lab gnina cuequivariance)
 REQUIRED_TORCH="2.7.1+cu126"
-MIN_VRAM_GIB=80
+# 80GB-class cards report 81920 MiB (= 80 GiB) to nvidia-smi, but torch's
+# total_memory reports the usable framebuffer after the ECC/reserve carve-out:
+# 79.2 GiB on A100-SXM4-80GB.  A threshold of 80 is therefore unreachable on
+# the exact hardware we target.  78 accepts every 80GB-class card while still
+# firmly rejecting a 40GB A100 (~39.5 GiB).
+MIN_VRAM_GIB=78
 
 # ---------------------------------------------------------------------------
 usage() {
