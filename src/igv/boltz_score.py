@@ -595,46 +595,54 @@ def confidence_forward(
         if scalar.dim() > 0:
             scalar = scalar.squeeze()
 
+        # Guards deliberately live OUTSIDE this function, after the checkpoint
+        # boundary -- see below. requires_grad is not meaningful in here.
+        return scalar
+
+    if gradient_checkpointing:
+        from torch.utils.checkpoint import checkpoint as _ckpt
+        # use_reentrant=True is load-bearing for memory, and is why the guards
+        # below sit out here rather than inside _full_trunk_and_confidence.
+        #
+        # Reentrant checkpointing runs the wrapped function under
+        # torch.no_grad(), so NO autograd graph is built during the forward at
+        # all; the trunk is recomputed with grad during backward, where the
+        # per-block non-reentrant checkpoints bound peak memory. That two-level
+        # scheme is what makes this complex fit in 80 GB. Switching the outer
+        # call to use_reentrant=False builds the full forward graph and OOMs
+        # (measured: 79.25 GiB capacity, ~32 MiB free).
+        #
+        # The cost is that requires_grad is False for every tensor inside the
+        # function, so the guards cannot live there. They run here instead,
+        # where the value is real.
+        scalar = _ckpt(
+            _full_trunk_and_confidence, s_inputs, use_reentrant=True,
+        )
+    else:
+        scalar = _full_trunk_and_confidence(s_inputs)
+
+    # Only demand a gradient when the caller actually asked for one. Callers
+    # that just want a score -- the signal_control sanity check scores 30
+    # mutants under torch.no_grad() -- are legitimate and must not trip this.
+    if torch.is_grad_enabled():
         assert scalar.requires_grad, (
             f"Score {score_name!r} does not require grad. This usually means "
             f"compute_ptms silently failed (check stdout for 'Error in "
             f"compute_ptms') and returned a zero tensor without grad."
         )
-        assert torch.isfinite(scalar).all(), (
-            f"Score {score_name!r} is not finite: {scalar.item()}"
-        )
-        # boltz wraps compute_ptms in a bare `except` that assigns
-        # torch.zeros_like(complex_plddt) and only prints. If that fires inside
-        # an autograd scope the tensor can still carry requires_grad, so the
-        # checks above pass and IG silently integrates a constant-zero function.
-        assert scalar.abs().item() > 1e-12, (
-            f"Score {score_name!r} is exactly zero. compute_ptms almost "
-            "certainly failed silently -- check stdout for 'Error in "
-            "compute_ptms'. Do not interpret this run."
-        )
+    assert torch.isfinite(scalar).all(), (
+        f"Score {score_name!r} is not finite: {scalar.item()}"
+    )
+    # boltz wraps compute_ptms in a bare `except` that assigns
+    # torch.zeros_like(complex_plddt) and only prints. A zero score therefore
+    # looks perfectly well-formed, and IG would silently integrate a constant.
+    assert scalar.abs().item() > 1e-12, (
+        f"Score {score_name!r} is exactly zero. compute_ptms almost "
+        "certainly failed silently -- check stdout for 'Error in "
+        "compute_ptms'. Do not interpret this run."
+    )
 
-        return scalar
-
-    if gradient_checkpointing:
-        from torch.utils.checkpoint import checkpoint as _ckpt
-        # use_reentrant=False is REQUIRED here, not a style choice.
-        #
-        # Reentrant checkpointing runs the wrapped function under
-        # torch.no_grad() on the forward pass, so every tensor built inside
-        # _full_trunk_and_confidence has requires_grad=False -- including the
-        # score. The `assert scalar.requires_grad` guard in there then fires on
-        # every single call, and its error message blames compute_ptms, which
-        # sends you looking in the wrong place entirely.
-        #
-        # The non-reentrant path keeps autograd enabled during the forward
-        # (it uses saved-tensor hooks instead), so requires_grad is True inside
-        # and the guard tests what it was written to test. It also matches the
-        # per-block _checkpoint calls above, which already pass
-        # use_reentrant=False, and reentrant mode is deprecated upstream.
-        return _ckpt(
-            _full_trunk_and_confidence, s_inputs, use_reentrant=False,
-        )
-    return _full_trunk_and_confidence(s_inputs)
+    return scalar
 
 
 # ---------------------------------------------------------------------------
