@@ -198,7 +198,7 @@ def main() -> None:
     struct_chains = read_pdb_chains(pdb)
     log.info("Structure %s chains: %s", stem, {c: len(s) for c, s in struct_chains.items()})
 
-    model = load_model(args.checkpoint_dir, args.device)
+    model, _boltz_version = load_model(args.checkpoint_dir, args.device)
 
     def chains_for(seq: str) -> dict[str, str]:
         d = dict(struct_chains)

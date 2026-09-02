@@ -307,7 +307,7 @@ def main() -> None:
         raise SystemExit(f"No structure known for {args.dataset}; pass --structure.")
     pdb = cache_dir / f"{stem}.pdb"
     struct_chains = read_pdb_chains(pdb)
-    model = load_model(args.checkpoint_dir, args.device)
+    model, _boltz_version = load_model(args.checkpoint_dir, args.device)
 
     def chains_for(seq):
         d = dict(struct_chains)
