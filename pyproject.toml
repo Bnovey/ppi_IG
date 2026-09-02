@@ -13,6 +13,10 @@ dependencies = [
     "scipy",
     "pandas",
     "requests",
+    # Parquet engine for pandas. 01_build_library writes the mutant library
+    # with to_parquet and 05_predict reads it back; without pyarrow pandas
+    # raises ImportError at write time.
+    "pyarrow",
 ]
 
 [project.optional-dependencies]
