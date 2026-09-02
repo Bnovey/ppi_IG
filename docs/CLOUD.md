@@ -55,8 +55,29 @@ right now. You can hold quota and still get `InsufficientInstanceCapacity`.
 `p4de.24xlarge` is offered only in **us-east-1c** and **us-east-1d**.
 `p5.48xlarge` is offered in all six us-east-1 AZs.
 
-GCP quota could not be verified (the local `gcloud` token is expired) and on a
-fresh project `NVIDIA_A100_80GB_GPUS` is commonly 0 with a 24-48h approval wait.
+### Verified GCP state, project `agrosbio`, checked 2026-08-30
+
+Compute Engine API is enabled and billing is linked to the open account
+(`017BD0-C84E33-6C9E0B`). GPU quota in us-central1 / us-east4 / us-west4 /
+europe-west4:
+
+| Metric | Limit | Usable here? |
+|---|---|---|
+| `NVIDIA_A100_80GB_GPUS` | **0** | this is the one we need |
+| `PREEMPTIBLE_NVIDIA_A100_80GB_GPUS` | **0** | |
+| `NVIDIA_A100_GPUS` (40 GB) | 1 | no -- 40 GB OOMs at stage 03 |
+| `PREEMPTIBLE_NVIDIA_A100_GPUS` (40 GB) | 16 | no -- same reason |
+| `NVIDIA_L4_GPUS` (24 GB) | 8 | no |
+| `NVIDIA_T4_GPUS` (16 GB) | 4 | no |
+| H100 (`a3-*`) | metric absent | no |
+
+**GCP has zero 80 GB-class quota.** Every GPU it will currently let you start is
+too small for full-trunk Boltz-2 backprop. An increase must be requested and
+takes 24-48h.
+
+Note also that the default `gcloud` project was `g-prs-478707`, which is not in
+this account's project list. The correct project is `agrosbio`:
+`gcloud config set project agrosbio`.
 
 ### Therefore
 
