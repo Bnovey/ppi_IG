@@ -437,6 +437,69 @@ def embedder_only(model, feats):
         return model.input_embedder(feats)
 
 
+def enable_confidence_checkpointing(model) -> int:
+    """Per-block gradient checkpointing inside the CONFIDENCE pairformer stack.
+
+    The trunk (``pairformer_module`` / ``msa_module``) is checkpointed per block
+    by :func:`confidence_forward`, but ``confidence_module.pairformer_stack`` was
+    not, so during the outer checkpoint's backward recompute every one of its
+    layers' L x L activations materialised at once. On a 753-token complex
+    (4fqi: HA 336+185 + Fab 123+109) that overruns an 80 GiB A100, OOMing at
+    ``transition.py: silu(fc1(x)) * fc2(x)`` while trying to allocate 1.02 GiB
+    with 78.43 GiB already held.
+
+    This is the same failure the predecessor repo hit and fixed in the trunk --
+    "checkpointed the whole pairformer_module as ONE unit, so backward recompute
+    still materialized all 64 blocks' activations at once" -- just relocated to
+    the one module that still fit at their smaller L~540.
+
+    Boltz's PairformerModule already implements exactly this, but gates it on
+    ``self.activation_checkpointing and self.training``. Calling ``.train()`` to
+    unlock it is not an option: it enables dropout, which makes the score
+    stochastic and its gradient meaningless, and it sets
+    ``chunk_size_tri_attn = None``, removing the triangle-attention chunking
+    that eval mode gives us. So we rebind ``forward`` instead, keeping the
+    module in eval and replicating upstream's eval-mode chunk selection.
+
+    Idempotent. Returns the number of layers now checkpointed.
+    """
+    import types
+
+    from torch.utils.checkpoint import checkpoint as _ckpt
+
+    confidence = getattr(model, "confidence_module", None)
+    stack = getattr(confidence, "pairformer_stack", None)
+    if stack is None:
+        log.warning("No confidence_module.pairformer_stack; nothing to checkpoint.")
+        return 0
+    if getattr(stack, "_igv_checkpointed", False):
+        return len(stack.layers)
+
+    try:
+        from boltz.data import const as _c
+        _threshold = _c.chunk_size_threshold
+    except Exception:
+        _threshold = 384
+
+    def _checkpointed_forward(self, s, z, mask, pair_mask, use_kernels: bool = False):
+        # Mirrors PairformerModule.forward's eval-mode branch.
+        chunk_size_tri_attn = 128 if z.shape[1] > _threshold else 512
+        for layer in self.layers:
+            s, z = _ckpt(
+                layer, s, z, mask, pair_mask, chunk_size_tri_attn, use_kernels,
+                use_reentrant=False,
+            )
+        return s, z
+
+    stack.forward = types.MethodType(_checkpointed_forward, stack)
+    stack._igv_checkpointed = True
+    log.info(
+        "Confidence pairformer stack: per-block checkpointing enabled (%d layers)",
+        len(stack.layers),
+    )
+    return len(stack.layers)
+
+
 def confidence_forward(
     model,
     s_inputs,
@@ -452,7 +515,9 @@ def confidence_forward(
     The trunk is run with per-block gradient checkpointing to fit within
     80 GB: each pairformer and MSA block is individually checkpointed so
     that backward recompute never materialises all 64 blocks' activations
-    simultaneously.
+    simultaneously. When ``gradient_checkpointing`` is set, the confidence
+    module's own pairformer stack gets the same treatment -- see
+    :func:`enable_confidence_checkpointing`.
     """
     import torch
     from torch.utils.checkpoint import checkpoint as _checkpoint
@@ -462,6 +527,12 @@ def confidence_forward(
         raise ValueError(
             f"Unknown score {score_name!r}; available: {sorted(SCORES)}"
         )
+
+    if gradient_checkpointing:
+        # The confidence stack needs the same per-block treatment as the trunk;
+        # without it the backward recompute OOMs at 753 tokens. See
+        # enable_confidence_checkpointing for why .train() is not the answer.
+        enable_confidence_checkpointing(model)
 
     device = s_inputs.device
     mask = feats["token_pad_mask"].float()
