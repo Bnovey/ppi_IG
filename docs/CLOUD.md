@@ -128,6 +128,67 @@ gcloud compute regions describe us-central1 \
 If `NVIDIA_A100_80GB_GPUS` is 0, request an increase at
 console.cloud.google.com/iam-admin/quotas before booking time to run this.
 
+## Requesting A100-80GB quota on GCP
+
+Only one metric needs raising: the regional `NVIDIA_A100_80GB_GPUS`. There is
+**no** `GPUS_ALL_REGIONS` cap on project `agrosbio` (verified -- that global
+metric is absent from `compute.googleapis.com` project-level quotas here), so
+there is no second request to file.
+
+### Console path (recommended -- the CLI needs the `beta` component)
+
+1. https://console.cloud.google.com/iam-admin/quotas?project=agrosbio
+2. Filter box, paste exactly: `NVIDIA_A100_80GB_GPUS`
+3. Tick the row whose **Region** is `us-central1`
+4. **EDIT QUOTAS** -> New limit: **1**
+5. Submit.
+
+Ask for **1**, not 8. `a2-ultragpu-1g` is a single A100-80GB, small requests are
+approved far more often and faster, and 8 GPUs costs ~$40/hr anyway -- at which
+point AWS `p4de` (already in quota) is the better box.
+
+Worth filing at the same time, as a separate row in the same UI:
+`PREEMPTIBLE_NVIDIA_A100_80GB_GPUS` = 1. Preemptible quota is usually granted
+more readily. Stage 04 (scan) is resumable so preemption is survivable there;
+**never run stage 03 on preemptible** -- attribution is not resumable and a
+preemption loses the whole run.
+
+### Justification text
+
+Reviewers read this. Be specific and modest:
+
+> Academic research evaluating gradient-based attribution on protein structure
+> prediction models (Boltz-2). Requires a single A100-80GB; smaller GPUs are
+> insufficient because full-trunk backpropagation needs ~80 GB. Expected usage
+> ~40 GPU-hours total, instances terminated after each run.
+
+### Timeline and denial reasons
+
+Typically 24-48 h, sometimes minutes if auto-approved. The two common denials:
+
+- **Free-trial billing.** GPU increases are frequently refused on trial
+  accounts. Confirm the billing account is a paid upgrade, not a trial.
+- **Asking for too much.** A request for 8 on a project with no GPU history is
+  more likely to be rejected than a request for 1.
+
+Note that quota is not capacity: once granted, `a2-ultragpu-1g` can still fail
+with `ZONE_RESOURCE_POOL_EXHAUSTED`. Try `us-central1-a`, then `-b`, `-c`, `-f`.
+
+### CLI alternative
+
+Requires installing the beta component first:
+
+```bash
+gcloud components install beta
+gcloud beta quotas info list --service=compute.googleapis.com --project=agrosbio \
+  | grep -i a100_80gb          # find the exact quota id
+gcloud beta quotas preferences create --project=agrosbio \
+  --quota-id=<ID from above> --preferred-value=1 \
+  --dimensions=region=us-central1
+```
+
+The console is less trouble for a one-off.
+
 ## AWS launch
 
 ```bash
