@@ -138,7 +138,21 @@ there is no second request to file.
 ### Console path (recommended -- the CLI needs the `beta` component)
 
 1. https://console.cloud.google.com/iam-admin/quotas?project=agrosbio
-2. Filter box, paste exactly: `NVIDIA_A100_80GB_GPUS`
+2. Filter box, paste exactly: **`NVIDIA A100 80GB GPUs`**
+
+   Note the spaces. The console filters on the *display* name, not the
+   underscored API metric id -- searching `NVIDIA_A100_80GB_GPUS` returns
+   nothing. Verified display names and quota ids, from the Cloud Quotas API:
+
+   | Display name | Quota id | Dimension |
+   |---|---|---|
+   | NVIDIA A100 80GB GPUs | `NVIDIA-A100-80GB-GPUS-per-project-region` | `region` <- use this |
+   | NVIDIA A100 80GB GPUs | `NVIDIA-A100-80GB-GPUS-per-project-zone` | `zone` |
+   | Preemptible NVIDIA A100 80GB GPUs | `PREEMPTIBLE-NVIDIA-A100-80GB-GPUS-per-project-region` | `region` |
+   | NVIDIA A100 GPUs | `NVIDIA-A100-GPUS-per-project-region` | `region` (40 GB -- too small) |
+
+   Two rows share the display name "NVIDIA A100 80GB GPUs"; pick the one whose
+   Dimensions chip reads `region: us-central1`.
 3. Tick the row whose **Region** is `us-central1`
 4. **EDIT QUOTAS** -> New limit: **1**
 5. Submit.
@@ -174,20 +188,36 @@ Typically 24-48 h, sometimes minutes if auto-approved. The two common denials:
 Note that quota is not capacity: once granted, `a2-ultragpu-1g` can still fail
 with `ZONE_RESOURCE_POOL_EXHAUSTED`. Try `us-central1-a`, then `-b`, `-c`, `-f`.
 
-### CLI alternative
-
-Requires installing the beta component first:
+### API alternative (no `beta` component needed)
 
 ```bash
-gcloud components install beta
-gcloud beta quotas info list --service=compute.googleapis.com --project=agrosbio \
-  | grep -i a100_80gb          # find the exact quota id
-gcloud beta quotas preferences create --project=agrosbio \
-  --quota-id=<ID from above> --preferred-value=1 \
-  --dimensions=region=us-central1
+curl -X POST \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  "https://cloudquotas.googleapis.com/v1/projects/agrosbio/locations/global/quotaPreferences?quotaPreferenceId=a100-80gb-us-central1" \
+  -d '{
+    "service": "compute.googleapis.com",
+    "quotaId": "NVIDIA-A100-80GB-GPUS-per-project-region",
+    "quotaConfig": {"preferredValue": "1"},
+    "dimensions": {"region": "us-central1"},
+    "contactEmail": "bnovey@agrosbio.com",
+    "justification": "..."
+  }'
 ```
 
-The console is less trouble for a one-off.
+Check status:
+
+```bash
+curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  "https://cloudquotas.googleapis.com/v1/projects/agrosbio/locations/global/quotaPreferences"
+```
+
+Discover ids for any other quota:
+
+```bash
+curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  "https://cloudquotas.googleapis.com/v1/projects/agrosbio/locations/global/services/compute.googleapis.com/quotaInfos?pageSize=500"
+```
 
 ## AWS launch
 
