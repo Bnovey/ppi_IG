@@ -61,6 +61,43 @@ _register_score("protein_iptm", _protein_iptm)
 # ---------------------------------------------------------------------------
 
 
+def select_checkpoint(checkpoint_dir):
+    """Return the Boltz-2 *confidence* checkpoint inside *checkpoint_dir*.
+
+    A full ``download_boltz2`` leaves two checkpoints in the cache::
+
+        boltz2_aff.ckpt    affinity head   -- sorts FIRST alphabetically
+        boltz2_conf.ckpt   confidence head -- what this module needs
+
+    Every score registered here (iptm, ptm, complex_pde, ...) reads the
+    confidence head, so a naive ``sorted(...)[0]`` picks the affinity model and
+    the pipeline would attribute gradients of the wrong network without ever
+    raising. Kept torch-free so it is testable on CPU.
+    """
+    from pathlib import Path as _P
+
+    ckpt_dir = _P(checkpoint_dir)
+    candidates = sorted(ckpt_dir.glob("*.ckpt"))
+    if not candidates:
+        raise FileNotFoundError(f"No .ckpt files in {ckpt_dir}")
+
+    preferred = [c for c in candidates if "aff" not in c.name.lower()]
+    if not preferred:
+        raise FileNotFoundError(
+            f"Only affinity checkpoints found in {ckpt_dir} "
+            f"({[c.name for c in candidates]}). The confidence checkpoint "
+            f"(boltz2_conf.ckpt) is required; re-run scripts/cloud/fetch_weights.sh."
+        )
+    conf = [c for c in preferred if "conf" in c.name.lower()]
+    chosen = conf[0] if conf else preferred[0]
+    if len(candidates) > 1:
+        log.info(
+            "Checkpoints present: %s -- selected %s",
+            [c.name for c in candidates], chosen.name,
+        )
+    return chosen
+
+
 def load_model(checkpoint_dir, device):
     """Load Boltz-2 in eval mode from *checkpoint_dir*.
 
@@ -68,7 +105,6 @@ def load_model(checkpoint_dir, device):
     the installed ``boltz`` package version string.
     """
     import importlib.metadata as md
-    from pathlib import Path as _P
 
     import torch
     from boltz.main import BoltzSteeringParams
@@ -77,11 +113,7 @@ def load_model(checkpoint_dir, device):
 
     boltz_version = md.version("boltz")
 
-    ckpt_dir = _P(checkpoint_dir)
-    candidates = sorted(ckpt_dir.glob("*.ckpt"))
-    if not candidates:
-        raise FileNotFoundError(f"No .ckpt files in {ckpt_dir}")
-    ckpt_path = candidates[0]
+    ckpt_path = select_checkpoint(checkpoint_dir)
     log.info("Loading Boltz-2 from %s (boltz %s)", ckpt_path, boltz_version)
 
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
