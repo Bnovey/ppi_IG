@@ -617,8 +617,22 @@ def confidence_forward(
 
     if gradient_checkpointing:
         from torch.utils.checkpoint import checkpoint as _ckpt
+        # use_reentrant=False is REQUIRED here, not a style choice.
+        #
+        # Reentrant checkpointing runs the wrapped function under
+        # torch.no_grad() on the forward pass, so every tensor built inside
+        # _full_trunk_and_confidence has requires_grad=False -- including the
+        # score. The `assert scalar.requires_grad` guard in there then fires on
+        # every single call, and its error message blames compute_ptms, which
+        # sends you looking in the wrong place entirely.
+        #
+        # The non-reentrant path keeps autograd enabled during the forward
+        # (it uses saved-tensor hooks instead), so requires_grad is True inside
+        # and the guard tests what it was written to test. It also matches the
+        # per-block _checkpoint calls above, which already pass
+        # use_reentrant=False, and reentrant mode is deprecated upstream.
         return _ckpt(
-            _full_trunk_and_confidence, s_inputs, use_reentrant=True,
+            _full_trunk_and_confidence, s_inputs, use_reentrant=False,
         )
     return _full_trunk_and_confidence(s_inputs)
 
