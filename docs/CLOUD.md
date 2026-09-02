@@ -10,7 +10,8 @@ Run the IG (Boltz-2 gradient attribution) pipeline on AWS or GCP GPU instances.
 | 2. SSH in | `ssh -i ~/.ssh/key.pem ubuntu@<IP>` |
 | 3. Clone repo | `git clone ... && cd IG` |
 | 4. Bootstrap | `bash scripts/cloud/bootstrap.sh` |
-| 5. Run pipeline | `tmux new -s igv` then `docker run --rm --gpus all --shm-size=32g --ipc=host -v $(pwd):/app -w /app igv:latest bash scripts/run_all.sh` |
+| 5. Fetch weights | `bash scripts/cloud/fetch_weights.sh` (one time; several GB into `~/boltz_cache`) |
+| 6. Run pipeline | `tmux new -s igv` then `docker run --rm --gpus all --shm-size=32g --ipc=host -v $(pwd):/app -w /app -v $HOME/boltz_cache:/root/.boltz igv:latest bash scripts/run_all.sh` |
 | 6. Sync results | `bash scripts/cloud/sync_results.sh --host ubuntu@<IP> --remote-dir /home/ubuntu/IG` |
 | 7. Tear down | `bash scripts/cloud/aws_launch.sh --terminate <instance-id>` |
 
@@ -300,6 +301,7 @@ The verification block fails loudly on any of:
 tmux new -s igv
 
 docker run --rm --gpus all --shm-size=32g --ipc=host \
+  -v $HOME/boltz_cache:/root/.boltz \
   -v $(pwd):/app -w /app igv:latest \
   bash scripts/run_all.sh
 
@@ -356,6 +358,7 @@ The sync script explicitly includes `*.prov.json` provenance sidecars and verifi
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | Silent hang at 0% GPU utilization, 18+ minutes | `/dev/shm` exhaustion. Docker's 64 MB default kills DataLoader workers. | Add `--shm-size=32g --ipc=host` to `docker run`. |
+| `FileNotFoundError: No .ckpt files in /root/.boltz` | Boltz-2 weights were never downloaded, or the persistent cache is not mounted. `docker run --rm` destroys `~/.boltz` with the container. | Run `bash scripts/cloud/fetch_weights.sh` once, then add `-v $HOME/boltz_cache:/root/.boltz` to every `docker run`. |
 | Exit code 1 with empty stderr | Torch version clobbered. A forbidden package replaced `torch==2.7.1+cu126` with a PyPI wheel. | Rebuild the image from scratch. Check `pip list \| grep torch` inside the container. Never install boltzgen, protenix, chai_lab, gnina, or cuequivariance. |
 | Segfault on A100 | `cuequivariance` present. Multiple versions segfault on sm_80. | `pip uninstall cuequivariance cuequivariance-ops-cu12 cuequivariance-ops-torch-cu12 cuequivariance-torch` |
 | `import torch` fails with missing `sys.get_int_max_str_digits` | Python 3.11.0rc1 or earlier pre-release. | Use Python 3.11 final (3.11.0+) or 3.12. The Dockerfile uses deadsnakes 3.11 which is always final. |

@@ -256,6 +256,7 @@ print(json.dumps(results))
     echo "  2. Run the pipeline inside Docker:"
     echo ""
     echo "     docker run --rm --gpus all --shm-size=32g --ipc=host \\"
+    echo "       -v \$HOME/boltz_cache:/root/.boltz \\"
     echo "       -v \$(pwd):/app -w /app ${IMAGE_TAG} \\"
     echo "       bash scripts/run_all.sh"
     echo ""
