@@ -9,6 +9,7 @@ The trunk is run with per-block gradient checkpointing to fit within
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,6 +18,12 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Score registry
 # ---------------------------------------------------------------------------
+
+# Pairformer blocks per gradient checkpoint. 4 keeps the retained boundary
+# tensors to 16 per recycling iteration (~4.1 GiB at 730 tokens, down from
+# ~16.3 GiB at one block per checkpoint) while recomputing only 4 blocks at a
+# time. Override with IGV_PF_GROUP_SIZE.
+_PF_GROUP_SIZE = 4
 
 SCORES: dict[str, Callable[[dict], Any]] = {}
 
@@ -549,7 +556,17 @@ def confidence_forward(
         _threshold = _boltz_const.chunk_size_threshold
     except Exception:
         _threshold = 384
-    _pf_chunk = 128 if _n_tokens > _threshold else 512
+    # Triangle-attention chunk size. This is the dominant VRAM term at scale:
+    # the attention weights are (chunk, heads, L, L), so at L=730 with chunk
+    # 128 and 4 heads each chunk is ~1.09 GiB, and a peak profile attributed
+    # 25.22 GiB to 26 live ones (primitives.py:170 softmax_no_cast). Halving
+    # the chunk halves that term and costs only extra sequential chunks.
+    _pf_chunk = int(os.environ.get("IGV_PF_CHUNK", 128 if _n_tokens > _threshold else 512))
+
+    # How many pairformer blocks share one checkpoint. Env-overridable so the
+    # memory/recompute tradeoff can be tuned per complex size without a code
+    # change; see the loop below for what it buys.
+    _pf_group = max(1, int(os.environ.get("IGV_PF_GROUP_SIZE", _PF_GROUP_SIZE)))
 
     _n_pf_blocks = len(model.pairformer_module.layers)
     _n_msa_blocks = model.msa_module.msa_blocks
@@ -559,7 +576,7 @@ def confidence_forward(
         _msa_chunk_trans_z = 64
         _msa_chunk_trans_msa = 32
         _msa_chunk_outer = 4
-        _msa_chunk_tri = 128
+        _msa_chunk_tri = int(os.environ.get("IGV_PF_CHUNK", 128))
     else:
         _msa_chunk_heads_pwa = False
         _msa_chunk_trans_z = None
@@ -578,6 +595,15 @@ def confidence_forward(
         return model.pairformer_module.layers[idx](
             s_, z_, mask_, pair_mask_, _pf_chunk, use_kernels=False
         )
+
+    def _pairformer_group_fn(s_, z_, mask_, pair_mask_, span):
+        """Run pairformer layers [span[0], span[1]) as ONE checkpoint unit."""
+        start, stop = int(span[0].item()), int(span[1].item())
+        for i in range(start, stop):
+            s_, z_ = model.pairformer_module.layers[i](
+                s_, z_, mask_, pair_mask_, _pf_chunk, use_kernels=False
+            )
+        return s_, z_
 
     def _msa_block_fn(z_, m_, token_mask_, msa_mask_, layer_idx_dummy):
         idx = int(layer_idx_dummy.item())
@@ -640,10 +666,20 @@ def confidence_forward(
 
             if gradient_checkpointing:
                 z_ = z_ + _msa_forward_checkpointed(z_, s_interp)
-                for blk_i in range(_n_pf_blocks):
-                    idx_t = torch.tensor(blk_i, device=device)
+                # Checkpoint GROUPS of blocks, not single blocks. Each
+                # checkpoint retains its input z (1, L, L, 128); at L=730 that
+                # is 254 MiB apiece, and a profile of the peak attributed
+                # 34.30 GiB across 135 such tensors -- the largest single term
+                # by far. Grouping trades those boundaries against a bigger
+                # transient during recompute (the classic sqrt(N) tradeoff):
+                # group_size=1 -> 64 boundaries/iteration, minimum recompute;
+                # group_size=8 ->  8 boundaries/iteration, 8 blocks of
+                # activations live at once. See _PF_GROUP_SIZE.
+                for start in range(0, _n_pf_blocks, _pf_group):
+                    stop = min(start + _pf_group, _n_pf_blocks)
+                    span = torch.tensor([start, stop], device=device)
                     s_, z_ = _checkpoint(
-                        _pairformer_block_fn, s_, z_, mask, pair_mask, idx_t,
+                        _pairformer_group_fn, s_, z_, mask, pair_mask, span,
                         use_reentrant=False,
                     )
             else:

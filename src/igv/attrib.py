@@ -106,6 +106,22 @@ def offload_large_saved_tensors(
     the autograd engine drives, long after the forward has returned.
 
     Numerically exact -- tensors are restored bit-for-bit.
+
+    .. warning::
+       **Defaults to off, because it does not reach the tensors that matter.**
+       Measured on the 730-token complex: peak fell only 77.64 -> 76.50 GiB.
+       The 34.3 GiB of checkpoint boundary tensors are held by
+       ``torch.utils.checkpoint``'s NON-reentrant path in a Python *closure*,
+       not via ``save_for_backward``, so ``saved_tensors_hooks`` never sees
+       them. Switching the inner block checkpoints to reentrant does route
+       them through the hooks, but breaks the gradient outright --
+       ``UserWarning: None of the inputs have requires_grad=True. Gradients
+       will be None`` -- because the outer checkpoint runs its forward under
+       ``no_grad``, so block inputs carry no ``requires_grad``. That attempt
+       also drove host RSS to 165 GB and was killed by the kernel OOM killer.
+
+       Kept because it is correct and cheap where saves *do* go through
+       ``save_for_backward``, and so the next person does not re-derive this.
     """
     offloaded = {"count": 0, "bytes": 0}
 
@@ -145,7 +161,7 @@ def integrated_gradient(
     quadrature: str = "gausslegendre",
     clear_cache_each_step: bool = False,
     log_progress: bool = False,
-    offload_min_bytes: int | None = DEFAULT_OFFLOAD_MIN_BYTES,
+    offload_min_bytes: int | None = None,
 ) -> AttribResult:
     """Path-integral attribution via Gauss-Legendre or uniform quadrature.
 
@@ -250,7 +266,7 @@ def plain_gradient(
     forward_fn: Callable[[Tensor], Tensor],
     embeddings: Tensor,
     baseline: Tensor | None = None,
-    offload_min_bytes: int | None = DEFAULT_OFFLOAD_MIN_BYTES,
+    offload_min_bytes: int | None = None,
 ) -> AttribResult:
     """Single backward pass at the actual embedding (alpha=1).
 
