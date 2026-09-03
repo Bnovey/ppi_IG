@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -230,3 +231,50 @@ class TestNonLinearGap:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# offload_large_saved_tensors
+# ---------------------------------------------------------------------------
+
+
+def test_offload_is_numerically_exact_and_size_gated():
+    """Offloading saved tensors must not change the gradient at all.
+
+    Runs on CPU, where pack() short-circuits on ``not t.is_cuda``, so this
+    pins the contract (identical grads, no crash, counter stays at zero for
+    non-CUDA tensors) rather than the transfer itself.
+    """
+    from igv.attrib import offload_large_saved_tensors
+
+    def run(ctx):
+        x = torch.randn(64, 64, dtype=torch.float64, requires_grad=True)
+        w = torch.randn(64, 64, dtype=torch.float64)
+        with ctx:
+            y = (x @ w).tanh().sum()
+            y.backward()
+        return x.grad.clone()
+
+    torch.manual_seed(0)
+    g_plain = run(contextlib.nullcontext())
+    torch.manual_seed(0)
+    with offload_large_saved_tensors(min_bytes=1) as stats:
+        g_off = run(contextlib.nullcontext())
+    torch.testing.assert_close(g_plain, g_off, rtol=0, atol=0)
+    # CPU tensors are never offloaded regardless of how low the threshold is.
+    assert stats["count"] == 0
+
+
+def test_offload_threshold_default_is_above_a_500_token_pair_tensor():
+    """The threshold should engage for 730 tokens but not ~500.
+
+    z is (1, L, L, 128) fp32.  This is the property that makes the offload
+    self-scaling, so it is worth locking down.
+    """
+    from igv.attrib import DEFAULT_OFFLOAD_MIN_BYTES
+
+    def z_bytes(L):
+        return L * L * 128 * 4
+
+    assert z_bytes(730) > DEFAULT_OFFLOAD_MIN_BYTES
+    assert z_bytes(500) < DEFAULT_OFFLOAD_MIN_BYTES

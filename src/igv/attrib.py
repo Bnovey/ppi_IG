@@ -7,6 +7,7 @@ multi-point mutants therefore measures epistasis (non-additive interactions).
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 from dataclasses import dataclass, field
@@ -72,6 +73,70 @@ def build_mean_aa_baseline(
     return baseline
 
 
+# Only tensors at least this large are moved to host RAM.  At 730 tokens the
+# pair representation z is (1, 730, 730, 128) fp32 = 254 MiB and clears the
+# bar; at ~500 tokens it is 119 MiB and stays on the GPU.  The threshold makes
+# the offload self-scaling: it engages only on the complexes that need it.
+DEFAULT_OFFLOAD_MIN_BYTES = 200 * 1024**2
+
+
+@contextlib.contextmanager
+def offload_large_saved_tensors(
+    min_bytes: int = DEFAULT_OFFLOAD_MIN_BYTES,
+    pin_memory: bool = True,
+):
+    """Keep only *large* saved tensors in host RAM during backward.
+
+    This is NOT ``torch.autograd.graph.save_on_cpu``, and the difference is the
+    whole point.  Blanket ``save_on_cpu`` offloads *every* saved activation; the
+    predecessor repo measured a single IG step at >18 minutes under it
+    ("effectively hung") because of the PCIe traffic, which is why
+    :func:`integrated_gradient` still refuses to offer it.
+
+    Here a size threshold is applied, so only the checkpoint *boundary* tensors
+    move.  A memory profile of the 730-token 4fqi complex attributed 34.30 GiB
+    of a 75.28 GiB peak to 135 such blocks (``pairformer.py:102``, one per
+    trunk block per recycling iteration plus the confidence layers), each 254
+    MiB.  Moving those and nothing else is ~34 GiB each way per backward --
+    seconds over PCIe, not the hundreds of GiB that made blanket offload
+    unusable.
+
+    Must wrap ``backward()``, not just the forward call: the trunk is inside a
+    reentrant checkpoint, so the tensors are saved during the recompute that
+    the autograd engine drives, long after the forward has returned.
+
+    Numerically exact -- tensors are restored bit-for-bit.
+    """
+    offloaded = {"count": 0, "bytes": 0}
+
+    def pack(t: Tensor):
+        if not t.is_cuda or t.numel() * t.element_size() < min_bytes:
+            return t
+        host = torch.empty(
+            t.size(), dtype=t.dtype, layout=t.layout,
+            device="cpu", pin_memory=pin_memory,
+        )
+        host.copy_(t)
+        offloaded["count"] += 1
+        offloaded["bytes"] += t.numel() * t.element_size()
+        return (t.device, host)
+
+    def unpack(payload):
+        if isinstance(payload, tuple):
+            device, host = payload
+            return host.to(device, non_blocking=True)
+        return payload
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
+        yield offloaded
+
+    if offloaded["count"]:
+        log.info(
+            "offloaded %d saved tensors (%.1f GiB) to host RAM",
+            offloaded["count"], offloaded["bytes"] / 1024**3,
+        )
+
+
 def integrated_gradient(
     forward_fn: Callable[[Tensor], Tensor],
     embeddings: Tensor,
@@ -80,6 +145,7 @@ def integrated_gradient(
     quadrature: str = "gausslegendre",
     clear_cache_each_step: bool = False,
     log_progress: bool = False,
+    offload_min_bytes: int | None = DEFAULT_OFFLOAD_MIN_BYTES,
 ) -> AttribResult:
     """Path-integral attribution via Gauss-Legendre or uniform quadrature.
 
@@ -103,12 +169,19 @@ def integrated_gradient(
         Emit a per-step INFO line.  A full-trunk run takes 20-40 minutes and
         is indistinguishable from a hang without this.
 
+    offload_min_bytes : int or None
+        Move saved tensors at least this large to host RAM during backward
+        (``None`` disables).  See :func:`offload_large_saved_tensors`.
+
     Notes
     -----
-    There is deliberately no ``save_on_cpu`` option.  Offloading saved
-    activations to host RAM was measured at >18 minutes for a *single* IG step
-    on this model because of PCIe paging; per-block gradient checkpointing in
-    the ``forward_fn`` is the approach that actually works.
+    There is deliberately no blanket ``save_on_cpu`` option.  Offloading *every*
+    saved activation to host RAM was measured at >18 minutes for a *single* IG
+    step on this model because of PCIe paging.  Per-block gradient checkpointing
+    in the ``forward_fn`` is the approach that actually works, and
+    ``offload_min_bytes`` is the narrow, size-thresholded complement to it --
+    it moves only the ~254 MiB checkpoint boundary tensors, which are 34.3 GiB
+    of a 75.3 GiB peak on a 730-token complex.
 
     Returns
     -------
@@ -147,7 +220,15 @@ def integrated_gradient(
         if log_progress:
             log.info("IG step %d/%d", step_i + 1, n_alphas)
         interp = (baseline + alpha * (embeddings - baseline)).detach().requires_grad_(True)
-        with torch.enable_grad():
+        # The offload context must span backward(), not just forward(): the
+        # trunk sits inside a reentrant checkpoint, so its tensors are saved
+        # during the autograd engine's recompute.
+        ctx = (
+            offload_large_saved_tensors(offload_min_bytes)
+            if offload_min_bytes is not None
+            else contextlib.nullcontext()
+        )
+        with torch.enable_grad(), ctx:
             score = forward_fn(interp)
             score.backward()
         accumulated_grads = accumulated_grads + weight * interp.grad.detach()
@@ -169,6 +250,7 @@ def plain_gradient(
     forward_fn: Callable[[Tensor], Tensor],
     embeddings: Tensor,
     baseline: Tensor | None = None,
+    offload_min_bytes: int | None = DEFAULT_OFFLOAD_MIN_BYTES,
 ) -> AttribResult:
     """Single backward pass at the actual embedding (alpha=1).
 
@@ -177,7 +259,12 @@ def plain_gradient(
     Here we evaluate the gradient at the real input only.
     """
     x = embeddings.detach().requires_grad_(True)
-    with torch.enable_grad():
+    ctx = (
+        offload_large_saved_tensors(offload_min_bytes)
+        if offload_min_bytes is not None
+        else contextlib.nullcontext()
+    )
+    with torch.enable_grad(), ctx:
         score = forward_fn(x)
         score.backward()
     grad = x.grad.detach()

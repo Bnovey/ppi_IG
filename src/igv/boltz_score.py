@@ -507,6 +507,7 @@ def confidence_forward(
     x_pred,
     score_name: str,
     gradient_checkpointing: bool = True,
+    recycling_steps: int = 1,
 ):
     """Run the full trunk from ``s_inputs``, then the confidence head.
 
@@ -566,7 +567,11 @@ def confidence_forward(
         _msa_chunk_outer = None
         _msa_chunk_tri = 512
 
-    recycling_steps = 1
+    # recycling_steps is a caller parameter (default 1, matching the
+    # predecessor repo's "1 for speed, 3 for quality"). It is also the single
+    # biggest VRAM lever: the trunk runs recycling_steps+1 iterations and each
+    # one saves a checkpoint boundary tensor per block, so at 730 tokens
+    # 64 blocks x 2 iterations x 0.254 GiB = 32.5 GiB of saved z alone.
 
     def _pairformer_block_fn(s_, z_, mask_, pair_mask_, layer_idx_dummy):
         idx = int(layer_idx_dummy.item())
