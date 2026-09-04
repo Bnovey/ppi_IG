@@ -1,71 +1,105 @@
-# igv -- Integrated-gradient validation for Boltz-2
+# ppi_IG — can one gradient replace a mutation scan?
 
-Can a single backward pass through Boltz-2's affinity head predict the effect
-of every interface mutation, replacing a brute-force scan that costs ~615
-GPU-hours? Ground truth: AbBiBench (184,500 measured affinities, 14 antibodies,
-9 antigens).
+Antibodies bind to targets, and drug designers want to know which mutations at
+the binding interface make that binding stronger or weaker.
 
-## Three-term decomposition
+The usual way to answer this with a model like Boltz-2 is brute force: change
+one amino acid, run the model, write down the score, repeat a few thousand
+times. That costs roughly **615 GPU-hours** for the datasets here.
 
-| Term | Compares | Answers |
+This repo tests a shortcut. Run the model **once**, and instead of just reading
+the score, ask the model how the score would change if you nudged each part of
+the input. That is a gradient, and in principle it predicts every mutation at
+once from a single pass. The technique is
+[Integrated Gradients](https://arxiv.org/abs/1703.01365).
+
+**Does the shortcut actually work?** That is the whole question. This is a
+validation project, not a tool — the answer may well be no.
+
+## The three questions
+
+Ground truth is [AbBiBench](https://huggingface.co/datasets/AbBibench/Antibody_Binding_Benchmark_Dataset):
+184,500 measured binding affinities across 14 antibodies and 9 antigens.
+
+| | What we compare | What it tells us |
 |---|---|---|
-| **T1** | attribution vs the model's own mutation scan | Is the gradient faithful to the model? |
-| **T2** | the model's scan vs experiment | Is the model right about biology? |
-| **T3** | attribution vs experiment | What does a practitioner actually get? |
+| **T1** | gradient shortcut vs the model's own brute-force scan | Does the shortcut match the model it came from? |
+| **T2** | the model's scan vs real lab measurements | Is the model right about biology at all? |
+| **T3** | gradient shortcut vs real lab measurements | What would someone actually get from this? |
 
-The efficiency claim: one backward pass per system (~16 total) predicts every
-mutation, versus ~615 GPU-hours of brute-force forward passes.
+T1 is the honest test of the shortcut. T2 is a property of Boltz-2 and is
+already known to be weak (Spearman ~0.13, below ProteinMPNN's 0.30). If T2 is
+near zero, T3 cannot be good no matter how well the shortcut works — so the
+three terms have to be read together.
 
-## Quickstart (CPU, laptop)
+## Status
 
-```bash
-pip install -e ".[dev]"        # or: make setup
-make test                      # 43 unit tests, no GPU needed
-make fetch library             # download AbBiBench, build mutant library
-jupyter notebook notebooks/01_dataset_overview.ipynb
-```
-
-## GPU steps
-
-Stages 02 (embed deltas), 03 (attribution), 04 (mutation scan), and
-07 (sanity checks) require a GPU with **>=80 GB VRAM** -- full-trunk Boltz-2
-backprop fills an entire 80 GB card.
-
-Recommended instances: AWS `p4de.24xlarge` / `p5.48xlarge`, GCP
-`a2-ultragpu` / `a3-highgpu`. Containers need `--shm-size=32g --ipc=host`.
+**The memory problem is solved.** Getting the gradient requires a backward pass
+through the whole model, which did not fit on an 80 GB GPU at the size we need
+(730 tokens). Two settings fix it:
 
 ```bash
-docker build -t igv docker/
-docker run --gpus all --shm-size=32g --ipc=host igv
-
-# Inside the container (or on a bare-metal GPU box):
-bash scripts/run_all.sh                          # full pipeline
-DRY_RUN=1 bash scripts/run_all.sh                # preview commands
-DATASET=4fqi_h3 SCORE=complex_pde bash scripts/run_all.sh  # override
+IGV_TRI_ATTN_CKPT=1 IGV_AUTOCAST=bf16
 ```
 
-## Dependency warning
+That brings the requirement from 93.7 GB down to a measured **55.2 GB**, and
+runs faster than before. Details and all measurements:
+[docs/MEMSCALE_RESULTS.md](docs/MEMSCALE_RESULTS.md).
 
-Only `torch==2.7.1+cu126` and `boltz==2.2.1` are supported. **Never** install
-`boltzgen`, `protenix`, `chai_lab`, `gnina`, or `cuequivariance` -- they
-silently replace the pinned CUDA torch wheel and segfault on A100/sm_80. See
-`constraints.txt`.
+**The correctness problem is open.** With the memory fixed, the main
+correctness check could finally run — and it fails. Integrated Gradients
+guarantees that the individual attributions add up to the total change in
+score; ours overshoot by 4.6x. We do not yet know whether that is caused by the
+half-precision setting above, by too few integration steps, or by a poor
+choice of reference point. **Until that is resolved, no result from this
+pipeline should be trusted.**
 
-## Published baselines (per-dataset Spearman, averaged)
+Also unresolved: the model is being scored on a structure where every atom sits
+at the origin, because the input is built from sequence only. Fixed geometry,
+but not the real structure.
 
-| Method | Spearman |
-|---|---|
-| ProteinMPNN | 0.30 |
-| ESM-IF1 | 0.28 |
-| AntiFold | 0.21 |
-| **Boltz-2** (brute-force scan) | **0.13** |
-| FoldX | 0.12 |
-| AF3 | -0.02 |
+## Running it
 
-Note: `1mlc` and `1n8z` are near-zero for every model.
+CPU, on a laptop:
 
-## Documentation
+```bash
+pip install -e ".[dev]"    # or: make setup
+make test                  # 236 tests, no GPU needed
+make fetch library         # download the data, build the mutant list
+```
 
-- Pipeline stages, artifact DAG, and provenance convention: [docs/PIPELINE.md](docs/PIPELINE.md)
-- Why full-trunk attribution does not fit in 80 GiB, and the `IGV_*` memory knobs: [docs/MEMORY.md](docs/MEMORY.md)
-- Research plan: [PLAN.md](PLAN.md)
+GPU (stages 02, 03, 04, 07 and the `08_memscale` diagnostic):
+
+```bash
+docker build -t igv -f docker/Dockerfile .
+docker run --gpus all --shm-size=32g --ipc=host \
+  -e IGV_TRI_ATTN_CKPT=1 -e IGV_AUTOCAST=bf16 \
+  -v $HOME/boltz_cache:/root/.boltz -v $(pwd):/app -w /app igv \
+  bash scripts/run_all.sh
+```
+
+`make help` lists every stage. `--dry-run` works on most of them.
+
+One 80 GB GPU is enough with the two settings above. Without them you need
+about 94 GB, which no single card of that class has.
+
+## Two warnings
+
+**Do not add packages.** Only `torch==2.7.1+cu126` and `boltz==2.2.1` work.
+Installing `boltzgen`, `protenix`, `chai_lab`, `gnina`, or `cuequivariance`
+quietly replaces the pinned CUDA build of torch and then segfaults on A100.
+See [constraints.txt](constraints.txt).
+
+**Scores from `IGV_AUTOCAST=bf16` runs cannot be compared with older ones.**
+Half precision shifts the numbers slightly, so any reference score has to be
+recomputed under the same setting. Every artifact records which settings
+produced it.
+
+## Docs
+
+- [docs/PIPELINE.md](docs/PIPELINE.md) — the stages, what each one writes, and how provenance works
+- [docs/MEMSCALE_RESULTS.md](docs/MEMSCALE_RESULTS.md) — measured memory requirements, and the correctness failure
+- [docs/MEMORY.md](docs/MEMORY.md) — why the backward pass is so large, and what each `IGV_*` setting does
+- [docs/CLOUD.md](docs/CLOUD.md) — renting a suitable GPU
+- [ERRORS_LOG.md](ERRORS_LOG.md) — every failure so far, with its real cause
+- [PLAN.md](PLAN.md) — the research plan

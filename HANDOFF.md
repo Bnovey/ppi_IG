@@ -81,7 +81,7 @@ explicitly. **Until it passes, treat the whole environment as unproven.**
 | | |
 |---|---|
 | Project | `agrosbio` |
-| Billing account | `017BD0-C84E33-6C9E0B` (open; a second account `014C9F-95B3FE-7C2258` is **closed** — ignore it) |
+| Billing account | redacted for the public repo — see `gcloud billing accounts list` (there are two; the second is **closed**, ignore it) |
 | Instance | `igv-gpu`, `a2-ultragpu-1g`, `us-central1-a` |
 | Status | **TERMINATED** (= stopped, not deleted) |
 | Boot disk | 500 GB pd-ssd, `READY`, **preserved** |
@@ -150,7 +150,7 @@ APIs are already enabled; nothing to request. Rejected because runtime templates
 have **no `--container-image` flag**, so the pinned container can't be used and
 you must pip-install over Google's base image — precisely the torch-clobber
 risk. Also: mandatory idle shutdown, ephemeral disk, no detached runs. A free
-template `igv-a100-40` (ID `691054053173493760`) exists as an unused fallback.
+template `igv-a100-40` (ID redacted) exists as an unused fallback.
 
 Consumer Colab Pro/Pro+ cannot be paid with GCP credits (separate billing
 system). Colab Enterprise can, but draws on the same Compute Engine GPU quota.

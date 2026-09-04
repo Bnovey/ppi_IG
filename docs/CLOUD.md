@@ -59,7 +59,7 @@ right now. You can hold quota and still get `InsufficientInstanceCapacity`.
 ### Verified GCP state, project `agrosbio`, checked 2026-08-30
 
 Compute Engine API is enabled and billing is linked to the open account
-(`017BD0-C84E33-6C9E0B`). GPU quota in us-central1 / us-east4 / us-west4 /
+(ID redacted for the public repo). GPU quota in us-central1 / us-east4 / us-west4 /
 europe-west4:
 
 | Metric | Limit | Usable here? |
@@ -201,7 +201,7 @@ curl -X POST \
     "quotaId": "NVIDIA-A100-80GB-GPUS-per-project-region",
     "quotaConfig": {"preferredValue": "1"},
     "dimensions": {"region": "us-central1"},
-    "contactEmail": "bnovey@agrosbio.com",
+    "contactEmail": "YOUR_EMAIL",
     "justification": "..."
   }'
 ```
