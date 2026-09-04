@@ -21,6 +21,7 @@ from igv.boltz_score import (
     confidence_forward,
     embedder_only,
     load_model,
+    numerics_arm,
     record_iptm_argmax,
 )
 from igv.attrib import (
@@ -30,6 +31,7 @@ from igv.attrib import (
     plain_gradient,
 )
 from igv.data import build_library, download, read_pdb_chains
+from igv.gpu import require_vram
 from igv.provenance import write as prov_write
 
 log = logging.getLogger(__name__)
@@ -40,29 +42,6 @@ STRUCTURE_FOR_DATASET = {
 }
 
 IPTM_SCORES = {"iptm", "ptm", "protein_iptm"}
-
-
-# 78, not 80: an 80GB-class card reports 81920 MiB to nvidia-smi but
-# torch's total_memory returns the usable framebuffer after the ECC/reserve
-# carve-out -- 79.2 GiB on A100-SXM4-80GB. A gate of 80 is unreachable on
-# the exact hardware this project targets. 78 still rejects a 40GB A100.
-def _require_vram(min_gib: float = 78) -> None:
-    if os.environ.get("IGV_SKIP_VRAM_CHECK") == "1":
-        return
-    import torch
-
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            f"CUDA not available. Attribution requires >= {min_gib} GiB VRAM. "
-            "Set IGV_SKIP_VRAM_CHECK=1 to override."
-        )
-    props = torch.cuda.get_device_properties(0)
-    total_gib = props.total_memory / 1024**3
-    if total_gib < min_gib:
-        raise RuntimeError(
-            f"GPU has {total_gib:.1f} GiB VRAM, need >= {min_gib} GiB. "
-            "Set IGV_SKIP_VRAM_CHECK=1 to override."
-        )
 
 
 def _confidence_forward_out_dict(model, s_inputs, feats, x_pred, score_name):
@@ -178,7 +157,9 @@ def main() -> None:
         dataset=dataset, score=score, method=method,
     ))
 
-    _require_vram(min_gib=78)
+    # min_gib=78 preserved verbatim from the local copy this replaced. Only the
+    # skip path differs: IGV_SKIP_VRAM_CHECK=1 now logs a WARNING (it was silent).
+    require_vram(min_gib=78)
 
     # --- 1. Load library and structure ---
     log.info("Building library for %s (chain=%s)", dataset, chain)
@@ -223,12 +204,25 @@ def main() -> None:
     # feats["coords"] (shape [B, N_atoms, 3]). We detach to ensure geometry
     # is fixed and not differentiated through.
     x_pred = feats["coords"].detach()
+    _coords_max = float(x_pred.abs().max())
     log.info(
-        "GEOMETRY IS FIXED: x_pred detached from feats['coords'] (shape %s). "
-        "Both attribution and the brute-force scan measure sensitivity at "
-        "identical wild-type geometry.",
+        "x_pred detached from feats['coords'] (shape %s), coords.abs().max()=%g. "
+        "Geometry is FIXED (identical for attribution and the brute-force scan) "
+        "but it is NOT necessarily the deposited structure: measured 0.0 on "
+        "igv-gpu 2026-09-04, i.e. the sequence-only YAML places every atom at "
+        "the origin. structure_pdb is accepted by build_complex_feats and never "
+        "read. Do not describe this as wild-type geometry unless this number is "
+        "non-zero.",
         list(x_pred.shape),
+        _coords_max,
     )
+    if _coords_max == 0.0:
+        log.warning(
+            "coords.abs().max() == 0: attribution is being taken at a collapsed "
+            "all-zeros geometry, not at the 4fqi structure. The gradient is "
+            "still sequence-dependent (the confidence head sees s and z), but "
+            "no claim about structural context is supported."
+        )
 
     # --- 4. Build forward_fn ---
     def forward_fn(s):
@@ -286,7 +280,11 @@ def main() -> None:
 
     # --- 8. Slice gradient to varying chain ---
     token_indices = [token_map[(chain, i)] for i in range(len(reference_seq))]
-    grad_full = result.grad.detach().cpu().numpy()
+    # .float() is load-bearing: numpy has no bfloat16, so .numpy() on a non-fp32
+    # grad raises "TypeError: Got unsupported ScalarType BFloat16". Today the leaf
+    # is fp32 (src/igv/attrib.py builds it that way) so this is a no-op copy-free
+    # cast, but it keeps the writer safe if IGV_AUTOCAST ever lets a bf16 grad out.
+    grad_full = result.grad.detach().float().cpu().numpy()
     grad_chain = grad_full[0, token_indices, :]
     log.info("grad_chain shape: (%d, %d)", *grad_chain.shape)
 
@@ -363,6 +361,16 @@ def main() -> None:
             "m_steps": args.m_steps if method == "ig" else 1,
             "dataset": dataset,
             "chain": chain,
+            # The knobs that change the numbers. Two runs differing only in
+            # IGV_AUTOCAST give different scores from identical inputs, so an
+            # artifact that does not record them cannot be safely compared with
+            # any other artifact.
+            **numerics_arm(),
+            # MEASURED, not claimed. The geometry here is whatever
+            # featurisation produced; on a sequence-only YAML that is all
+            # zeros, which is not the deposited structure. Recording the number
+            # means no reader has to trust a label.
+            "coords_abs_max": float(x_pred.abs().max()),
         },
     )
     log.info("Done.")

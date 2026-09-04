@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from igv.data import build_library, download, read_pdb_chains
+from igv.gpu import require_vram
 from igv.provenance import write as prov_write
 
 log = logging.getLogger(__name__)
@@ -20,28 +21,6 @@ STRUCTURE_FOR_DATASET = {
     "4fqi_h1": "4fqi_hlab",
     "4fqi_h3": "4fqi_hlab",
 }
-
-
-# 78, not 80: an 80GB-class card reports 81920 MiB to nvidia-smi but
-# torch's total_memory returns the usable framebuffer after the ECC/reserve
-# carve-out -- 79.2 GiB on A100-SXM4-80GB. A gate of 80 is unreachable on
-# the exact hardware this project targets. 78 still rejects a 40GB A100.
-def _require_vram(min_gib: int = 78) -> None:
-    if os.environ.get("IGV_SKIP_VRAM_CHECK") == "1":
-        log.info("VRAM check skipped (IGV_SKIP_VRAM_CHECK=1)")
-        return
-    try:
-        import torch
-
-        if not torch.cuda.is_available():
-            raise RuntimeError("No CUDA device available")
-        total = torch.cuda.get_device_properties(0).total_mem / (1024**3)
-        if total < min_gib:
-            raise RuntimeError(
-                f"GPU has {total:.1f} GiB VRAM, need >= {min_gib} GiB"
-            )
-    except ImportError:
-        raise RuntimeError("torch is not installed; cannot check VRAM")
 
 
 def main() -> None:
@@ -133,12 +112,23 @@ def main() -> None:
     log.info(
         "This stage is embedder-only (no trunk), but VRAM check is kept for consistency"
     )
-    _require_vram()
+    # BEHAVIOUR CHANGE: this gate now actually runs. The local copy this replaced
+    # read torch.cuda.get_device_properties(0).total_mem -- an attribute that does
+    # not exist -- and the enclosing try caught only ImportError, so on a real GPU
+    # this stage died with an unhandled AttributeError instead of enforcing 78 GiB.
+    # min_gib is deliberately unchanged from the other stages; pass min_gib=... if
+    # stage 02's embedder-only footprint should ever be gated more loosely.
+    require_vram()
 
     import numpy as np
     import torch
     from igv.attrib import free_cuda_memory
-    from igv.boltz_score import build_complex_feats, embedder_only, load_model
+    from igv.boltz_score import (
+        build_complex_feats,
+        embedder_only,
+        load_model,
+        numerics_arm,
+    )
 
     device = args.device
     log.info("Loading model from %s on %s", args.checkpoint_dir, device)
@@ -201,7 +191,8 @@ def main() -> None:
         stage="02_embed_deltas",
         inputs={"dataset": args.dataset, "structure": struct_name, "cache_dir": str(cache_dir)},
         params={"chain": chain, "device": device, "boltz_version": boltz_version},
-        arm={"stage": "deltas", "chain": chain, "dataset": args.dataset, "n_deltas": n_deltas},
+        arm={"stage": "deltas", "chain": chain, "dataset": args.dataset,
+             "n_deltas": n_deltas, **numerics_arm()},
     )
 
 

@@ -28,6 +28,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from igv.data import build_library, read_pdb_chains  # noqa: E402
+from igv.gpu import require_vram  # noqa: E402
 from igv.metrics import spearman  # noqa: E402
 from igv.provenance import assert_provenance, write as prov_write  # noqa: E402
 
@@ -46,6 +47,16 @@ THRESHOLDS = {
 }
 CHECKS = list(THRESHOLDS)
 
+# Checks that report a magnitude rather than a verdict. They must never gate
+# the pipeline -- including when they RAISE. The flag is therefore set in
+# ``_result`` from the check name, not on the success path of the check
+# itself: the exception handler in ``main`` builds its result through the same
+# ``_result``, and previously inherited no flag, so an OOM in an
+# "informational only" check was recorded as blocking (see
+# results/sanity_4fqi_h1_complex_pde.json, where frozen_vs_full failed the
+# gate by raising).
+INFORMATIONAL = frozenset({"frozen_vs_full"})
+
 
 def _result(name, passed, value, detail):
     return {
@@ -54,24 +65,8 @@ def _result(name, passed, value, detail):
         "value": value,
         "threshold": THRESHOLDS[name],
         "detail": detail,
+        "informational": name in INFORMATIONAL,
     }
-
-
-# 78, not 80: an 80GB-class card reports 81920 MiB to nvidia-smi but
-# torch's total_memory returns the usable framebuffer after the ECC/reserve
-# carve-out -- 79.2 GiB on A100-SXM4-80GB. A gate of 80 is unreachable on
-# the exact hardware this project targets. 78 still rejects a 40GB A100.
-def _require_vram(min_gib: int = 78) -> None:
-    if os.environ.get("IGV_SKIP_VRAM_CHECK") == "1":
-        log.warning("IGV_SKIP_VRAM_CHECK=1 -- skipping the %d GiB check", min_gib)
-        return
-    import torch
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("No CUDA device. Set IGV_SKIP_VRAM_CHECK=1 to override.")
-    gib = torch.cuda.get_device_properties(0).total_memory / 1024**3
-    if gib < min_gib:
-        raise RuntimeError(f"GPU 0 has {gib:.1f} GiB; need >= {min_gib} GiB.")
 
 
 # --------------------------------------------------------------------------
@@ -114,35 +109,80 @@ def check_m_sweep(forward_fn, s_inputs, baseline, ms=(8, 16, 32)):
     return _result("m_sweep", last > 0.95, pairs, f"final pair {ms[-2]}->{ms[-1]} = {last:.4f}")
 
 
+def randomise_(module, seed=0):
+    """Re-initialise ``module`` in place; return ``(n, n2d, nbias, nnorm)``.
+
+    Matrices get Xavier, biases get zeros, and every other 1-D parameter gets
+    ONES. That last rule is the point of this helper.
+
+    1-D non-bias parameters are the LayerNorm/RMSNorm *scales*. Zeroing them
+    (which is what a bare ``p.dim() >= 2 ... else zeros_`` does) annihilates
+    every normalised layer's output, so the network emits a constant, the
+    gradient w.r.t. the input is constant, ``spearman`` returns NaN on zero
+    variance (src/igv/metrics.py:22-30) and ``abs(nan) < 0.3`` is False. The
+    caller would then print its project-killing verdict about a network THIS
+    FUNCTION broke rather than about a real result. Unit scale is the norm's
+    identity, which leaves the Xavier-randomised affine layers as the sole
+    source of randomness -- exactly the intended control.
+    """
+    import torch
+
+    torch.manual_seed(seed)
+    n = n2d = nbias = nnorm = 0
+    for name, p in module.named_parameters():
+        if p.dim() >= 2:
+            torch.nn.init.xavier_uniform_(p)
+            n2d += 1
+        elif name.endswith(".bias") or name == "bias":
+            torch.nn.init.zeros_(p)
+            nbias += 1
+        else:
+            torch.nn.init.ones_(p)
+            nnorm += 1
+        n += 1
+    return n, n2d, nbias, nnorm
+
+
 def check_random_weights(make_forward_fn, model, s_inputs, baseline, seed=0):
     """Re-init the model randomly; attribution should fall apart.
 
     If randomised weights reproduce the trained attribution, the method is
     reading input geometry rather than anything the model learned. This is the
-    cheapest check that can kill the project outright.
+    cheapest check that can kill the project outright -- which is exactly why
+    the randomisation itself has to be sane; see :func:`randomise_`.
     """
-    import torch
     from igv.attrib import plain_gradient
 
     trained = plain_gradient(make_forward_fn(model), s_inputs, baseline=baseline)
     tm = trained.grad.squeeze(0).norm(dim=-1).detach().cpu().numpy()
 
+    # NOTE (not fixed here): this deepcopy doubles resident model VRAM inside
+    # the most memory-constrained stage of the pipeline.
     rnd = copy.deepcopy(model)
-    torch.manual_seed(seed)
-    n = 0
-    for p in rnd.parameters():
-        if p.dim() >= 2:
-            torch.nn.init.xavier_uniform_(p)
-        else:
-            torch.nn.init.zeros_(p)
-        n += 1
+    n, n2d, nbias, nnorm = randomise_(rnd, seed=seed)
     rm = plain_gradient(make_forward_fn(rnd), s_inputs, baseline=baseline)
     rm = rm.grad.squeeze(0).norm(dim=-1).detach().cpu().numpy()
 
     rho = float(spearman(tm, rm))
+    split = (
+        f"reinitialised {n} parameter tensors ({n2d} xavier, "
+        f"{nbias} zeroed biases, {nnorm} unit norms). "
+    )
+    if not np.isfinite(rho):
+        # A non-finite Spearman is a broken-arm report, never a scientific
+        # finding: it means one arm's per-token gradient magnitude had zero
+        # variance. Do NOT emit the project-killing text here.
+        return _result(
+            "random_weights", False, rho,
+            split + "ERROR: Spearman is not finite, i.e. one arm's per-token "
+            "gradient magnitude has zero variance (a constant gradient). That "
+            "is a degenerate-model artifact of this check, NOT evidence that "
+            "the method reads input geometry. Investigate the randomised "
+            "forward pass before drawing any conclusion.",
+        )
     return _result(
         "random_weights", abs(rho) < 0.3, rho,
-        f"reinitialised {n} parameter tensors. "
+        split
         + (
             "PASS: randomising the model destroys the attribution, so the signal "
             "depends on learned weights."
@@ -155,20 +195,60 @@ def check_random_weights(make_forward_fn, model, s_inputs, baseline, seed=0):
     )
 
 
-def check_dead_target(s_inputs, baseline):
-    """Attribute a constant objective; attribution must vanish.
+def check_dead_target(forward_fn, s_inputs, baseline):
+    """Attribute an objective that RUNS the model but whose gradient must vanish.
 
-    The objective is built as ``(x * 0).sum() + 1`` rather than a bare constant
-    so the autograd graph still connects to the input -- otherwise .backward()
-    raises instead of returning the zeros we want to observe.
+    The objective comes from :func:`igv.attrib.make_dead_target` and is
+    ``f(x.detach()) + 0.0 * x.sum()``. Its VALUE is the real Boltz score at the
+    real input -- featurisation, the trunk, the confidence head and the score
+    selection all determine it -- while its gradient w.r.t. ``x`` is exactly
+    zero because the only graph-connected term carries weight zero. A non-zero
+    result therefore means autograd reached the input along a path that should
+    not exist: an in-place aliasing bug, a leaked non-detached reference, or a
+    checkpoint recompute wired to the wrong tensor.
+
+    This replaces ``(x * 0).sum() + 1``, which had neither ``model`` nor
+    ``forward_fn`` in scope. Its gradient was analytically zero for any
+    autograd implementation, so no Boltz code path could influence the outcome
+    and the only thing it could have caught was a bug in multiply-by-zero. It
+    passed with ``value: 0.0`` in the very run where all four real gradient
+    checks OOM'd -- a result that was model-independent by construction is not
+    evidence.
+
+    Cost: ONE forward, run under ``no_grad`` on a detached input, plus a
+    backward that traverses only the zero-weighted connector. Unlike the
+    full-trunk backward checks it therefore cannot OOM. It is deliberately
+    ``plain_gradient`` and not ``integrated_gradient(m_steps=8)``: a
+    model-dependent value at the real input is the whole payload, and 8 nodes
+    would cost 8 forwards to re-derive the same zero.
+
+    ``baseline`` is accepted for runner-signature symmetry; a single-point
+    gradient needs no path reference.
     """
-    from igv.attrib import integrated_gradient
+    from igv.attrib import make_dead_target, plain_gradient
 
-    res = integrated_gradient(
-        lambda x: (x * 0.0).sum() + 1.0, s_inputs, baseline=baseline, m_steps=8
-    )
+    dead = make_dead_target(forward_fn)
+    seen = {}
+
+    def objective(x):
+        out = dead(x)
+        # Record the model score from the pass we already paid for rather than
+        # calling forward_fn a second time.
+        seen["value"] = float(out.detach())
+        return out
+
+    # MEASURE on the VM: this is the first version of the check that touches
+    # the model, so record peak VRAM here (igv.gpu.PeakMemory) and confirm the
+    # forward alone stays well under the card. The reasoning says it must --
+    # no_grad forward, backward only over the zero-weighted connector, i.e.
+    # cheaper than signal_control's 30 no-grad forwards, which complete on runs
+    # where every gradient check OOMs -- but that is reasoning, not a number.
+    res = plain_gradient(objective, s_inputs)
     mx = float(res.grad.abs().max())
-    return _result("dead_target", mx < 1e-8, mx, f"max|grad| = {mx:.3e}")
+    val = seen.get("value", float("nan"))
+    return _result(
+        "dead_target", mx < 1e-8, mx, f"max|grad| = {mx:.3e}, f(x) = {val:.6f}"
+    )
 
 
 def check_signal_control(score_of_sequence, lib, n_sample=30, seed=0):
@@ -217,10 +297,10 @@ def check_frozen_vs_full(make_forward_fn, model, s_inputs, baseline):
     b = frozen.grad.squeeze(0).norm(dim=-1).detach().cpu().numpy()
     rho = float(spearman(a, b))
     ratio = float(np.linalg.norm(b) / (np.linalg.norm(a) + 1e-12))
-    r = _result("frozen_vs_full", True, {"spearman": rho, "magnitude_ratio": ratio},
-                f"spearman={rho:.4f} |frozen|/|full|={ratio:.4f}")
-    r["informational"] = True
-    return r
+    # The "informational" flag is set by _result from INFORMATIONAL, so the
+    # exception path in main() carries it too.
+    return _result("frozen_vs_full", True, {"spearman": rho, "magnitude_ratio": ratio},
+                   f"spearman={rho:.4f} |frozen|/|full|={ratio:.4f}")
 
 
 def check_arm_assertion(dataset, score, chain, results_dir=Path("results")):
@@ -290,10 +370,13 @@ def main() -> None:
         print("\nGate: exits non-zero if any non-informational check fails.")
         return
 
-    _require_vram()
+    # Same 78 GiB gate and same IGV_SKIP_VRAM_CHECK=1 escape as before, now
+    # from igv.gpu (DEFAULT_MIN_VRAM_GIB = 78.0) instead of a local copy.
+    require_vram()
 
     from igv.boltz_score import (
         SCORES, build_complex_feats, confidence_forward, embedder_only, load_model,
+        numerics_arm,
     )
     import torch
 
@@ -348,7 +431,7 @@ def main() -> None:
         "m_sweep": lambda: check_m_sweep(forward_fn, s_inputs, baseline),
         "random_weights": lambda: check_random_weights(
             make_forward_fn, model, s_inputs, baseline),
-        "dead_target": lambda: check_dead_target(s_inputs, baseline),
+        "dead_target": lambda: check_dead_target(forward_fn, s_inputs, baseline),
         "signal_control": lambda: check_signal_control(
             score_of_sequence, lib, n_sample=args.n_sample),
         "frozen_vs_full": lambda: check_frozen_vs_full(
@@ -377,7 +460,7 @@ def main() -> None:
         inputs={"dataset": args.dataset, "structure": str(pdb)},
         params={"checks": selected, "n_sample": args.n_sample},
         arm={"score": args.score, "dataset": args.dataset, "chain": args.chain,
-             "method": "sanity"},
+             "method": "sanity", **numerics_arm()},
         notes="Tier-0 gate. Non-informational failures make downstream numbers void.",
     )
 

@@ -40,6 +40,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from igv.data import build_library, read_pdb_chains  # noqa: E402
+from igv.gpu import require_vram  # noqa: E402
 from igv.provenance import write as prov_write  # noqa: E402
 
 log = logging.getLogger("scan")
@@ -55,33 +56,6 @@ _COLUMNS = [
     "binding_score",
     "model_score",
 ]
-
-
-# 78, not 80: an 80GB-class card reports 81920 MiB to nvidia-smi but
-# torch's total_memory returns the usable framebuffer after the ECC/reserve
-# carve-out -- 79.2 GiB on A100-SXM4-80GB. A gate of 80 is unreachable on
-# the exact hardware this project targets. 78 still rejects a 40GB A100.
-def _require_vram(min_gib: int = 78) -> None:
-    """Fail fast rather than OOM 30 minutes in.
-
-    Duplicated per-script on purpose: the GPU stages are meant to be runnable
-    standalone, and this check is three lines.
-    """
-    if os.environ.get("IGV_SKIP_VRAM_CHECK") == "1":
-        log.warning("IGV_SKIP_VRAM_CHECK=1 -- skipping the %d GiB check", min_gib)
-        return
-    import torch
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("No CUDA device. Set IGV_SKIP_VRAM_CHECK=1 to override.")
-    gib = torch.cuda.get_device_properties(0).total_memory / 1024**3
-    if gib < min_gib:
-        raise RuntimeError(
-            f"GPU 0 has {gib:.1f} GiB; this project needs >= {min_gib} GiB. "
-            "Full-trunk Boltz-2 work fills an entire 80 GB card. "
-            "Set IGV_SKIP_VRAM_CHECK=1 to override at your own risk."
-        )
-    log.info("GPU 0: %.1f GiB", gib)
 
 
 def stratified_sample(n_mut: np.ndarray, n_sample: int, seed: int) -> np.ndarray:
@@ -171,7 +145,10 @@ def main() -> None:
         log.info("--dry-run: would score %d mutants with score=%s", len(todo), args.score)
         return
 
-    _require_vram()
+    # Same 78 GiB gate as before, and still AFTER the --dry-run return above so the
+    # no-GPU dry run keeps working. require_vram() logs the usable GiB itself, which
+    # is why the old log.info("GPU 0: %.1f GiB", gib) line is not repeated here.
+    require_vram()
 
     from igv.attrib import free_cuda_memory
     from igv.boltz_score import (
@@ -180,6 +157,7 @@ def main() -> None:
         confidence_forward,
         embedder_only,
         load_model,
+        numerics_arm,
     )
     import torch
 
@@ -273,9 +251,15 @@ def main() -> None:
             "score": args.score,
             "method": "scan",
             "trunk": "forward_only",
-            "geometry": "fixed_wt",
+            # WAS "geometry": "fixed_wt" -- unsupported. Measured 0.0 for
+            # coords.abs().max() on igv-gpu 2026-09-04: a sequence-only YAML
+            # puts every atom at the origin, so the geometry is fixed but is
+            # not the wild-type structure. Stage 03 records the measured value;
+            # this label no longer asserts what was never checked.
+            "geometry": "fixed_from_featurisation",
             "dataset": args.dataset,
             "chain": args.chain,
+            **numerics_arm(),
         },
         notes="Brute-force ground truth for T1/T2. Fixed WT geometry shared with stage 03.",
     )

@@ -8,8 +8,10 @@ The trunk is run with per-block gradient checkpointing to fit within
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,6 +26,366 @@ log = logging.getLogger(__name__)
 # ~16.3 GiB at one block per checkpoint) while recomputing only 4 blocks at a
 # time. Override with IGV_PF_GROUP_SIZE.
 _PF_GROUP_SIZE = 4
+
+
+# ---------------------------------------------------------------------------
+# Chunk / precision / kernel configuration
+#
+# Every knob below has an IGV_* environment variable (the convention set by
+# IGV_PF_CHUNK) and a default that reproduces this file's behaviour before the
+# knob existed, so a GPU run at default settings is bit-identical. All of these
+# resolvers are pure and torch-free at import time, so they are unit-testable on
+# a laptop with neither CUDA nor boltz installed.
+# ---------------------------------------------------------------------------
+
+# The chunk-size fields that make up one profile. `chunk_profile()` returns
+# exactly these six (the frozen public contract); `select_chunk_profile()`
+# additionally returns "profile" and "conf_chunk" for internal use.
+_CHUNK_PROFILE_KEYS = (
+    "pf_chunk",
+    "msa_chunk_heads_pwa",
+    "msa_chunk_trans_z",
+    "msa_chunk_trans_msa",
+    "msa_chunk_outer",
+    "msa_chunk_tri",
+)
+
+# Legal values of IGV_CHUNK_PROFILE.
+_CHUNK_PROFILES = ("auto", "large", "small")
+
+
+def select_chunk_profile(
+    n_tokens: int,
+    threshold: int = 384,
+    env: Mapping[str, str] | None = None,
+) -> dict:
+    """Resolve the chunk-size configuration for a complex of *n_tokens* tokens.
+
+    Boltz switches chunking algorithm at ``boltz.data.const.chunk_size_threshold``
+    (384 in boltz 2.2.1). Above it the trunk runs small triangle-attention chunks
+    and all four MSA chunk knobs are engaged; at or below it the chunks are large
+    and every MSA knob is off. Those are two *different algorithms*, which is why
+    a memory/time sweep must not fit a single curve across L=384 -- force one
+    profile with ``IGV_CHUNK_PROFILE`` instead.
+
+    ``IGV_CHUNK_PROFILE``:
+      * ``auto`` (default) -- size-dependent, exactly the historical behaviour
+        (``n_tokens > threshold`` selects "large").
+      * ``large`` / ``small`` -- force that branch regardless of *n_tokens*.
+
+    ``IGV_PF_CHUNK`` overrides the triangle-attention chunk size. NOTE the
+    pre-existing asymmetry, preserved here deliberately: in the "large" profile
+    it sets both ``pf_chunk`` and ``msa_chunk_tri`` (both defaulting to 128); in
+    the "small" profile it sets only ``pf_chunk`` (default 512) while
+    ``msa_chunk_tri`` is hardcoded 512. Changing that would change today's
+    numbers, so it stays.
+
+    Pure function: no torch, no boltz, no CUDA. *env* defaults to ``os.environ``
+    and is injectable for tests.
+
+    Returns
+    -------
+    dict
+        ``profile`` ("large"/"small"), the six keys of ``_CHUNK_PROFILE_KEYS``,
+        and ``conf_chunk`` (the confidence pairformer stack's chunk size, which
+        :func:`enable_confidence_checkpointing` used to re-derive independently).
+    """
+    if env is None:
+        env = os.environ
+    requested = str(env.get("IGV_CHUNK_PROFILE", "auto")).strip().lower() or "auto"
+    if requested not in _CHUNK_PROFILES:
+        raise ValueError(
+            f"IGV_CHUNK_PROFILE={requested!r} is not recognised; legal values "
+            f"are {list(_CHUNK_PROFILES)}."
+        )
+
+    if requested == "auto":
+        profile = "large" if int(n_tokens) > int(threshold) else "small"
+    else:
+        profile = requested
+
+    if profile == "large":
+        return {
+            "profile": "large",
+            "pf_chunk": int(env.get("IGV_PF_CHUNK", 128)),
+            "msa_chunk_heads_pwa": True,
+            "msa_chunk_trans_z": 64,
+            "msa_chunk_trans_msa": 32,
+            "msa_chunk_outer": 4,
+            "msa_chunk_tri": int(env.get("IGV_PF_CHUNK", 128)),
+            "conf_chunk": 128,
+        }
+    return {
+        "profile": "small",
+        "pf_chunk": int(env.get("IGV_PF_CHUNK", 512)),
+        "msa_chunk_heads_pwa": False,
+        "msa_chunk_trans_z": None,
+        "msa_chunk_trans_msa": None,
+        "msa_chunk_outer": None,
+        # Not env-overridable in the small profile -- matches the historical code.
+        "msa_chunk_tri": 512,
+        "conf_chunk": 512,
+    }
+
+
+def chunk_profile(
+    n_tokens: int, threshold: int = 384, profile: str | None = None
+) -> dict:
+    """Chunk-size configuration for *n_tokens*, as the six-key public contract.
+
+    Thin projection of :func:`select_chunk_profile` onto exactly
+    ``_CHUNK_PROFILE_KEYS``. *profile* (``"large"``/``"small"``) forces a branch;
+    when it is None the value of ``IGV_CHUNK_PROFILE`` is used, and when that is
+    unset the selection is size-dependent -- today's behaviour.
+    """
+    env = dict(os.environ)
+    if profile is not None:
+        env["IGV_CHUNK_PROFILE"] = str(profile)
+    resolved = select_chunk_profile(n_tokens, threshold, env)
+    return {key: resolved[key] for key in _CHUNK_PROFILE_KEYS}
+
+
+# IGV_AUTOCAST: name -> torch dtype attribute (None == no autocast at all).
+_AUTOCAST_DTYPES: dict[str, str | None] = {
+    "off": None,
+    "none": None,
+    "0": None,
+    "fp32": None,
+    "float32": None,
+    "bf16": "bfloat16",
+    "bfloat16": "bfloat16",
+}
+
+# Rejected outright, not merely discouraged -- see resolve_autocast_dtype.
+_AUTOCAST_REJECTED = ("fp16", "float16", "half")
+
+
+def resolve_autocast_dtype(
+    spec: str | None = None, env: Mapping[str, str] | None = None
+):
+    """Resolve ``IGV_AUTOCAST`` to a torch dtype, or None for no autocast.
+
+    Default ``"off"`` returns None and does not even import torch, which is
+    today's exact behaviour: this repo runs the trunk in fp32 with no autocast
+    anywhere.
+
+    ``bf16``/``bfloat16`` are accepted. fp16 **raises**: there is no
+    ``GradScaler`` anywhere in this repo, and fp16's 5-bit exponent would break
+    the post-checkpoint guards in :func:`confidence_forward` (finiteness and
+    ``abs() > 1e-12``), which only stay meaningful because bf16 shares fp32's
+    8-bit exponent (bf16 min normal ~1.2e-38).
+    """
+    if spec is None:
+        env = os.environ if env is None else env
+        spec = env.get("IGV_AUTOCAST", "off")
+    key = str(spec).strip().lower() or "off"
+    if key in _AUTOCAST_REJECTED:
+        raise ValueError(
+            f"IGV_AUTOCAST={spec!r} is refused. fp16 needs a torch.cuda.amp "
+            "GradScaler and this repo has none (grep GradScaler: zero hits), "
+            "and fp16's 5-bit exponent would break the finiteness / non-zero "
+            "guards after the outer checkpoint in confidence_forward. Use "
+            "'bf16', which shares fp32's 8-bit exponent."
+        )
+    if key not in _AUTOCAST_DTYPES:
+        raise ValueError(
+            f"IGV_AUTOCAST={spec!r} is not recognised; legal values are "
+            f"{sorted(_AUTOCAST_DTYPES)} (fp16 is refused deliberately)."
+        )
+    name = _AUTOCAST_DTYPES[key]
+    if name is None:
+        return None
+    import torch
+
+    return getattr(torch, name)
+
+
+_TRUE_FLAGS = ("1", "true", "yes", "on")
+_FALSE_FLAGS = ("0", "false", "no", "off", "")
+
+
+def _parse_bool_flag(name: str, value) -> bool:
+    if isinstance(value, bool):
+        return value
+    key = str(value).strip().lower()
+    if key in _TRUE_FLAGS:
+        return True
+    if key in _FALSE_FLAGS:
+        return False
+    raise ValueError(
+        f"{name}={value!r} is not a boolean; use one of "
+        f"{list(_TRUE_FLAGS)} / {list(_FALSE_FLAGS[:-1])}."
+    )
+
+
+def resolve_use_kernels(
+    model=None, spec: str | None = None, env: Mapping[str, str] | None = None
+) -> tuple[bool, bool]:
+    """Resolve ``(use_kernels, use_cuequiv_attn)`` from ``IGV_USE_KERNELS`` /
+    ``IGV_TRI_ATTN_KERNEL``. Both default False == today's exact behaviour.
+
+    This collapses eight scattered ``use_kernels`` decision points in this file
+    into one flag. One of those eight is invisible to ``grep use_kernels``: a
+    bare positional ``False`` passed as ``MSALayer.forward``'s 10th positional
+    parameter.
+
+    ENABLING THIS BUYS ZERO MEMORY TODAY and is plumbing/hygiene only. Both
+    boltz kernel paths import ``cuequivariance_torch`` (boltz 2.2.1
+    ``triangular_attention/primitives.py:201`` and ``triangular_mult.py:22``),
+    which ``constraints.txt`` forbids installing and ``scripts/cloud/bootstrap.sh``
+    actively enforces. So the flag fails eagerly and loudly here rather than from
+    inside a checkpointed backward recompute stack. Lifting that ban is a user
+    policy decision that this flag does not make, and it would first require
+    re-verifying cuequivariance's dtype/version support (unverifiable in this
+    environment) and pinning it on BOTH ends -- boltz declares it only as an
+    unbounded optional extra ``>=0.5.0``.
+
+    ``IGV_TRI_ATTN_KERNEL`` is the narrow variant: it turns on the triangle
+    ATTENTION kernel only, leaving triangle-multiplication on the reference
+    path. It is reachable solely at the two sites where this module calls
+    ``PairformerLayer`` directly (``PairformerModule.forward`` does not forward
+    ``use_cuequiv_attn``), i.e. the checkpointed trunk group and the confidence
+    stack; it is a no-op for ``model.msa_module(...)``,
+    ``model.pairformer_module(...)`` and ``model.confidence_module(...)``.
+
+    When *spec* is None and ``IGV_USE_KERNELS`` is unset the result is a literal
+    ``False``, which is exactly what the eight call sites hardcoded before this
+    refactor. It deliberately does NOT inherit
+    ``getattr(model, "use_kernels", False)``: ``Boltz2`` is restored with
+    ``load_from_checkpoint``, so that attribute comes from the checkpoint's saved
+    hyperparameters and is not verifiable in this environment (boltz is not
+    installed here). If it ever came back True, inheriting it would silently
+    switch the trunk to the kernel path -- changing the algorithm AND disabling
+    triangle-attention chunking -- on a run where nobody asked for it, and would
+    then hard-fail on the missing ``cuequivariance_torch``. A disagreement is
+    logged instead, so the model's own flag is visible without being obeyed.
+    """
+    env = os.environ if env is None else env
+
+    if spec is None:
+        spec = env.get("IGV_USE_KERNELS")
+    if spec is None:
+        # Preserve the pre-refactor literal False. See the docstring for why the
+        # model's own attribute is reported but not inherited.
+        use_kernels = False
+        if bool(getattr(model, "use_kernels", False)):
+            log.warning(
+                "model.use_kernels is True but IGV_USE_KERNELS is unset; "
+                "keeping use_kernels=False, which is what this module's call "
+                "sites hardcoded before IGV_USE_KERNELS existed. Set "
+                "IGV_USE_KERNELS=1 to honour the model's flag."
+            )
+    else:
+        use_kernels = _parse_bool_flag("IGV_USE_KERNELS", spec)
+
+    attn_spec = env.get("IGV_TRI_ATTN_KERNEL")
+    use_cuequiv_attn = (
+        False if attn_spec is None else _parse_bool_flag("IGV_TRI_ATTN_KERNEL", attn_spec)
+    )
+
+    if use_kernels or use_cuequiv_attn:
+        log.warning(
+            "Kernel path requested (use_kernels=%s, use_cuequiv_attn=%s). This "
+            "also DISABLES triangle-attention chunking entirely (boltz "
+            "attention.py:157 `if chunk_size is not None and not use_kernels`), "
+            "so IGV_PF_CHUNK and IGV_TRI_ATTN_CKPT become inert.",
+            use_kernels, use_cuequiv_attn,
+        )
+        try:
+            import cuequivariance_torch  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "IGV_USE_KERNELS / IGV_TRI_ATTN_KERNEL requested but "
+                "cuequivariance_torch is not importable. (a) Both boltz kernel "
+                "paths import it (boltz 2.2.1 triangular_attention/"
+                "primitives.py:201 and triangular_mult.py:22). (b) "
+                "constraints.txt forbids installing cuequivariance and "
+                "scripts/cloud/bootstrap.sh enforces that. (c) Lifting the ban "
+                "is a user policy decision, not something this flag does. "
+                "Unset the flag, or take the policy decision explicitly first."
+            ) from exc
+
+    return bool(use_kernels), bool(use_cuequiv_attn)
+
+
+def resolve_tri_attn_ckpt(
+    flag: bool | None = None, env: Mapping[str, str] | None = None
+) -> bool:
+    """Resolve ``IGV_TRI_ATTN_CKPT``. Default ``"0"`` == today's behaviour.
+
+    See :func:`enable_triangle_attention_chunk_checkpointing` for what it does
+    and why IGV_PF_CHUNK is not a substitute.
+    """
+    if flag is not None:
+        return bool(flag)
+    env = os.environ if env is None else env
+    return _parse_bool_flag("IGV_TRI_ATTN_CKPT", env.get("IGV_TRI_ATTN_CKPT", "0"))
+
+
+def resolve_msa_spec(
+    msa: str | None = None, env: Mapping[str, str] | None = None
+) -> str | None:
+    """Resolve ``IGV_MSA_SPEC``. Default unset -> None == today's behaviour
+    (no ``msa`` key is emitted in the YAML at all).
+
+    ``"server"`` also resolves to None: it is the name callers use for "let the
+    MSA server generate it", which in YAML terms means emitting no ``msa`` key
+    (boltz then reads ``msa_id == 0`` = auto-generate). Emitting the literal
+    string "server" instead would make boltz treat it as a path to a custom
+    .a3m/.csv."""
+    if msa is None:
+        env = os.environ if env is None else env
+        msa = env.get("IGV_MSA_SPEC")
+    if msa is None:
+        return None
+    value = str(msa).strip()
+    if value == "" or value.lower() == "server":
+        return None
+    return value
+
+
+def resolve_assert_feat_seq(env: Mapping[str, str] | None = None) -> bool:
+    """Resolve ``IGV_ASSERT_FEAT_SEQ``. Default ``"1"`` (ON): the featurised
+    sequence check is a correctness guard, so it is on by default.
+    ``IGV_ASSERT_FEAT_SEQ=0`` downgrades the raise to a ``log.error`` so a
+    debugging session is never hard-blocked."""
+    env = os.environ if env is None else env
+    return _parse_bool_flag("IGV_ASSERT_FEAT_SEQ", env.get("IGV_ASSERT_FEAT_SEQ", "1"))
+
+
+def numerics_arm(env: Mapping[str, str] | None = None) -> dict:
+    """The knobs that change the numbers, for a provenance ``arm`` dict.
+
+    Every stage that writes an artifact must stamp this, because two runs that
+    differ only in ``IGV_AUTOCAST`` produce DIFFERENT SCORES from IDENTICAL
+    inputs. Without it a bf16 artifact is byte-indistinguishable from an fp32
+    one at the provenance level, and the first person to compare them gets a
+    wrong answer with nothing in the record to warn them. ``08_memscale``
+    already writes an equivalent ``pinned_env`` block into its own artifact;
+    this is the same information in the shared shape the other stages use.
+
+    Measured 2026-09-04 on igv-gpu at L=730: bf16 moves ``grad_abs_max`` by up
+    to 3.6% versus fp32, against a ~1.7% nondeterminism floor established by a
+    mathematically-transparent control (per-chunk checkpointing). So the
+    perturbation is small but real and must never be silently mixed.
+
+    Returns plain JSON-safe values; ``autocast`` is the resolved string rather
+    than a torch dtype so this stays importable with no torch.
+    """
+    env = os.environ if env is None else env
+    autocast = str(env.get("IGV_AUTOCAST", "off")).strip().lower() or "off"
+    return {
+        "autocast": autocast,
+        "dtype": "fp32" if autocast in ("off", "none", "") else autocast,
+        "tri_attn_ckpt": resolve_tri_attn_ckpt(env=env),
+        "pf_group_size": max(1, int(env.get("IGV_PF_GROUP_SIZE", _PF_GROUP_SIZE))),
+        "pf_chunk": env.get("IGV_PF_CHUNK"),
+        "chunk_profile": env.get("IGV_CHUNK_PROFILE", "auto"),
+        "use_kernels": _parse_bool_flag(
+            "IGV_USE_KERNELS", env.get("IGV_USE_KERNELS", "0")
+        ),
+    }
+
 
 SCORES: dict[str, Callable[[dict], Any]] = {}
 
@@ -62,6 +424,37 @@ _register_score("complex_plddt", _complex_plddt)
 _register_score("iptm", _iptm)
 _register_score("ptm", _ptm)
 _register_score("protein_iptm", _protein_iptm)
+
+
+# ---------------------------------------------------------------------------
+# Residue-token decoding tables
+#
+# Pinned copies of boltz 2.2.1 `boltz/data/const.py` (`canonical_tokens` at
+# :95-117, `tokens` at :119-135, `prot_letter_to_token`/`prot_token_to_letter`
+# at :140-171). They exist ONLY as a fallback so featurised_sequences() -- and
+# its unit tests -- work in an environment where boltz is not installed. The
+# real tables are preferred at runtime; if boltz ever changes them, boltz wins
+# and these are dead weight rather than a silent disagreement.
+# ---------------------------------------------------------------------------
+
+_CANONICAL_TOKENS_2_2_1 = (
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+    "UNK",
+)
+
+_BOLTZ_TOKENS_2_2_1 = (
+    "<pad>", "-", *_CANONICAL_TOKENS_2_2_1,
+    "A", "G", "C", "U", "N",          # rna
+    "DA", "DG", "DC", "DT", "DN",     # dna
+)
+
+_PROT_TOKEN_TO_LETTER_2_2_1 = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C", "GLU": "E",
+    "GLN": "Q", "GLY": "G", "HIS": "H", "ILE": "I", "LEU": "L", "LYS": "K",
+    "MET": "M", "PHE": "F", "PRO": "P", "SER": "S", "THR": "T", "TRP": "W",
+    "TYR": "Y", "VAL": "V", "UNK": "X", "-": "-",
+}
 
 # ---------------------------------------------------------------------------
 # Model loading
@@ -215,6 +608,8 @@ def build_complex_feats(
     cache_dir: Path,
     device,
     use_msa_server: bool = True,
+    msa: str | None = None,
+    msa_spec: str | None = None,
 ) -> tuple[dict, dict[tuple[str, int], int]]:
     """Featurise a multi-chain complex for Boltz-2.
 
@@ -224,13 +619,53 @@ def build_complex_feats(
         Maps chain id to amino-acid sequence, e.g.
         ``{"H": "EVQL...", "L": "DIQM...", "A": "MKYL..."}``.
     structure_pdb : Path
-        Wild-type complex PDB used as the fixed structure reference.
+        ACCEPTED BUT NEVER READ. It is kept because four call sites pass it
+        positionally, but ``grep -n structure_pdb`` over this module finds only
+        the parameter and its docstring: features come solely from the
+        sequences-only YAML written below. Consequence for the reader: the
+        "GEOMETRY IS FIXED ... Boltz featurisation places the wild-type atom
+        coordinates into feats['coords']" claim logged by scripts/03_attribute.py
+        and scripts/04_scan.py is NOT sourced from the deposited PDB. boltz's
+        schema parser sets every parsed atom's coords to (0,0,0) for
+        sequence-only YAML input (boltz 2.2.1 parse/schema.py:733, :880), so
+        ``x_pred`` is very likely all zeros. NOT changed here -- this function
+        just logs ``feats["coords"].abs().max()`` at INFO so the next GPU run
+        settles it without new code.
     cache_dir : Path
-        Scratch directory for Boltz intermediate files.
+        Scratch directory for Boltz intermediate files. MUST BE UNIQUE PER
+        SEQUENCE: boltz's ``process_inputs`` skips any input whose YAML stem is
+        already in ``<cache_dir>/processed/records`` (boltz 2.2.1
+        main.py:724-742) and this function always writes the stem "input", so a
+        reused directory silently returns the FIRST sequence's features. The
+        sequence check below (``IGV_ASSERT_FEAT_SEQ``, default ON) catches it.
     device : torch.device
         Target device.
     use_msa_server : bool
         Whether to query ColabFold for MSAs.
+    msa : str | None
+        Per-chain ``msa`` entry for the YAML. Default None emits NO ``msa`` key,
+        which is today's exact behaviour. Boltz reads it as
+        ``msa = items[0][entity_type].get("msa", 0)``; ``"empty"`` becomes -1 =
+        single-sequence mode, and any other non-zero value is treated as a path
+        to a custom .a3m/.csv (boltz 2.2.1 parse/schema.py:1112-1140).
+        Overridable per-run with ``IGV_MSA_SPEC`` so a sweep can force
+        ``IGV_MSA_SPEC=empty`` without editing call sites. ``"server"`` is
+        accepted as a synonym for None (emit no key and let the MSA server
+        generate one).
+    msa_spec : str | None
+        Alias of *msa*, accepted because the memory sweep in
+        scripts/08_memscale.py resolves this parameter by name. Passing both
+        with different values raises.
+
+        Two things to know before using it. (1) With no ``msa`` key a protein
+        chain gets ``msa_id == 0`` meaning auto-generate, and then
+        ``use_msa_server=False`` RAISES ("Missing MSA's in input and
+        --use_msa_server flag not set", boltz 2.2.1 main.py:565-583) -- which is
+        exactly what makes offline featurisation impossible today.
+        (2) ``msa="empty"`` changes the memory profile of the 4 MSA blocks
+        (ERRORS_LOG.md attributes 3.25 GiB to ``_msa_forward_checkpointed``), so
+        a reference point measured WITH MSAs is not comparable to one measured
+        without. Any artifact must record which was used.
 
     Returns
     -------
@@ -247,9 +682,20 @@ def build_complex_feats(
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    if msa is not None and msa_spec is not None and str(msa) != str(msa_spec):
+        raise ValueError(
+            f"build_complex_feats got conflicting msa={msa!r} and "
+            f"msa_spec={msa_spec!r}; they are aliases, pass one."
+        )
+    resolved_msa = resolve_msa_spec(msa if msa is not None else msa_spec)
     sequences = []
     for chain_id, seq in chains.items():
-        sequences.append({"protein": {"id": chain_id, "sequence": seq}})
+        entry = {"id": chain_id, "sequence": seq}
+        if resolved_msa is not None:
+            entry["msa"] = resolved_msa
+        sequences.append({"protein": entry})
+    if resolved_msa is not None:
+        log.info("YAML msa spec: %r (default None emits no msa key)", resolved_msa)
 
     spec = {"version": 1, "sequences": sequences}
     spec_path = cache_dir / "input.yaml"
@@ -269,6 +715,21 @@ def build_complex_feats(
         f"Token count mismatch: expected {expected_tokens} from chain "
         f"sequences, got {n_pad} non-padding tokens in feats"
     )
+
+    # The count check above is invariant under a same-length point mutation, so
+    # it cannot see a stale cache. Compare the actual residues.
+    _check_featurised_sequences(chains, feats, token_map)
+
+    coords = feats.get("coords")
+    if coords is not None:
+        try:
+            log.info(
+                "feats['coords'].abs().max() = %.6g (0.0 means the "
+                "sequence-only YAML produced no geometry, i.e. x_pred is zeros)",
+                float(coords.abs().max()),
+            )
+        except Exception as exc:  # instrumentation must never break a run
+            log.debug("Could not summarise feats['coords']: %r", exc)
 
     return feats, token_map
 
@@ -432,6 +893,190 @@ def _build_token_map(
     return token_map
 
 
+def _residue_letter_table() -> list[str]:
+    """Token-id -> one-letter code, preferring the installed boltz tables.
+
+    Falls back to the pinned boltz-2.2.1 copies above when boltz is not
+    importable, so this is testable on a laptop.
+    """
+    try:
+        from boltz.data import const as _c
+
+        tokens = list(_c.tokens)
+        token_to_letter = dict(_c.prot_token_to_letter)
+    except Exception:
+        tokens = list(_BOLTZ_TOKENS_2_2_1)
+        token_to_letter = dict(_PROT_TOKEN_TO_LETTER_2_2_1)
+
+    table = []
+    for name in tokens:
+        letter = token_to_letter.get(name)
+        if letter is None:
+            # RNA tokens are already single letters; DNA tokens and <pad> have
+            # no protein letter, so they decode to "X".
+            letter = name if len(name) == 1 else "X"
+        table.append(letter)
+    return table
+
+
+def _canonical_letter(letter: str) -> str:
+    """The one-letter code a requested residue will DECODE back to.
+
+    Boltz round-trips a sequence letter through
+    ``prot_letter_to_token`` -> ``prot_token_to_letter``, and that is lossy by
+    design: B, J, Z, O, U and X all become UNK and decode back to "X". Comparing
+    raw letters would therefore report a spurious mismatch on any sequence
+    containing one, so the requested letter is canonicalised the same way.
+    """
+    try:
+        from boltz.data import const as _c
+
+        letter_to_token = dict(_c.prot_letter_to_token)
+        token_to_letter = dict(_c.prot_token_to_letter)
+    except Exception:
+        letter_to_token = {v: k for k, v in _PROT_TOKEN_TO_LETTER_2_2_1.items()}
+        letter_to_token.update(
+            {"J": "UNK", "B": "UNK", "Z": "UNK", "O": "UNK", "U": "UNK"}
+        )
+        token_to_letter = dict(_PROT_TOKEN_TO_LETTER_2_2_1)
+
+    token = letter_to_token.get(letter.upper())
+    if token is None:
+        return letter.upper()
+    return token_to_letter.get(token, "X")
+
+
+def _decode_residue_tokens(feats: dict) -> list[tuple[int, str]]:
+    """Decode ``feats`` to ``[(asym_id, one_letter), ...]`` in token order.
+
+    Padding positions are dropped, so the index into the returned list is the
+    same global token index that :func:`_build_token_map` produces (it filters
+    by ``token_pad_mask`` before measuring asym_id runs).
+
+    ``res_type`` is a ONE-HOT tensor ``(1, L, num_tokens)`` -- boltz's
+    featurizer stores ``one_hot(res_type.long(), num_classes=const.num_tokens)``
+    -- so the token id is ``argmax`` over the last axis.
+    """
+    table = _residue_letter_table()
+
+    res_type = feats["res_type"]  # KeyError here is the caller's bug, not ours
+    ids = res_type[0].argmax(-1)
+    ids = ids.tolist() if hasattr(ids, "tolist") else list(ids)
+
+    asym = feats["asym_id"][0]
+    asym = asym.tolist() if hasattr(asym, "tolist") else list(asym)
+
+    pad = feats.get("token_pad_mask")
+    if pad is None:
+        keep = [True] * len(ids)
+    else:
+        pad0 = pad[0]
+        pad0 = pad0.tolist() if hasattr(pad0, "tolist") else list(pad0)
+        keep = [bool(v) for v in pad0]
+
+    out: list[tuple[int, str]] = []
+    for tok_id, asym_val, ok in zip(ids, asym, keep):
+        if not ok:
+            continue
+        idx = int(tok_id)
+        letter = table[idx] if 0 <= idx < len(table) else "X"
+        out.append((int(asym_val), letter))
+    return out
+
+
+def featurised_sequences(feats: dict) -> dict[int, str]:
+    """Decode the residue sequence Boltz actually featurised, per chain.
+
+    Returns ``{asym_id_value: one_letter_sequence}``, built only from
+    ``feats["res_type"]``, ``feats["asym_id"]`` and ``feats["token_pad_mask"]``.
+    Pure apart from an optional lazy boltz import for the token tables, so it
+    runs on CPU with a synthetic feats dict and no boltz installed.
+
+    This is what makes the stale-feature hazard checkable rather than assumed:
+    the pre-existing guard in :func:`build_complex_feats` compares token COUNTS,
+    which are invariant under a same-length point mutation -- and every mutant in
+    the 4fqi H1 library is same-length by construction.
+    """
+    decoded = _decode_residue_tokens(feats)
+    seqs: dict[int, list[str]] = {}
+    for asym_val, letter in decoded:
+        seqs.setdefault(asym_val, []).append(letter)
+    return {k: "".join(v) for k, v in seqs.items()}
+
+
+def _check_featurised_sequences(
+    chains: dict[str, str], feats: dict, token_map: dict[tuple[str, int], int]
+) -> None:
+    """Verify that the featurised residues are the sequences we asked for.
+
+    Uses the chain ordering ``_build_token_map`` already resolved from asym_id
+    runs rather than re-deriving it. Raises ``RuntimeError`` (not ``assert``, so
+    it survives ``python -O``) on the first mismatch, unless
+    ``IGV_ASSERT_FEAT_SEQ=0``, which downgrades it to ``log.error``.
+
+    The failure this defends against: boltz's ``process_inputs`` skips any input
+    whose YAML stem is already present in ``<cache_dir>/processed/records``
+    (boltz 2.2.1 ``main.py:724-742``), and this module always writes the stem
+    "input", so a cache_dir reused across different sequences silently returns
+    the FIRST sequence's features.
+
+    Honest status of that hazard, so nobody re-litigates it from scratch: it is
+    real in the code, but NOT yet proven to have fired. The recorded
+    signal_control run in results/sanity_4fqi_h1_complex_pde.json shows 30
+    DISTINCT scores (std 1.49e-2), which identical features could not produce,
+    even though that script re-featurises all 30 mutants into one shared
+    directory. Rather than guess which side is wrong, this check makes each run
+    verify.
+    """
+    if "res_type" not in feats or "asym_id" not in feats:
+        # Never block a run over missing instrumentation inputs.
+        log.warning(
+            "Cannot verify featurised sequences: feats lacks res_type/asym_id."
+        )
+        return
+
+    decoded = _decode_residue_tokens(feats)
+    strict = resolve_assert_feat_seq()
+
+    for chain_id, seq in chains.items():
+        for resi, raw_expected in enumerate(seq):
+            expected = _canonical_letter(raw_expected)
+            key = (chain_id, resi)
+            if key not in token_map:
+                continue
+            tok = token_map[key]
+            if tok >= len(decoded):
+                continue
+            observed = decoded[tok][1]
+            if observed == expected:
+                continue
+            expected_seq = "".join(_canonical_letter(c) for c in seq)
+            observed_seq = "".join(
+                decoded[token_map[(chain_id, i)]][1]
+                for i in range(len(seq))
+                if (chain_id, i) in token_map
+                and token_map[(chain_id, i)] < len(decoded)
+            )
+            msg = (
+                f"Featurised sequence does not match the requested chains. "
+                f"Chain {chain_id!r} differs first at residue index {resi}: "
+                f"requested {expected!r}, featurised {observed!r} "
+                f"(requested {expected_seq!r}, featurised {observed_seq!r}). "
+                "MOST LIKELY CAUSE: boltz's process_inputs skips any input "
+                "whose YAML stem is already present in "
+                "<cache_dir>/processed/records, and this repo always writes the "
+                "stem \"input\", so a cache_dir reused across different "
+                "sequences returns the FIRST sequence's features. Pass a unique "
+                "cache_dir per sequence -- scripts/04_scan.py already does this "
+                "with cache_dir/f\"boltz_scan/{row_i}\". Set "
+                "IGV_ASSERT_FEAT_SEQ=0 to downgrade this to a logged error."
+            )
+            if strict:
+                raise RuntimeError(msg)
+            log.error("%s", msg)
+            return
+
+
 # ---------------------------------------------------------------------------
 # Forward functions
 # ---------------------------------------------------------------------------
@@ -450,8 +1095,11 @@ def enable_confidence_checkpointing(model) -> int:
     The trunk (``pairformer_module`` / ``msa_module``) is checkpointed per block
     by :func:`confidence_forward`, but ``confidence_module.pairformer_stack`` was
     not, so during the outer checkpoint's backward recompute every one of its
-    layers' L x L activations materialised at once. On a 753-token complex
-    (4fqi: HA 336+185 + Fab 123+109) that overruns an 80 GiB A100, OOMing at
+    layers' L x L activations materialised at once. On a 730-token complex
+    (4fqi: HA A=324 + B=176, Fab H=121 + L=109 = 730, as parsed by
+    igv.data.read_pdb_chains from data/raw/4fqi_hlab.pdb; the "753" in
+    ERRORS_LOG.md entry 12 does not match its own token count and is left as the
+    historical record) that overruns an 80 GiB A100, OOMing at
     ``transition.py: silu(fc1(x)) * fc2(x)`` while trying to allocate 1.02 GiB
     with 78.43 GiB already held.
 
@@ -488,12 +1136,27 @@ def enable_confidence_checkpointing(model) -> int:
     except Exception:
         _threshold = 384
 
+    # use_kernels itself is NOT switched here: boltz's ConfidenceModule forwards
+    # its own use_kernels into pairformer_stack by keyword and _checkpointed_forward
+    # takes it as a parameter, so the value already flows in from the
+    # model.confidence_module(...) call in confidence_forward. A second switch
+    # here is how the two paths drift apart. use_cuequiv_attn is different: it is
+    # NOT forwarded by PairformerModule.forward, so the only way to reach it is
+    # this direct-layer call. Resolved once, at rebind time; the default is False.
+    _, _use_cuequiv_attn = resolve_use_kernels(model)
+
     def _checkpointed_forward(self, s, z, mask, pair_mask, use_kernels: bool = False):
-        # Mirrors PairformerModule.forward's eval-mode branch.
-        chunk_size_tri_attn = 128 if z.shape[1] > _threshold else 512
+        # Mirrors PairformerModule.forward's eval-mode branch. The chunk size
+        # used to be re-derived here as `128 if z.shape[1] > _threshold else 512`;
+        # it now comes from the same pure function as the trunk's, so
+        # IGV_CHUNK_PROFILE moves both branches together.
+        chunk_size_tri_attn = select_chunk_profile(
+            int(z.shape[1]), _threshold
+        )["conf_chunk"]
         for layer in self.layers:
             s, z = _ckpt(
                 layer, s, z, mask, pair_mask, chunk_size_tri_attn, use_kernels,
+                False, _use_cuequiv_attn,
                 use_reentrant=False,
             )
         return s, z
@@ -507,6 +1170,138 @@ def enable_confidence_checkpointing(model) -> int:
     return len(stack.layers)
 
 
+def enable_triangle_attention_chunk_checkpointing(model) -> int:
+    """Checkpoint each triangle-attention CHUNK so its softmax is not retained.
+
+    This is the memory lever ``IGV_PF_CHUNK`` was believed to be and is not.
+    Verified in the pinned boltz 2.2.1 source: ``chunk_layer``
+    (``triangular_attention/utils.py:322-375``) is a plain
+    ``for _ in range(no_chunks)`` loop calling ``layer(**chunks)`` at :339 with
+    NO ``torch.no_grad``, NO ``detach`` and NO recompute, so EVERY chunk's
+    softmax output is saved for backward and the retained total is
+    chunk-size-INVARIANT (chunking is marginally worse: it also allocates the
+    ``out`` buffer via ``t.new_zeros`` at :343).
+
+    Wrapping the per-chunk ``self.mha`` call in a checkpoint changes that: the
+    softmax is recomputed during backward instead of retained, so the retained
+    cost becomes O(one chunk) at recompute time rather than O(L). The trade is
+    one extra forward of triangle attention per chunk during backward -- pure
+    compute for memory, with no numerical change (bit-identical fp32 recompute).
+
+    Nesting, so nobody re-derives it: this puts a non-reentrant checkpoint inside
+    the non-reentrant per-group pairformer checkpoint inside the reentrant OUTER
+    checkpoint of :func:`confidence_forward`. Non-reentrant inside non-reentrant
+    is torch's standard recursive case. The ``torch.is_grad_enabled()`` bypass in
+    the wrapper is REQUIRED, not an optimisation: the outer checkpoint is
+    ``use_reentrant=True``, which runs the whole wrapped function under
+    ``torch.no_grad()``, so during the forward nothing requires grad and a
+    non-reentrant checkpoint would emit "None of the inputs have
+    requires_grad=True" once per chunk per attention per layer -- thousands of
+    lines. All the savings come from the backward recompute, where grad IS
+    enabled.
+
+    Scope: ``model.modules()`` catches the trunk pairformer (64 layers), the
+    confidence pairformer stack (8 layers) and the MSA module's triangle
+    attention -- two ``TriangleAttention`` instances per pairformer layer
+    (start + end). No narrower selector until a measurement asks for one.
+
+    Like :func:`enable_confidence_checkpointing` this is a ONE-WAY monkeypatch of
+    boltz internals: it rebinds a bound method and is never undone, so a later
+    call with the feature disabled does not get the plain implementation back on
+    the same model object. Idempotent via the ``_igv_chunk_ckpt`` sentinel. We
+    stay in eval mode throughout and never call ``.train()``.
+
+    Returns the number of ``TriangleAttention`` modules newly wrapped.
+
+    NEEDS GPU CONFIRMATION -- what to measure, stated so it can be falsified: at
+    IGV_PF_GROUP_SIZE=1 the softmax term should drop from the 11.59 GiB
+    ERRORS_LOG entry 12 attributes to primitives.py:170 toward ~1.3 GiB per layer
+    (retained per-attention outputs ~0.254 GiB x2 plus one live ~1.02 GiB chunk
+    transient during recompute), i.e. roughly 77.64 -> ~67 GiB peak, and
+    IGV_PF_CHUNK should for the first time visibly move the peak. If the measured
+    peak does NOT drop by ~10 GiB, suspect that the rebind did not take effect --
+    check the count returned here is non-zero (expect 64*2 + 8*2 + the MSA
+    module's attentions).
+    """
+    import types
+
+    import torch
+    from torch.utils.checkpoint import checkpoint as _ckpt
+
+    from boltz.model.layers.triangular_attention.attention import TriangleAttention
+    from boltz.model.layers.triangular_attention.utils import chunk_layer
+
+    def _make_chunk(module):
+        def _chunk(self, x, tri_bias, mask_bias, mask, chunk_size,
+                   use_kernels: bool = False):
+            # Reproduces TriangleAttention._chunk exactly except for the
+            # checkpoint. chunk_layer calls layer(**chunks), so the wrapper must
+            # accept precisely these five keyword names.
+            def _ckpt_mha(q_x, kv_x, tri_bias, mask_bias, mask):
+                if not torch.is_grad_enabled():
+                    return self.mha(q_x, kv_x, tri_bias, mask_bias, mask, use_kernels)
+                return _ckpt(
+                    self.mha, q_x, kv_x, tri_bias, mask_bias, mask, use_kernels,
+                    use_reentrant=False,
+                )
+
+            mha_inputs = {
+                "q_x": x,
+                "kv_x": x,
+                "tri_bias": tri_bias,
+                "mask_bias": mask_bias,
+                "mask": mask,
+            }
+            return chunk_layer(
+                _ckpt_mha,
+                mha_inputs,
+                chunk_size=chunk_size,
+                no_batch_dims=len(x.shape[:-2]),
+                _out=None,
+            )
+
+        return _chunk
+
+    wrapped = 0
+    for module in model.modules():
+        if not isinstance(module, TriangleAttention):
+            continue
+        if getattr(module, "_igv_chunk_ckpt", False):
+            continue
+        module._chunk = types.MethodType(_make_chunk(module), module)
+        module._igv_chunk_ckpt = True
+        wrapped += 1
+
+    log.info(
+        "Triangle-attention per-chunk checkpointing: %d newly wrapped, %d already "
+        "instrumented (one-way rebind; softmax is recomputed in backward, not "
+        "retained)",
+        wrapped,
+        count_tri_attn_chunk_ckpt(model) - wrapped,
+    )
+    return wrapped
+
+
+def count_tri_attn_chunk_ckpt(model) -> int:
+    """How many ``TriangleAttention`` modules currently carry the chunk rebind.
+
+    The counterpart to
+    :func:`enable_triangle_attention_chunk_checkpointing`'s return value, which
+    counts only what *this* call wrapped. Reusing one model object -- which
+    ``08_memscale`` does across its whole ladder and ``07_sanity`` does across
+    ``signal_control``'s mutants -- makes that return 0 while the lever is
+    fully active, so "is it on?" has to be asked of the model, not of the
+    last call.
+    """
+    from boltz.model.layers.triangular_attention.attention import TriangleAttention
+
+    return sum(
+        1
+        for module in model.modules()
+        if isinstance(module, TriangleAttention) and getattr(module, "_igv_chunk_ckpt", False)
+    )
+
+
 def confidence_forward(
     model,
     s_inputs,
@@ -515,6 +1310,8 @@ def confidence_forward(
     score_name: str,
     gradient_checkpointing: bool = True,
     recycling_steps: int = 1,
+    autocast_dtype: str | None = None,
+    triangle_attention_chunk_checkpointing: bool | None = None,
 ):
     """Run the full trunk from ``s_inputs``, then the confidence head.
 
@@ -526,6 +1323,37 @@ def confidence_forward(
     simultaneously. When ``gradient_checkpointing`` is set, the confidence
     module's own pairformer stack gets the same treatment -- see
     :func:`enable_confidence_checkpointing`.
+
+    Optional knobs, all defaulting to today's exact behaviour:
+
+    autocast_dtype : str | None
+        Overrides ``IGV_AUTOCAST`` (default "off" = no autocast anywhere, i.e.
+        full fp32 as this repo has always run). ``"bf16"`` wraps ONLY the
+        trunk+confidence dispatch below in ``torch.autocast("cuda", ...)``; the
+        post-checkpoint guards and every caller's ``score.backward()`` stay
+        outside it, which is sufficient because both checkpoint flavours stash
+        the autocast state at forward and re-enter it during the backward
+        recompute (verified on torch 2.5.1 with this module's exact reentrant/
+        non-reentrant nesting; RE-VERIFY on the VM's pinned torch 2.7.1+cu126).
+        ``fp16`` raises -- see :func:`resolve_autocast_dtype`.
+
+        What bf16 does NOT fix, so it is not re-budgeted as a 2x saving: boltz
+        2.2.1 ``pairformer.py:104-110`` opens ``with torch.autocast("cuda",
+        enabled=False)`` and calls ``s.float()``, ``z.float()``,
+        ``mask.float()``, so the SEQUENCE track of all 64 trunk layers stays
+        fp32 and each layer takes a full fp32 copy of z (0.254 GiB at L=730) as
+        attention bias. The softmax term does move to boltz's bf16 branch
+        (``primitives.py:168`` instead of ``:170``, the site ERRORS_LOG blames);
+        the boundary-z term should follow but MUST be confirmed by printing
+        ``z_.dtype`` at the group-checkpoint boundary. And the score VALUE will
+        change: every recorded score, signal_control and the completeness gate
+        has to be re-derived under bf16, never compared across dtypes, and the
+        dtype must land in the provenance arm dict of the calling stage.
+    triangle_attention_chunk_checkpointing : bool | None
+        Overrides ``IGV_TRI_ATTN_CKPT`` (default off). Meaningful only when
+        ``gradient_checkpointing`` is true -- the saving is entirely in the
+        backward recompute -- and ignored with a warning otherwise. See
+        :func:`enable_triangle_attention_chunk_checkpointing`.
     """
     import torch
     from torch.utils.checkpoint import checkpoint as _checkpoint
@@ -536,11 +1364,54 @@ def confidence_forward(
             f"Unknown score {score_name!r}; available: {sorted(SCORES)}"
         )
 
+    # Knobs. Every default reproduces the pre-knob behaviour exactly.
+    _amp_dtype = resolve_autocast_dtype(autocast_dtype)
+    if _amp_dtype is not None:
+        log.warning(
+            "IGV_AUTOCAST=%s -- scores are NOT comparable to fp32 runs. "
+            "Re-derive every reference score, signal_control and the "
+            "completeness gate under this dtype and record it in the "
+            "provenance arm dict.",
+            _amp_dtype,
+        )
+    _use_kernels, _use_cuequiv_attn = resolve_use_kernels(model)
+    _tri_attn_ckpt = resolve_tri_attn_ckpt(triangle_attention_chunk_checkpointing)
+
     if gradient_checkpointing:
         # The confidence stack needs the same per-block treatment as the trunk;
-        # without it the backward recompute OOMs at 753 tokens. See
+        # without it the backward recompute OOMs at 730 tokens. See
         # enable_confidence_checkpointing for why .train() is not the answer.
         enable_confidence_checkpointing(model)
+        if _tri_attn_ckpt:
+            _n_tri = enable_triangle_attention_chunk_checkpointing(model)
+            # "0 newly wrapped" has two causes with OPPOSITE meanings: the
+            # rebind is idempotent (guarded by ``_igv_chunk_ckpt``), so any
+            # caller that reuses one model object -- 08_memscale across its
+            # ladder, 07_sanity across signal_control's mutants -- legitimately
+            # wraps 0 on every call after the first while the lever stays fully
+            # in effect. Only "nothing is instrumented" deserves the warning;
+            # emitting it for the reuse case told the operator to "expect no
+            # memory change" on a run where all 156 modules were checkpointed,
+            # which would misread the whole sweep.
+            _n_live = count_tri_attn_chunk_ckpt(model)
+            if _n_live == 0:
+                log.warning(
+                    "IGV_TRI_ATTN_CKPT is on but no TriangleAttention module is "
+                    "instrumented (the module layout changed). Expect no memory "
+                    "change."
+                )
+            elif _n_tri == 0:
+                log.info(
+                    "Triangle-attention chunk checkpointing already active on %d "
+                    "modules from an earlier call on this model object; still in "
+                    "effect (the rebind is idempotent).",
+                    _n_live,
+                )
+    elif _tri_attn_ckpt:
+        log.warning(
+            "IGV_TRI_ATTN_CKPT ignored: it only saves memory inside the "
+            "backward recompute, which requires gradient_checkpointing=True."
+        )
 
     device = s_inputs.device
     mask = feats["token_pad_mask"].float()
@@ -556,12 +1427,42 @@ def confidence_forward(
         _threshold = _boltz_const.chunk_size_threshold
     except Exception:
         _threshold = 384
-    # Triangle-attention chunk size. This is the dominant VRAM term at scale:
-    # the attention weights are (chunk, heads, L, L), so at L=730 with chunk
-    # 128 and 4 heads each chunk is ~1.09 GiB, and a peak profile attributed
-    # 25.22 GiB to 26 live ones (primitives.py:170 softmax_no_cast). Halving
-    # the chunk halves that term and costs only extra sequential chunks.
-    _pf_chunk = int(os.environ.get("IGV_PF_CHUNK", 128 if _n_tokens > _threshold else 512))
+
+    # Triangle-attention chunk size, and the MSA chunk knobs that move with it.
+    #
+    # CORRECTION (this comment previously claimed the opposite). Halving
+    # IGV_PF_CHUNK does NOT halve the retained softmax, and it cannot reduce
+    # total retained memory at all. boltz 2.2.1
+    # triangular_attention/utils.py:322-375 (`chunk_layer`) is a plain
+    # `for _ in range(no_chunks)` loop calling `layer(**chunks)` at :339 with NO
+    # torch.no_grad, NO detach and NO recompute, so every chunk's softmax output
+    # is saved for backward and the retained total is chunk-size-INVARIANT.
+    # Chunking is in fact marginally WORSE: it also allocates the `out` buffer
+    # via `t.new_zeros` at :343.
+    #
+    # The arithmetic confirms it exactly. chunk_layer chunks over the batch dims
+    # x.shape[:-2] == [1, I], and _prep_qkv gives q/k/v of
+    # [1, I, H, J, C_hidden], so the softmax tensor at primitives.py:191 is
+    # [chunk, H, J, J]. At L=730, H=4, fp32:
+    #     one chunk of 128 : 128*4*730*730*4B = 1.0164 GiB
+    #     full attention   : 730*4*730*730*4B = 5.7968 GiB
+    #     per PairformerLayer (tri_att_start + tri_att_end) = 11.5936 GiB
+    # 11.59 GiB is precisely what ERRORS_LOG.md entry 12 attributes to
+    # primitives.py:170 across 12 tensors at IGV_PF_GROUP_SIZE=1
+    # (12 = 2 attentions x 6 chunks, since 730 = 5x128 + 90), and 1.02 GiB is
+    # precisely the failing allocation in every recorded OOM. That is the whole
+    # explanation of commit b1c29cc ("chunk knobs do not fix the OOM").
+    #
+    # So IGV_PF_CHUNK is a TRANSIENT / FRAGMENTATION control ONLY: it bounds the
+    # largest single LIVE allocation (1.0164 GiB at 128, 0.1271 GiB at 16) and
+    # therefore the size of the request that fails, not the total held. For the
+    # knob that actually reduces the retained softmax, see
+    # enable_triangle_attention_chunk_checkpointing / IGV_TRI_ATTN_CKPT.
+    _profile = select_chunk_profile(_n_tokens, _threshold)
+    log.info(
+        "chunk profile: %s (n_tokens=%d, threshold=%d, pf_chunk=%d)",
+        _profile["profile"], _n_tokens, _threshold, _profile["pf_chunk"],
+    )
 
     # How many pairformer blocks share one checkpoint. Env-overridable so the
     # memory/recompute tradeoff can be tuned per complex size without a code
@@ -571,37 +1472,27 @@ def confidence_forward(
     _n_pf_blocks = len(model.pairformer_module.layers)
     _n_msa_blocks = model.msa_module.msa_blocks
 
-    if _n_tokens > _threshold:
-        _msa_chunk_heads_pwa = True
-        _msa_chunk_trans_z = 64
-        _msa_chunk_trans_msa = 32
-        _msa_chunk_outer = 4
-        _msa_chunk_tri = int(os.environ.get("IGV_PF_CHUNK", 128))
-    else:
-        _msa_chunk_heads_pwa = False
-        _msa_chunk_trans_z = None
-        _msa_chunk_trans_msa = None
-        _msa_chunk_outer = None
-        _msa_chunk_tri = 512
-
     # recycling_steps is a caller parameter (default 1, matching the
     # predecessor repo's "1 for speed, 3 for quality"). It is also the single
     # biggest VRAM lever: the trunk runs recycling_steps+1 iterations and each
     # one saves a checkpoint boundary tensor per block, so at 730 tokens
     # 64 blocks x 2 iterations x 0.254 GiB = 32.5 GiB of saved z alone.
 
-    def _pairformer_block_fn(s_, z_, mask_, pair_mask_, layer_idx_dummy):
-        idx = int(layer_idx_dummy.item())
-        return model.pairformer_module.layers[idx](
-            s_, z_, mask_, pair_mask_, _pf_chunk, use_kernels=False
-        )
+    # (A dead _pairformer_block_fn used to sit here with no caller. Deleted:
+    # two near-identical block runners is how the two paths drift apart. The
+    # live path is _pairformer_group_fn, called from the loop below.)
 
     def _pairformer_group_fn(s_, z_, mask_, pair_mask_, span):
         """Run pairformer layers [span[0], span[1]) as ONE checkpoint unit."""
         start, stop = int(span[0].item()), int(span[1].item())
         for i in range(start, stop):
+            # Positional args 6-8 are use_kernels, use_cuequiv_mul,
+            # use_cuequiv_attn. Reaching use_cuequiv_attn is only possible
+            # because we call the layer directly: PairformerModule.forward does
+            # not forward it. Both flags default False.
             s_, z_ = model.pairformer_module.layers[i](
-                s_, z_, mask_, pair_mask_, _pf_chunk, use_kernels=False
+                s_, z_, mask_, pair_mask_, _profile["pf_chunk"],
+                _use_kernels, False, _use_cuequiv_attn,
             )
         return s_, z_
 
@@ -609,12 +1500,14 @@ def confidence_forward(
         idx = int(layer_idx_dummy.item())
         return model.msa_module.layers[idx](
             z_, m_, token_mask_, msa_mask_,
-            _msa_chunk_heads_pwa,
-            _msa_chunk_trans_z,
-            _msa_chunk_trans_msa,
-            _msa_chunk_outer,
-            _msa_chunk_tri,
-            False,
+            _profile["msa_chunk_heads_pwa"],
+            _profile["msa_chunk_trans_z"],
+            _profile["msa_chunk_trans_msa"],
+            _profile["msa_chunk_outer"],
+            _profile["msa_chunk_tri"],
+            # MSALayer.forward's 10th POSITIONAL parameter is use_kernels. This
+            # was a bare `False` that no grep for "use_kernels" could find.
+            _use_kernels,
         )
 
     def _msa_forward_checkpointed(z_, s_interp_):
@@ -683,9 +1576,15 @@ def confidence_forward(
                         use_reentrant=False,
                     )
             else:
-                z_ = z_ + model.msa_module(z_, s_interp, feats, use_kernels=False)
+                # IGV_TRI_ATTN_KERNEL cannot reach these two module-level entry
+                # points (PairformerModule.forward does not forward
+                # use_cuequiv_attn), so only the combined flag applies here.
+                z_ = z_ + model.msa_module(
+                    z_, s_interp, feats, use_kernels=_use_kernels
+                )
                 s_, z_ = model.pairformer_module(
-                    s_, z_, mask=mask, pair_mask=pair_mask, use_kernels=False
+                    s_, z_, mask=mask, pair_mask=pair_mask,
+                    use_kernels=_use_kernels,
                 )
 
         pdistogram = model.distogram_module(z_)
@@ -700,7 +1599,10 @@ def confidence_forward(
             pred_distogram_logits=pred_distogram_logits,
             multiplicity=1,
             run_sequentially=False,
-            use_kernels=False,
+            # Flows on into confidence_module.pairformer_stack, which boltz
+            # calls with use_kernels=use_kernels -- so the rebound
+            # _checkpointed_forward receives it and must not switch it again.
+            use_kernels=_use_kernels,
         )
 
         scalar = SCORES[score_name](out_dict)
@@ -711,27 +1613,44 @@ def confidence_forward(
         # boundary -- see below. requires_grad is not meaningful in here.
         return scalar
 
-    if gradient_checkpointing:
-        from torch.utils.checkpoint import checkpoint as _ckpt
-        # use_reentrant=True is load-bearing for memory, and is why the guards
-        # below sit out here rather than inside _full_trunk_and_confidence.
-        #
-        # Reentrant checkpointing runs the wrapped function under
-        # torch.no_grad(), so NO autograd graph is built during the forward at
-        # all; the trunk is recomputed with grad during backward, where the
-        # per-block non-reentrant checkpoints bound peak memory. That two-level
-        # scheme is what makes this complex fit in 80 GB. Switching the outer
-        # call to use_reentrant=False builds the full forward graph and OOMs
-        # (measured: 79.25 GiB capacity, ~32 MiB free).
-        #
-        # The cost is that requires_grad is False for every tensor inside the
-        # function, so the guards cannot live there. They run here instead,
-        # where the value is real.
-        scalar = _ckpt(
-            _full_trunk_and_confidence, s_inputs, use_reentrant=True,
-        )
-    else:
-        scalar = _full_trunk_and_confidence(s_inputs)
+    # The ONE autocast injection point. Every caller inherits it, including the
+    # torch.no_grad() reference forwards used by the completeness check, so
+    # f(x) - f(baseline) and the path integral are never compared across dtypes.
+    # s_inputs is deliberately NOT cast: the fp32 leaf is load-bearing (the
+    # Gauss-Legendre weights in attrib.py are built at its dtype, and the .npz
+    # writer calls .numpy() with no .float()), and autocast gives bf16 compute
+    # while leaving the leaf and its .grad fp32.
+    _amp_ctx = (
+        torch.autocast("cuda", dtype=_amp_dtype)
+        if _amp_dtype is not None
+        else contextlib.nullcontext()
+    )
+    with _amp_ctx:
+        if gradient_checkpointing:
+            from torch.utils.checkpoint import checkpoint as _ckpt
+            # use_reentrant=True is load-bearing for memory, and is why the guards
+            # below sit out here rather than inside _full_trunk_and_confidence.
+            #
+            # Reentrant checkpointing runs the wrapped function under
+            # torch.no_grad(), so NO autograd graph is built during the forward at
+            # all; the trunk is recomputed with grad during backward, where the
+            # per-block non-reentrant checkpoints bound peak memory. That two-level
+            # scheme is what makes this complex fit in 80 GB. Switching the outer
+            # call to use_reentrant=False builds the full forward graph and OOMs
+            # (measured: 79.25 GiB capacity, ~32 MiB free).
+            #
+            # The cost is that requires_grad is False for every tensor inside the
+            # function, so the guards cannot live there. They run here instead,
+            # where the value is real.
+            scalar = _ckpt(
+                _full_trunk_and_confidence, s_inputs, use_reentrant=True,
+            )
+        else:
+            scalar = _full_trunk_and_confidence(s_inputs)
+    # Guards run OUTSIDE the autocast region, and callers run .backward()
+    # outside it too -- both checkpoint flavours stash the autocast state at
+    # forward and re-enter it during the backward recompute, so wrapping
+    # backward would add nothing and is unsupported.
 
     # Only demand a gradient when the caller actually asked for one. Callers
     # that just want a score -- the signal_control sanity check scores 30
@@ -792,7 +1711,14 @@ def record_iptm_argmax(out_dict, token_to_chain):
     ).unsqueeze(0)
     probs = torch.nn.functional.softmax(pae_logits, dim=-1)
 
-    N_res = torch.tensor([pae_logits.shape[1]], device=pae_logits.device, dtype=pae_logits.dtype)
+    # Pinned to fp32 rather than pae_logits.dtype on purpose: under bf16
+    # autocast torch.tensor(730.).to(torch.bfloat16) == 728.0 (bf16 spacing is 4
+    # in that binade), which would shift d0 below and silently move the reported
+    # ipTM argmax token. This path runs under no_grad, so only the recorded
+    # argmax is affected -- but a silent wrong number is still a wrong number.
+    N_res = torch.tensor(
+        [pae_logits.shape[1]], device=pae_logits.device, dtype=torch.float32
+    )
     d0 = 1.24 * (torch.clip(N_res, min=19) - 15) ** (1.0 / 3.0) - 1.8
     tm_value = 1.0 / (1.0 + (pae_value / d0) ** 2)
     tm_value = tm_value.unsqueeze(1).unsqueeze(2)

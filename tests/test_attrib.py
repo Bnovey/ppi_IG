@@ -16,6 +16,7 @@ from igv.attrib import (
     AttribResult,
     completeness_error,
     integrated_gradient,
+    make_dead_target,
     plain_gradient,
     predict_mutants,
     score_deltas,
@@ -278,3 +279,141 @@ def test_offload_threshold_default_is_above_a_500_token_pair_tensor():
 
     assert z_bytes(730) > DEFAULT_OFFLOAD_MIN_BYTES
     assert z_bytes(500) < DEFAULT_OFFLOAD_MIN_BYTES
+
+# ---------------------------------------------------------------------------
+# make_dead_target
+# ---------------------------------------------------------------------------
+
+
+class TestMakeDeadTarget:
+    """The dead-target check must be evidence, not a tautology.
+
+    The point of the helper is that the *value* comes from the real forward
+    while the *gradient* is exactly zero.  These tests pin both halves, plus
+    the two implementation properties the value depends on: the forward is
+    handed a detached tensor, and the objective is 0-dim.
+    """
+
+    @staticmethod
+    def _x():
+        torch.manual_seed(20)
+        return torch.randn(1, L, D)
+
+    def test_gradient_is_exactly_zero_plain(self):
+        x = self._x()
+        res = plain_gradient(make_dead_target(_quadratic_fn()), x)
+        assert float(res.grad.abs().max()) == 0.0
+
+    def test_gradient_is_exactly_zero_through_ig(self):
+        x = self._x()
+        baseline = torch.zeros_like(x)
+        res = integrated_gradient(
+            make_dead_target(_quadratic_fn()), x, baseline=baseline, m_steps=4,
+        )
+        assert float(res.grad.abs().max()) == 0.0
+        assert float(res.ig.abs().max()) == 0.0
+
+    def test_value_tracks_the_forward_fn(self):
+        """Change what forward_fn returns; the objective's value must follow.
+
+        This is the whole fix: today's ``(x * 0.0).sum() + 1.0`` records a
+        constant 1.0 no matter what the model does.
+        """
+        x = self._x()
+        obj = make_dead_target(_quadratic_fn())
+        assert float(obj(x)) == pytest.approx(float((x ** 2).sum()))
+
+        stub_value = {"v": 3.5}
+        stub = make_dead_target(lambda t: torch.as_tensor(stub_value["v"]))
+        first = float(stub(x))
+        stub_value["v"] = -11.25
+        second = float(stub(x))
+        assert first == pytest.approx(3.5)
+        assert second == pytest.approx(-11.25)
+        assert first != second
+
+    def test_value_is_model_dependent_not_constant_one(self):
+        """Two different models must give two different recorded values."""
+        x = self._x()
+        W = torch.randn(1, L, D)
+        v_quad = float(make_dead_target(_quadratic_fn())(x))
+        v_lin = float(make_dead_target(_linear_fn(W))(x))
+        assert v_quad != v_lin
+        assert v_quad != 1.0
+
+    def test_forward_fn_receives_a_detached_tensor(self):
+        """A detached input under no_grad is what keeps the check cheap.
+
+        ``confidence_forward`` also asserts ``scalar.requires_grad`` whenever
+        grad is enabled, so the inner forward must not run with grad on.
+        """
+        seen = {}
+
+        def stub(t):
+            seen["requires_grad"] = t.requires_grad
+            seen["grad_enabled"] = torch.is_grad_enabled()
+            return (t ** 2).sum()
+
+        plain_gradient(make_dead_target(stub), self._x())
+        assert seen["requires_grad"] is False
+        assert seen["grad_enabled"] is False
+
+    def test_objective_is_zero_dim_even_for_shape_1_forward(self):
+        x = self._x()
+        obj = make_dead_target(lambda t: (t ** 2).sum().reshape(1))
+        out = obj(x)
+        assert out.dim() == 0
+        # .backward() with no grad_output is the contract integrated_gradient
+        # relies on; it only works for a 0-dim tensor.
+        leaf = x.detach().requires_grad_(True)
+        obj(leaf).backward()
+        assert float(leaf.grad.abs().max()) == 0.0
+
+    def test_objective_dtype_and_device_follow_the_input(self):
+        x = torch.randn(1, L, D, dtype=torch.float64)
+        obj = make_dead_target(lambda t: torch.as_tensor(2.0, dtype=torch.float32))
+        out = obj(x)
+        assert out.dtype == x.dtype
+        assert out.device == x.device
+
+    def test_non_scalar_forward_is_rejected(self):
+        obj = make_dead_target(lambda t: t.sum(dim=-1))
+        with pytest.raises(ValueError, match="scalar forward_fn"):
+            obj(self._x())
+
+    def test_weight_gives_an_analytic_positive_control(self):
+        """weight != 0 makes the gradient analytically ``weight`` everywhere.
+
+        A zero reading there indicts the attribution plumbing, not the model,
+        so the same helper covers both directions of the check.
+        """
+        x = self._x()
+        res = plain_gradient(make_dead_target(_quadratic_fn(), weight=0.25), x)
+        torch.testing.assert_close(
+            res.grad, torch.full_like(res.grad, 0.25), rtol=0, atol=0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# uniform-quadrature alphas dtype
+# ---------------------------------------------------------------------------
+
+
+def test_uniform_quadrature_respects_embedding_dtype():
+    """``alphas`` must be built at ``embeddings.dtype``, like ``weights``.
+
+    Without an explicit dtype, ``torch.linspace`` takes the *global* default,
+    so the interpolation precision and the weighting precision could disagree.
+    """
+    W = torch.randn(1, L, D, dtype=torch.float64)
+    embeddings = torch.randn(1, L, D, dtype=torch.float64)
+    baseline = torch.zeros(1, L, D, dtype=torch.float64)
+
+    res = integrated_gradient(
+        _linear_fn(W), embeddings, baseline=baseline, m_steps=8,
+        quadrature="uniform",
+    )
+    assert res.grad.dtype == torch.float64
+    np.testing.assert_allclose(
+        res.grad.squeeze(0).numpy(), W.squeeze(0).numpy(), atol=1e-12,
+    )

@@ -74,9 +74,14 @@ def build_mean_aa_baseline(
 
 
 # Only tensors at least this large are moved to host RAM.  At 730 tokens the
-# pair representation z is (1, 730, 730, 128) fp32 = 254 MiB and clears the
-# bar; at ~500 tokens it is 119 MiB and stays on the GPU.  The threshold makes
-# the offload self-scaling: it engages only on the complexes that need it.
+# pair representation z is (1, 730, 730, 128) fp32 = 730*730*128*4 =
+# 272_844_800 B = 260.2 MiB and clears the bar; at 500 tokens it is
+# 128_000_000 B = 122.1 MiB and stays on the GPU.  The threshold makes the
+# offload self-scaling: it engages only on the complexes that need it.
+#
+# Note this threshold is calibrated on *fp32* z.  Under bf16 the same tensor
+# is 130.1 MiB, i.e. BELOW the 200 MiB bar, so the offload would silently stop
+# engaging at 730 tokens; a bf16 run wanting it must lower min_bytes.
 DEFAULT_OFFLOAD_MIN_BYTES = 200 * 1024**2
 
 
@@ -219,7 +224,17 @@ def integrated_gradient(
             weights_np, dtype=embeddings.dtype, device=embeddings.device
         )
     elif quadrature == "uniform":
-        alphas = torch.linspace(0.0, 1.0, m_steps + 1, device=embeddings.device)
+        # dtype=embeddings.dtype, matching ``weights`` below and the
+        # gausslegendre branch above: without it linspace silently takes the
+        # *global* default dtype, so a caller running under
+        # ``torch.set_default_dtype`` (or a non-fp32 embedding) would
+        # interpolate at a different precision than it weights with. No
+        # behaviour change at the repo's fp32 default -- the two dtypes
+        # already coincide there.
+        alphas = torch.linspace(
+            0.0, 1.0, m_steps + 1,
+            dtype=embeddings.dtype, device=embeddings.device,
+        )
         weights = torch.ones(
             len(alphas), dtype=embeddings.dtype, device=embeddings.device
         )
@@ -295,6 +310,84 @@ def plain_gradient(
         n_steps=1,
         quadrature="plain",
     )
+
+
+def make_dead_target(
+    forward_fn: Callable[[Tensor], Tensor],
+    weight: float = 0.0,
+) -> Callable[[Tensor], Tensor]:
+    """Build a gradient-path integrity objective whose value is real evidence.
+
+    The objective is ``f(x.detach()) + weight * x.sum()``, with the real
+    ``forward_fn`` evaluated under :func:`torch.no_grad`.  At the default
+    ``weight=0.0`` its gradient w.r.t. ``x`` is exactly zero, so attributing it
+    must return an all-zero gradient -- but its *value* is the genuine model
+    score, so the recorded number moves when the model does.
+
+    Why this replaces a hand-written ``(x * 0.0).sum() + 1.0``: that objective
+    is a PyTorch tautology.  Its gradient is analytically zero no matter what
+    the model, the trunk, the checkpointing or the score selection do, and its
+    value is the constant 1.0, so the only failure it can detect is an autograd
+    bug in scalar multiply-by-zero.  Here the same forward the production
+    attribution uses is actually executed, so a silently-zero or constant score
+    (boltz wraps ``compute_ptms`` in a bare ``except`` that returns zeros) shows
+    up in the recorded value.
+
+    A NON-zero ``max|grad|`` from this objective means autograd reached ``x``
+    through a path that does not exist in the returned expression: an in-place
+    write into a tensor derived from ``x``, or attribution machinery handing
+    back a stale or aliased ``.grad`` buffer.  That last one is the live
+    regression risk here -- :func:`integrated_gradient` accumulates into one
+    buffer across quadrature nodes and drops its leaf each step.
+
+    Cost: **one no-grad forward per quadrature node, and no full-trunk
+    backward.**  The ``no_grad`` + ``detach`` is mandatory, not cosmetic:
+
+    * it keeps the backward on the tiny ``weight * x.sum()`` branch, so the
+      check cannot OOM the way a real attribution does;
+    * ``confidence_forward`` asserts ``scalar.requires_grad`` whenever grad is
+      enabled (``src/igv/boltz_score.py:745-749``), which running the real
+      forward on a detached input under grad would trip.
+
+    For scale: this is comparable to ``signal_control``'s 30 no-grad forwards
+    in ``scripts/07_sanity.py``, which complete fine on runs where every
+    gradient check OOMs.
+
+    Parameters
+    ----------
+    forward_fn : callable
+        The real objective, ``fn(embeddings) -> scalar Tensor``.  It receives a
+        **detached** tensor, and is called inside ``torch.no_grad()``.
+    weight : float
+        Coefficient of the graph-connecting ``x.sum()`` term.  ``0.0`` (the
+        default) is the dead-target check.  A non-zero value turns the same
+        helper into a *positive* control: the gradient is then analytically
+        ``weight`` at every element, so a zero reading indicts the attribution
+        plumbing rather than the model.
+
+    Returns
+    -------
+    callable
+        ``objective(x) -> 0-dim Tensor``, safe to pass to
+        :func:`integrated_gradient` or :func:`plain_gradient`.
+    """
+
+    def _dead(x: Tensor) -> Tensor:
+        with torch.no_grad():
+            value = forward_fn(x.detach())
+        if not isinstance(value, Tensor):
+            value = torch.as_tensor(value)
+        if value.numel() != 1:
+            raise ValueError(
+                f"make_dead_target expects a scalar forward_fn, got shape "
+                f"{tuple(value.shape)}"
+            )
+        # reshape(()) normalises to 0-dim so .backward() needs no grad_output,
+        # matching the contract integrated_gradient already relies on.
+        value = value.detach().reshape(()).to(device=x.device, dtype=x.dtype)
+        return value + weight * x.sum()
+
+    return _dead
 
 
 def score_deltas(

@@ -67,4 +67,5 @@ Note: `1mlc` and `1n8z` are near-zero for every model.
 ## Documentation
 
 - Pipeline stages, artifact DAG, and provenance convention: [docs/PIPELINE.md](docs/PIPELINE.md)
+- Why full-trunk attribution does not fit in 80 GiB, and the `IGV_*` memory knobs: [docs/MEMORY.md](docs/MEMORY.md)
 - Research plan: [PLAN.md](PLAN.md)

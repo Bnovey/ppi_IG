@@ -17,7 +17,7 @@ SANITY   := results/sanity_$(DATASET)_$(SCORE).json
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup test lint fetch library deltas attribute scan predict metrics sanity stage0 all clean
+.PHONY: help setup test lint fetch library deltas attribute scan predict metrics sanity memscale memscale-plan stage0 all clean
 
 help: ## Print this help
 	@echo "IG validation pipeline"
@@ -32,7 +32,9 @@ help: ## Print this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*##' $(MAKEFILE_LIST) | \
 		awk -F ':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
 	@echo ""
-	@echo "GPU-requiring targets: deltas, attribute, scan, sanity"
+	@echo "GPU-requiring targets: deltas, attribute, scan, sanity, memscale"
+	@echo "memscale is a DIAGNOSTIC, deliberately outside 'all': it sweeps"
+	@echo "complex size to find the true peak VRAM and expects to OOM at the top."
 
 setup: ## Install the package in dev mode (CPU only)
 	$(PY) -m pip install -e ".[dev]"
@@ -76,6 +78,18 @@ metrics: ## Compute T1/T2/T3 evaluation metrics (CPU)
 
 sanity: ## Run sanity checks before expensive stages [GPU]
 	$(PY) $(SCRIPTS)/07_sanity.py --dataset $(DATASET) --score $(SCORE)
+
+# DIAGNOSTIC -- deliberately NOT in `all` and not in scripts/run_all.sh. The
+# sweep is expected to OOM at its largest points (that is the measurement), so
+# putting it in the default path would break every full run. Forces one chunk
+# profile across the sweep; see the script's docstring for why that is not
+# optional. Use SIZES=... to restrict the ladder, e.g. SIZES=230,406,500.
+memscale: ## Sweep complex size to measure the true peak VRAM [GPU, diagnostic]
+	$(PY) $(SCRIPTS)/08_memscale.py --dataset $(DATASET) --score $(SCORE) \
+		$(if $(SIZES),--sizes $(SIZES),)
+
+memscale-plan: ## Print the memscale ladder and pinned knobs, no GPU (CPU)
+	$(PY) $(SCRIPTS)/08_memscale.py --dataset $(DATASET) --score $(SCORE) --dry-run
 
 stage0: ## Cheapest end-to-end go/no-go on 4fqi_h1 (CPU stages only)
 	$(MAKE) fetch library DATASET=4fqi_h1
