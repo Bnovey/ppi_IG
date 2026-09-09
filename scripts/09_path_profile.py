@@ -330,10 +330,19 @@ def main(argv: list[str] | None = None) -> int:
             return float(forward_scalar(interp))
 
     def D_analytic_at(alpha):
+        # .backward() and interp.grad, NOT torch.autograd.grad: the trunk runs
+        # under a REENTRANT checkpoint (ERRORS_LOG entry 9 records that the
+        # non-reentrant outer checkpoint OOMs, so reentrant is load-bearing),
+        # and torch raises outright on the combination --
+        #   "When use_reentrant=True, torch.utils.checkpoint is incompatible
+        #    with .grad() or passing an `inputs` parameter to .backward()".
+        # attrib.integrated_gradient already uses backward() for this reason,
+        # and matching it keeps this diagnostic on the same code path as the
+        # thing it is diagnosing.
         interp = (b + alpha * d).detach().requires_grad_(True)
         val = forward_scalar(interp)
-        grad = torch.autograd.grad(val, interp)[0]
-        return float((grad * d).sum())
+        val.backward()
+        return float((interp.grad * d).sum())
 
     # --- CSV setup ---
     out_csv.parent.mkdir(parents=True, exist_ok=True)

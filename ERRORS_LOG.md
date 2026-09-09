@@ -373,3 +373,118 @@ Two caveats on the passes:
 `~/IG/probe_snap2.py` (allocation-trace replay attributing live bytes at peak by
 call site). Both untracked. `probe_snap2.py` is the one that turned this from
 guesswork into measurement — worth keeping.
+
+---
+
+# 2026-09-09 — Second GPU session: the completeness failure, resolved
+
+`docs/MEMSCALE_RESULTS.md` §6a left `completeness` failing by 4.64x at L=730
+with three unseparated causes. All three are now settled. The short version:
+**bf16 was innocent, the quadrature was guilty, and m=16 was never enough.**
+
+## 13. Completeness failed because m=16 under-resolves the path integral
+
+`07_sanity --checks completeness`, chain subset H+L+A (L=554), single-tenant
+A100-80GB, `IGV_TRI_ATTN_CKPT=1`, commit `a8e65b4`:
+
+| arm | f(x) | f(baseline) | expected | sum(ig) | rel err | |
+|---|---|---|---|---|---|---|
+| bf16 m=8 | 3.648877 | 12.028320 | −8.379443 | **+21.602146** | 2.5781 | FAIL |
+| bf16 m=16 | 3.649815 | 12.028320 | −8.378505 | −18.189129 | 1.1710 | FAIL |
+| **bf16 m=32** | 3.656438 | 12.028320 | −8.371882 | **−8.741840** | **0.0442** | **PASS** |
+| fp32 m=16 | 3.651461 | 11.749341 | −8.097880 | −22.029915 | 1.7205 | FAIL |
+
+For reference, the previously recorded L=730 bf16 m=16 run: rel err 3.6387.
+
+### bf16 is exonerated
+
+This was the experiment §6a called decisive, and it needed L=554 because fp32
+does not fit at 730 (79.57 GiB required against 79.20 usable). **fp32 does not
+merely also fail — it fails worse than bf16 at the same L and m**, 1.7205
+against 1.1710. Half precision cannot be what breaks completeness.
+
+Two corollaries worth stating, because both were live worries:
+
+- `IGV_TRI_ATTN_CKPT=1 IGV_AUTOCAST=bf16` stands. The memory fix did not buy
+  55.22 GiB by corrupting the gradient.
+- The score itself is barely dtype-sensitive here: f(x) is 3.649815 in bf16
+  against 3.651461 in fp32, a 0.05% gap, far inside the ~1.6% run-to-run noise
+  floor. bf16's fidelity on the forward pass is not in question either.
+
+### The integral converges, non-monotonically, and late
+
+The trajectory 2.5781 → 1.1710 → 0.0442 is real convergence, not luck: sum(ig)
+goes 21.60 → −18.19 → −8.74 against an expected −8.37. But note **the sign flips
+between m=8 and m=16**. That is not what a smooth integrand does under
+Gauss-Legendre, which converges exponentially on analytic functions, and reading
+it as proof of a divergent integral is a mistake this log records so it is not
+made twice. It is a sharp feature being badly under-resolved and then resolved
+once there are enough nodes.
+
+Why the feature is there, most likely: the baseline is `torch.zeros_like(
+s_inputs)`, an all-zeros embedding on no data manifold (f=12.03 there against
+3.65 at the real input), and Boltz-2's trunk normalises its input. Normalisation
+is homogeneous of degree zero, so `LN(alpha*x) = LN(x)` for alpha > 0 and the
+composed function is near-flat along most of the path with everything happening
+close to the origin. Gauss-Legendre's smallest node sits at alpha≈0.0198 for
+m=8, 0.0052 for m=16 and 0.0013 for m=32, so each doubling reaches into that
+region and the estimate only settles once it is resolved. **This is a hypothesis
+with a measurement attached, not a conclusion** — `scripts/09_path_profile.py`
+tests it by mapping F(alpha) and D_analytic(alpha) across three decades.
+
+### The error scales steeply with L
+
+rel err 1.1710 at L=554 against 3.6387 at L=730, while both endpoints barely
+move (f(x) 3.650 against 3.855, f(baseline) 12.028 against 12.449). The error
+tracks size, not the score. Two points fit an exponent near 4.1 in L, which is
+far too steep to trust from two points, but the direction is unambiguous:
+**a run at L=730 should be expected to need m>=64**, and the m=16 default in
+`03_attribute` is wrong for the IG arm at full complex size.
+
+Caveat to keep attached to that number: these ladder points differ in which
+chains, not only in how many tokens, and MSA depth varies per subset
+independently of L.
+
+- **Root cause:** `check_completeness`'s m_steps=16 default, and
+  `03_attribute --m-steps` defaulting to 15, are both below what this integrand
+  needs at these sizes.
+- **Fix:** not a code fix. Run the IG arm at m>=32, verified per L.
+- **Status:** resolved at L=554. Unverified at 730, where m>=64 is the estimate.
+
+## 14. Completeness was gating the wrong thing
+
+Worth recording because it cost most of a session to notice. `completeness`
+constrains `.ig = (x - baseline) * grad`. The pipeline's per-substitution
+predictions use `.grad`, and `attrib.py:402-404` says so explicitly, listing the
+`(x - baseline)` factor as belonging to the completeness identity alone.
+`HANDOFF.md` §6 lists using `.ig` for predictions as a trap.
+
+Further, the Makefile default is `METHOD ?= plain_grad` — a single gradient at
+the real input, with no path, no baseline and no quadrature, for which
+completeness is not merely satisfied but undefined. The efficiency claim that
+motivates the project (~16 backward passes against ~615 GPU-hours) is one pass
+per dataset, i.e. plain_grad; IG at m=16 would be sixteen times that and at the
+m>=32 this entry establishes, thirty-two.
+
+So a failing `completeness` gate blocks interpretation of the IG arm, and within
+that arm it constrains a tensor no downstream stage reads. It is a real check and
+worth keeping — it is what caught that m=16 is too coarse — but it is not
+evidence about plain_grad, and `07_sanity`'s "GATE FAILED: downstream T1/T2/T3
+numbers are NOT interpretable" text overstates its reach when the method under
+test is plain_grad.
+
+- **Status:** open as a documentation/gate-scoping issue. The gate text should
+  name the arm it applies to.
+
+## Environment notes from this session
+
+- Syncing the VM by shipping a `.git` tarball and `git reset --hard` works, but
+  build it with `COPYFILE_DISABLE=1` on macOS or it carries `._*` AppleDouble
+  files that land untracked and flip `git_dirty` — as do the untracked
+  `probe_*.py` diagnostics. Both are now gitignored, so this session's artifacts
+  are the first recording `git_dirty: false`.
+- Extract the tarball *over* the existing `.git` rather than deleting it, and
+  check `git merge-base --is-ancestor` before resetting: the VM had commits the
+  laptop did not on a previous occasion, and nothing warns you.
+- Measured timings at L=554, single-tenant: bf16 forward+backward 55 s, fp32
+  97 s — both within a second of the figures in `MEMSCALE_RESULTS.md` §6.

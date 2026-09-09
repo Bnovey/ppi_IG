@@ -158,8 +158,16 @@ def main() -> None:
         mut_chains = dict(chains)
         mut_chains[chain] = mutant_seq
 
+        # A UNIQUE cache_dir per sequence is mandatory, not hygiene. boltz's
+        # process_inputs skips any input whose YAML stem is already present in
+        # <cache_dir>/processed/records, and this repo always writes the stem
+        # "input" -- so a shared cache_dir hands back the FIRST sequence's
+        # features for every later mutant, and every delta comes out zero.
+        # 04_scan already keys its cache by row; this stage did not, and
+        # _check_featurised_sequences caught it asking for S at index 28 and
+        # receiving the wild-type F.
         feats_mut, token_map_mut = build_complex_feats(
-            mut_chains, pdb_path, cache_dir, device,
+            mut_chains, pdb_path, cache_dir / f"boltz_delta/{pos}_{aa}", device,
             use_msa_server=not args.no_msa_server,
         )
         s_inputs_mut = embedder_only(model, feats_mut)
