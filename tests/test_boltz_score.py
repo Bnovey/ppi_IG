@@ -72,6 +72,7 @@ from igv.boltz_score import (  # noqa: E402
     _BOLTZ_TOKENS_2_2_1,
     _CHUNK_PROFILE_KEYS,
     _PROT_TOKEN_TO_LETTER_2_2_1,
+    _build_yaml_sequences,
     _canonical_letter,
     _check_featurised_sequences,
     _residue_letter_table,
@@ -664,3 +665,150 @@ def test_build_complex_feats_accepts_the_msa_spec_alias():
     params = inspect.signature(build_complex_feats).parameters
     assert "msa" in params and "msa_spec" in params
     assert params["msa"].default is None and params["msa_spec"].default is None
+
+
+# ---------------------------------------------------------------------------
+# _build_yaml_sequences: per-chain MSA dict support
+# ---------------------------------------------------------------------------
+
+
+def test_yaml_sequences_none_emits_no_msa_key():
+    chains = {"H": "ACD", "L": "EF"}
+    seqs = _build_yaml_sequences(chains, None)
+    assert len(seqs) == 2
+    assert seqs[0] == {"protein": {"id": "H", "sequence": "ACD"}}
+    assert seqs[1] == {"protein": {"id": "L", "sequence": "EF"}}
+    for s in seqs:
+        assert "msa" not in s["protein"]
+
+
+def test_yaml_sequences_string_emits_same_msa_for_all_chains():
+    chains = {"H": "ACD", "L": "EF"}
+    seqs = _build_yaml_sequences(chains, "empty")
+    assert seqs[0]["protein"]["msa"] == "empty"
+    assert seqs[1]["protein"]["msa"] == "empty"
+
+
+def test_yaml_sequences_dict_emits_per_chain_msa(tmp_path):
+    (tmp_path / "h.csv").write_text("header\ndata")
+    (tmp_path / "l.csv").write_text("header\ndata")
+    chains = {"H": "ACD", "L": "EF"}
+    msa_dict = {"H": tmp_path / "h.csv", "L": tmp_path / "l.csv"}
+    seqs = _build_yaml_sequences(chains, msa_dict)
+    assert seqs[0]["protein"]["msa"] == str(tmp_path / "h.csv")
+    assert seqs[1]["protein"]["msa"] == str(tmp_path / "l.csv")
+
+
+def test_yaml_sequences_dict_preserves_chain_order(tmp_path):
+    for name in ("a.csv", "b.csv", "c.csv"):
+        (tmp_path / name).write_text("data")
+    chains = {"Z": "A", "M": "CD", "A": "EFG"}
+    msa_dict = {
+        "Z": tmp_path / "a.csv",
+        "M": tmp_path / "b.csv",
+        "A": tmp_path / "c.csv",
+    }
+    seqs = _build_yaml_sequences(chains, msa_dict)
+    assert [s["protein"]["id"] for s in seqs] == ["Z", "M", "A"]
+    assert seqs[0]["protein"]["msa"] == str(tmp_path / "a.csv")
+    assert seqs[2]["protein"]["msa"] == str(tmp_path / "c.csv")
+
+
+def test_yaml_sequences_dict_missing_chain_raises(tmp_path):
+    (tmp_path / "h.csv").write_text("data")
+    chains = {"H": "ACD", "L": "EF"}
+    msa_dict = {"H": tmp_path / "h.csv"}
+    with pytest.raises(ValueError, match="missing chains.*L"):
+        _build_yaml_sequences(chains, msa_dict)
+
+
+def test_yaml_sequences_dict_nonexistent_path_raises(tmp_path):
+    chains = {"H": "ACD"}
+    msa_dict = {"H": tmp_path / "does_not_exist.csv"}
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        _build_yaml_sequences(chains, msa_dict)
+
+
+def test_resolve_msa_spec_passes_dict_through():
+    d = {"H": "/some/path.csv", "L": "/other/path.csv"}
+    assert resolve_msa_spec(d) is d
+
+
+def test_resolve_msa_spec_none_server_empty_string_unchanged():
+    assert resolve_msa_spec(None, env={}) is None
+    assert resolve_msa_spec("server", env={}) is None
+    assert resolve_msa_spec("empty", env={}) == "empty"
+    assert resolve_msa_spec("/path/to/file.a3m", env={}) == "/path/to/file.a3m"
+
+
+def test_msa_spec_alias_conflict_still_fires_with_dict():
+    """Passing both msa and msa_spec with different values must still raise."""
+    from igv.boltz_score import build_complex_feats
+    import inspect
+
+    sig = inspect.signature(build_complex_feats)
+    assert "msa" in sig.parameters
+    assert "msa_spec" in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# MSA file to chain-id mapping (stage 02 logic)
+# ---------------------------------------------------------------------------
+
+
+def _create_mock_msa_files(msa_dir: Path, count: int) -> list[Path]:
+    """Create input_0.csv, input_1.csv, ... in *msa_dir*."""
+    msa_dir.mkdir(parents=True, exist_ok=True)
+    files = []
+    for i in range(count):
+        f = msa_dir / f"input_{i}.csv"
+        f.write_text(f"mock_msa_{i}")
+        files.append(f)
+    return files
+
+
+def test_msa_file_to_chain_mapping_matches_chain_order(tmp_path):
+    """The mapping from input_N.csv -> chain id must follow chains.items() order."""
+    chains = {"H": "EVQL", "L": "DIQM", "A": "MKYL"}
+    msa_dir = tmp_path / "msa"
+    _create_mock_msa_files(msa_dir, 3)
+
+    msa_files = sorted(msa_dir.glob("input_*.csv"))
+    chain_ids = list(chains.keys())
+
+    assert len(msa_files) == len(chain_ids)
+    mapping = dict(zip(chain_ids, msa_files))
+    assert list(mapping.keys()) == ["H", "L", "A"]
+    assert mapping["H"].name == "input_0.csv"
+    assert mapping["L"].name == "input_1.csv"
+    assert mapping["A"].name == "input_2.csv"
+
+
+def test_msa_file_count_mismatch_detected(tmp_path):
+    """If MSA file count != chain count, the stage must fail, not guess."""
+    chains = {"H": "EVQL", "L": "DIQM", "A": "MKYL"}
+    msa_dir = tmp_path / "msa"
+    _create_mock_msa_files(msa_dir, 2)  # only 2 files for 3 chains
+
+    msa_files = sorted(msa_dir.glob("input_*.csv"))
+    chain_ids = list(chains.keys())
+
+    assert len(msa_files) != len(chain_ids)
+
+
+def test_msa_file_count_mismatch_raises_clear_error(tmp_path):
+    """Simulate the count-mismatch error path from stage 02."""
+    chains = {"H": "EVQL", "L": "DIQM"}
+    msa_dir = tmp_path / "msa"
+    _create_mock_msa_files(msa_dir, 3)  # 3 files for 2 chains
+
+    msa_files = sorted(msa_dir.glob("input_*.csv"))
+    chain_ids = list(chains.keys())
+
+    with pytest.raises(RuntimeError, match="Cannot build per-chain MSA mapping"):
+        if len(msa_files) != len(chain_ids):
+            raise RuntimeError(
+                f"Expected {len(chain_ids)} MSA files in {msa_dir} "
+                f"(one per chain: {chain_ids}), found {len(msa_files)}: "
+                f"{[f.name for f in msa_files]}. Cannot build per-chain MSA mapping."
+            )

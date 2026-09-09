@@ -323,8 +323,8 @@ def resolve_tri_attn_ckpt(
 
 
 def resolve_msa_spec(
-    msa: str | None = None, env: Mapping[str, str] | None = None
-) -> str | None:
+    msa: str | dict | None = None, env: Mapping[str, str] | None = None
+) -> str | dict | None:
     """Resolve ``IGV_MSA_SPEC``. Default unset -> None == today's behaviour
     (no ``msa`` key is emitted in the YAML at all).
 
@@ -332,7 +332,13 @@ def resolve_msa_spec(
     MSA server generate it", which in YAML terms means emitting no ``msa`` key
     (boltz then reads ``msa_id == 0`` = auto-generate). Emitting the literal
     string "server" instead would make boltz treat it as a path to a custom
-    .a3m/.csv."""
+    .a3m/.csv.
+
+    A ``dict[str, str | Path]`` mapping chain id to MSA file path is passed
+    through unchanged -- it is consumed by :func:`_build_yaml_sequences` to
+    emit per-chain ``msa`` keys."""
+    if isinstance(msa, dict):
+        return msa
     if msa is None:
         env = os.environ if env is None else env
         msa = env.get("IGV_MSA_SPEC")
@@ -602,14 +608,68 @@ def _ensure_confidence_prediction(obj):
 # ---------------------------------------------------------------------------
 
 
+def _build_yaml_sequences(
+    chains: dict[str, str],
+    resolved_msa: str | dict | None,
+) -> list[dict]:
+    """Build the ``sequences`` list for a Boltz YAML spec.
+
+    Pure function: no torch, no boltz, no I/O. Factored out of
+    :func:`build_complex_feats` so the YAML-construction logic is unit-testable
+    without GPU or network.
+
+    Parameters
+    ----------
+    chains : dict[str, str]
+        Chain id -> amino-acid sequence.
+    resolved_msa : str | dict | None
+        Already-resolved MSA spec from :func:`resolve_msa_spec`.
+        * ``None`` -- emit no ``msa`` key (server auto-generates).
+        * ``str`` -- same value for every chain (e.g. ``"empty"`` or a path).
+        * ``dict[str, str | Path]`` -- per-chain MSA file paths. Must cover
+          every chain in *chains*; every mapped path must exist.
+
+    Returns
+    -------
+    list[dict]
+        Each element is ``{"protein": {"id": ..., "sequence": ..., ["msa": ...]}}``.
+    """
+    if isinstance(resolved_msa, dict):
+        missing = set(chains) - set(resolved_msa)
+        if missing:
+            raise ValueError(
+                f"Per-chain MSA dict is missing chains: {sorted(missing)}. "
+                f"Chains in the complex: {sorted(chains)}; "
+                f"chains in the MSA dict: {sorted(resolved_msa)}."
+            )
+        for chain_id, msa_path in resolved_msa.items():
+            p = Path(msa_path)
+            if not p.exists():
+                raise FileNotFoundError(
+                    f"Per-chain MSA path for chain {chain_id!r} does not exist: "
+                    f"{p}. A missing MSA would silently fall back to the server, "
+                    f"which is the failure mode per-chain paths exist to prevent."
+                )
+
+    sequences = []
+    for chain_id, seq in chains.items():
+        entry: dict[str, Any] = {"id": chain_id, "sequence": seq}
+        if isinstance(resolved_msa, dict):
+            entry["msa"] = str(resolved_msa[chain_id])
+        elif resolved_msa is not None:
+            entry["msa"] = resolved_msa
+        sequences.append({"protein": entry})
+    return sequences
+
+
 def build_complex_feats(
     chains: dict[str, str],
     structure_pdb: Path,
     cache_dir: Path,
     device,
     use_msa_server: bool = True,
-    msa: str | None = None,
-    msa_spec: str | None = None,
+    msa: str | dict | None = None,
+    msa_spec: str | dict | None = None,
 ) -> tuple[dict, dict[tuple[str, int], int]]:
     """Featurise a multi-chain complex for Boltz-2.
 
@@ -641,8 +701,11 @@ def build_complex_feats(
     device : torch.device
         Target device.
     use_msa_server : bool
-        Whether to query ColabFold for MSAs.
-    msa : str | None
+        Whether to query ColabFold for MSAs. With explicit per-chain MSA file
+        paths (a dict), ``use_msa_server=False`` works: every chain has an
+        ``msa`` key pointing at a local file, so boltz never attempts a server
+        query and the "Missing MSA's in input" error does not fire.
+    msa : str | dict | None
         Per-chain ``msa`` entry for the YAML. Default None emits NO ``msa`` key,
         which is today's exact behaviour. Boltz reads it as
         ``msa = items[0][entity_type].get("msa", 0)``; ``"empty"`` becomes -1 =
@@ -652,7 +715,16 @@ def build_complex_feats(
         ``IGV_MSA_SPEC=empty`` without editing call sites. ``"server"`` is
         accepted as a synonym for None (emit no key and let the MSA server
         generate one).
-    msa_spec : str | None
+
+        A ``dict[str, str | Path]`` maps each chain id to its own MSA file
+        path, emitting a per-chain ``msa`` key. The dict must cover every
+        chain; every mapped path must exist (a missing path would silently fall
+        back to the server, which is the failure mode this is meant to
+        prevent). The intended use is reusing the wild-type MSA for every point
+        mutant: the MSA captures evolutionary context that should be held
+        constant so the embedding delta isolates the substitution, not a
+        different MSA.
+    msa_spec : str | dict | None
         Alias of *msa*, accepted because the memory sweep in
         scripts/08_memscale.py resolves this parameter by name. Passing both
         with different values raises.
@@ -661,7 +733,8 @@ def build_complex_feats(
         chain gets ``msa_id == 0`` meaning auto-generate, and then
         ``use_msa_server=False`` RAISES ("Missing MSA's in input and
         --use_msa_server flag not set", boltz 2.2.1 main.py:565-583) -- which is
-        exactly what makes offline featurisation impossible today.
+        exactly what makes offline featurisation impossible today. With explicit
+        per-chain paths this is avoided because every chain has an ``msa`` key.
         (2) ``msa="empty"`` changes the memory profile of the 4 MSA blocks
         (ERRORS_LOG.md attributes 3.25 GiB to ``_msa_forward_checkpointed``), so
         a reference point measured WITH MSAs is not comparable to one measured
@@ -682,18 +755,21 @@ def build_complex_feats(
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    if msa is not None and msa_spec is not None and str(msa) != str(msa_spec):
-        raise ValueError(
-            f"build_complex_feats got conflicting msa={msa!r} and "
-            f"msa_spec={msa_spec!r}; they are aliases, pass one."
-        )
-    resolved_msa = resolve_msa_spec(msa if msa is not None else msa_spec)
-    sequences = []
-    for chain_id, seq in chains.items():
-        entry = {"id": chain_id, "sequence": seq}
-        if resolved_msa is not None:
-            entry["msa"] = resolved_msa
-        sequences.append({"protein": entry})
+    effective_msa = msa if msa is not None else msa_spec
+    if msa is not None and msa_spec is not None:
+        if isinstance(msa, dict) or isinstance(msa_spec, dict):
+            if msa is not msa_spec:
+                raise ValueError(
+                    f"build_complex_feats got conflicting msa={msa!r} and "
+                    f"msa_spec={msa_spec!r}; they are aliases, pass one."
+                )
+        elif str(msa) != str(msa_spec):
+            raise ValueError(
+                f"build_complex_feats got conflicting msa={msa!r} and "
+                f"msa_spec={msa_spec!r}; they are aliases, pass one."
+            )
+    resolved_msa = resolve_msa_spec(effective_msa)
+    sequences = _build_yaml_sequences(chains, resolved_msa)
     if resolved_msa is not None:
         log.info("YAML msa spec: %r (default None emits no msa key)", resolved_msa)
 

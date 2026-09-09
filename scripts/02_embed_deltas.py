@@ -120,6 +120,8 @@ def main() -> None:
     # stage 02's embedder-only footprint should ever be gated more loosely.
     require_vram()
 
+    import time
+
     import numpy as np
     import torch
     from igv.attrib import free_cuda_memory
@@ -134,12 +136,64 @@ def main() -> None:
     log.info("Loading model from %s on %s", args.checkpoint_dir, device)
     model, boltz_version = load_model(args.checkpoint_dir, device)
 
-    # 6. Reference embedding
-    log.info("Featurising reference complex")
-    feats_ref, token_map = build_complex_feats(
-        chains, pdb_path, cache_dir, device, use_msa_server=not args.no_msa_server,
+    # 6. Reference embedding (server MSA)
+    log.info("Featurising reference complex (server MSA)")
+    ref_cache = cache_dir / "boltz_delta" / "ref_server"
+    feats_ref_server, token_map = build_complex_feats(
+        chains, pdb_path, ref_cache, device,
+        use_msa_server=not args.no_msa_server,
     )
+
+    # 6a. Locate per-chain MSA files written by boltz under the reference cache.
+    # boltz writes <cache_dir>/msa/input_<N>.csv where N indexes the YAML
+    # sequences list, which build_complex_feats emits in chains.items() order.
+    ref_msa_dir = ref_cache / "msa"
+    # Sort NUMERICALLY on <N>, not lexicographically: a plain sorted() puts
+    # input_10 before input_2, so the chain->MSA mapping would silently shear
+    # the moment a complex has more than nine chains. Today's have four, which
+    # is exactly the condition under which this bug would go unnoticed.
+    def _msa_index(path):
+        return int(path.stem.rsplit("_", 1)[1])
+
+    msa_files = sorted(ref_msa_dir.glob("input_*.csv"), key=_msa_index)
+    chain_ids = list(chains.keys())
+    if len(msa_files) != len(chain_ids):
+        raise RuntimeError(
+            f"Expected {len(chain_ids)} MSA files in {ref_msa_dir} "
+            f"(one per chain: {chain_ids}), found {len(msa_files)}: "
+            f"{[f.name for f in msa_files]}. Cannot build per-chain MSA mapping."
+        )
+    msa_by_chain: dict[str, Path] = {}
+    for chain_id, msa_file in zip(chain_ids, msa_files):
+        msa_by_chain[chain_id] = msa_file
+    log.info("Per-chain MSA mapping: %s", {k: v.name for k, v in msa_by_chain.items()})
+
+    # 6b. Re-featurise reference from file-loaded MSAs into a fresh cache dir.
+    # Both sides of every delta subtraction use the same code path (file-loaded),
+    # so no part of the delta can be a server-vs-file artifact.
+    log.info("Re-featurising reference with file-loaded MSAs")
+    ref_cache_from_files = cache_dir / "boltz_delta" / "ref_from_files"
+    feats_ref, token_map = build_complex_feats(
+        chains, pdb_path, ref_cache_from_files, device,
+        use_msa_server=False, msa=msa_by_chain,
+    )
+    s_inputs_ref_server = embedder_only(model, feats_ref_server)
     s_inputs_ref = embedder_only(model, feats_ref)
+
+    max_diff = float((s_inputs_ref - s_inputs_ref_server).abs().max().item())
+    log.info(
+        "Max abs difference between server-MSA and file-loaded-MSA reference "
+        "embeddings: %.6e", max_diff,
+    )
+    if max_diff > 1e-4:
+        raise RuntimeError(
+            f"Reference embeddings from server MSA vs file-loaded MSA differ by "
+            f"{max_diff:.6e} (tolerance 1e-4). The MSA reuse machinery may not "
+            f"be reproducing the server result."
+        )
+    del feats_ref_server, s_inputs_ref_server
+    free_cuda_memory()
+
     log.info("Reference s_inputs shape: %s", s_inputs_ref.shape)
 
     # Token indices for the varying chain in residue order
@@ -148,8 +202,9 @@ def main() -> None:
         dtype=np.int64,
     )
 
-    # 7. Compute deltas
+    # 7. Compute deltas (reusing wild-type MSA for every mutant)
     results: dict[str, np.ndarray] = {}
+    t0 = time.monotonic()
 
     for idx, (pos, aa) in enumerate(substitutions, 1):
         log.info("Delta %d/%d: position %d -> %s", idx, n_deltas, pos, aa)
@@ -158,17 +213,9 @@ def main() -> None:
         mut_chains = dict(chains)
         mut_chains[chain] = mutant_seq
 
-        # A UNIQUE cache_dir per sequence is mandatory, not hygiene. boltz's
-        # process_inputs skips any input whose YAML stem is already present in
-        # <cache_dir>/processed/records, and this repo always writes the stem
-        # "input" -- so a shared cache_dir hands back the FIRST sequence's
-        # features for every later mutant, and every delta comes out zero.
-        # 04_scan already keys its cache by row; this stage did not, and
-        # _check_featurised_sequences caught it asking for S at index 28 and
-        # receiving the wild-type F.
         feats_mut, token_map_mut = build_complex_feats(
             mut_chains, pdb_path, cache_dir / f"boltz_delta/{pos}_{aa}", device,
-            use_msa_server=not args.no_msa_server,
+            use_msa_server=False, msa=msa_by_chain,
         )
         s_inputs_mut = embedder_only(model, feats_mut)
 
@@ -179,6 +226,16 @@ def main() -> None:
 
         results[f"{pos}_{aa}"] = delta
         free_cuda_memory()
+
+        if idx % 25 == 0 or idx == n_deltas:
+            elapsed = time.monotonic() - t0
+            per_sub = elapsed / idx
+            remaining = per_sub * (n_deltas - idx)
+            log.info(
+                "Progress: %d/%d (%.1f%%) | %.1fs/sub | ETA %.0fs (%.1f min)",
+                idx, n_deltas, 100.0 * idx / n_deltas,
+                per_sub, remaining, remaining / 60.0,
+            )
 
     # 8. Save
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,7 +257,8 @@ def main() -> None:
         inputs={"dataset": args.dataset, "structure": struct_name, "cache_dir": str(cache_dir)},
         params={"chain": chain, "device": device, "boltz_version": boltz_version},
         arm={"stage": "deltas", "chain": chain, "dataset": args.dataset,
-             "n_deltas": n_deltas, **numerics_arm()},
+             "n_deltas": n_deltas, "msa_reuse": True,
+             "msa_ref_cache": str(ref_cache), **numerics_arm()},
     )
 
 
