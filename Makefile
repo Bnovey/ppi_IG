@@ -17,7 +17,7 @@ SANITY   := results/sanity_$(DATASET)_$(SCORE).json
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup test lint fetch library deltas attribute scan predict metrics sanity memscale memscale-plan stage0 all clean
+.PHONY: help setup test lint fetch library deltas attribute scan predict metrics sanity memscale memscale-plan path-profile path-profile-plan stage0 all clean
 
 help: ## Print this help
 	@echo "IG validation pipeline"
@@ -90,6 +90,16 @@ memscale: ## Sweep complex size to measure the true peak VRAM [GPU, diagnostic]
 
 memscale-plan: ## Print the memscale ladder and pinned knobs, no GPU (CPU)
 	$(PY) $(SCRIPTS)/08_memscale.py --dataset $(DATASET) --score $(SCORE) --dry-run
+
+# DIAGNOSTIC -- deliberately NOT in `all`. Compares the autograd directional
+# derivative against a central finite difference along the IG path to diagnose
+# the 4.64x completeness overshoot recorded in docs/MEMSCALE_RESULTS.md §6a.
+path-profile: ## Gradient fidelity profile along the IG path [GPU, diagnostic]
+	$(PY) $(SCRIPTS)/09_path_profile.py --dataset $(DATASET) --score $(SCORE) \
+		$(if $(CHAIN_SUBSET),--chain-subset $(CHAIN_SUBSET),)
+
+path-profile-plan: ## Print the path-profile plan, no GPU (CPU)
+	$(PY) $(SCRIPTS)/09_path_profile.py --dataset $(DATASET) --score $(SCORE) --dry-run
 
 stage0: ## Cheapest end-to-end go/no-go on 4fqi_h1 (CPU stages only)
 	$(MAKE) fetch library DATASET=4fqi_h1

@@ -297,6 +297,49 @@ def build_library(
 # Structure-reference alignment
 # ---------------------------------------------------------------------------
 
+def resolve_chain_subset(
+    struct_chains: dict[str, str],
+    subset_arg: str | None,
+    mutated_chain: str,
+) -> tuple[dict[str, str], str]:
+    """Filter *struct_chains* to the requested subset.
+
+    Returns ``(filtered_chains, subset_label)`` where *subset_label* is the
+    concatenation of chain IDs (e.g. ``"HLA"``) or ``"all"`` when no subset was
+    requested.  The returned dict preserves the PDB's original chain order.
+    """
+    if subset_arg is None:
+        return dict(struct_chains), "all"
+
+    requested = [c.strip() for c in subset_arg.split(",") if c.strip()]
+    if not requested:
+        raise SystemExit("--chain-subset is empty after parsing.")
+
+    if len(requested) != len(set(requested)):
+        raise SystemExit(
+            f"--chain-subset contains duplicates: {requested}"
+        )
+
+    available = list(struct_chains)
+    unknown = [c for c in requested if c not in struct_chains]
+    if unknown:
+        raise SystemExit(
+            f"Unknown chain(s) {unknown} in --chain-subset. "
+            f"Available chains in PDB: {available}"
+        )
+
+    if mutated_chain not in requested:
+        raise SystemExit(
+            f"--chain {mutated_chain} (the mutated chain) must be included "
+            f"in --chain-subset {requested}."
+        )
+
+    requested_set = set(requested)
+    filtered = {c: s for c, s in struct_chains.items() if c in requested_set}
+    label = "".join(filtered)
+    return filtered, label
+
+
 def align_reference_to_structure(
     reference_seq: str, chain_seq: str
 ) -> dict:

@@ -27,7 +27,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from igv.data import build_library, read_pdb_chains  # noqa: E402
+from igv.data import build_library, read_pdb_chains, resolve_chain_subset  # noqa: E402
 from igv.gpu import require_vram  # noqa: E402
 from igv.metrics import spearman  # noqa: E402
 from igv.provenance import assert_provenance, write as prov_write  # noqa: E402
@@ -36,48 +36,6 @@ log = logging.getLogger("sanity")
 
 _STRUCTURE_FOR = {"4fqi_h1": "4fqi_hlab", "4fqi_h3": "4fqi_hlab"}
 
-
-def resolve_chain_subset(
-    struct_chains: dict[str, str],
-    subset_arg: str | None,
-    mutated_chain: str,
-) -> tuple[dict[str, str], str]:
-    """Filter *struct_chains* to the requested subset.
-
-    Returns ``(filtered_chains, subset_label)`` where *subset_label* is the
-    concatenation of chain IDs (e.g. ``"HLA"``) or ``"all"`` when no subset was
-    requested.  The returned dict preserves the PDB's original chain order.
-    """
-    if subset_arg is None:
-        return dict(struct_chains), "all"
-
-    requested = [c.strip() for c in subset_arg.split(",") if c.strip()]
-    if not requested:
-        raise SystemExit("--chain-subset is empty after parsing.")
-
-    if len(requested) != len(set(requested)):
-        raise SystemExit(
-            f"--chain-subset contains duplicates: {requested}"
-        )
-
-    available = list(struct_chains)
-    unknown = [c for c in requested if c not in struct_chains]
-    if unknown:
-        raise SystemExit(
-            f"Unknown chain(s) {unknown} in --chain-subset. "
-            f"Available chains in PDB: {available}"
-        )
-
-    if mutated_chain not in requested:
-        raise SystemExit(
-            f"--chain {mutated_chain} (the mutated chain) must be included "
-            f"in --chain-subset {requested}."
-        )
-
-    requested_set = set(requested)
-    filtered = {c: s for c, s in struct_chains.items() if c in requested_set}
-    label = "".join(filtered)
-    return filtered, label
 
 THRESHOLDS = {
     "completeness": "relative error < 0.05",
