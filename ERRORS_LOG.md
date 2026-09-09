@@ -488,3 +488,130 @@ test is plain_grad.
   laptop did not on a previous occasion, and nothing warns you.
 - Measured timings at L=554, single-tenant: bf16 forward+backward 55 s, fp32
   97 s — both within a second of the figures in `MEMSCALE_RESULTS.md` §6.
+
+## 15. `random_weights` passed — the project's central risk is retired
+
+First successful run in the project's history; it OOM'd on every prior attempt.
+L=554, bf16, `IGV_TRI_ATTN_CKPT=1`, commit `e57e217`, artifact
+`results/w6_randweights_L554.json`.
+
+```
+random_weights  PASS  spearman = 0.0767   (threshold |rho| < 0.3)
+                reinitialised 5035 parameter tensors
+                (3058 xavier, 1079 zeroed biases, 898 unit norms)
+dead_target     PASS  max|grad| = 0.000e+00, f(x) = 3.657238
+```
+
+Randomising the weights destroys the attribution, so the gradient depends on
+what Boltz-2 learned rather than on input geometry. This is the check whose
+failure text reads "THIS KILLS THE PROJECT AS FRAMED", and it is the direct
+answer to the off-simplex gradient-contamination concern (Majdandzic, Genome
+Biology 2023) that `HANDOFF.md` §8 lists as a paper to engage with. It tests
+`plain_gradient`, i.e. the headline method, not the IG arm.
+
+Caveats: run at L=554, not the full 730. `dead_target` still returns exactly
+zero every time and discriminates little, though it now carries a
+model-dependent `f(x)` alongside.
+
+## 16. One backward pass at the full complex: 104 seconds
+
+`03_attribute --method plain_grad` at L=730 (all four chains), bf16, produced
+`results/4fqi_h1_complex_pde_plain_grad_grad.npz` in **104.2 s**:
+
+```
+grad_chain (121, 384)   zero rows 0/121   abs max 0.0710918
+per-residue norm: min 0.006782  median 0.01723  max 0.2056
+top-8 residues by norm: [0, 102, 53, 54, 27, 24, 74, 101]
+library variable positions: [28,29,30,51,56,57,58,70,73,74,75,76,83,86,94,105]
+```
+
+The 30x spread across residues rules out uniform noise, and several of the
+highest-gradient residues (27, 53, 54, 74, 101, 102) sit in or beside the CDR
+positions the library mutates. **Residue 0 topping the list is a flag** —
+N-terminal artifacts are common — and should be remembered when reading T3.
+
+This is the efficiency claim in concrete form: 104 s of gradient against the
+~615 GPU-hours of brute-force scanning it is meant to replace.
+
+## 17. Two bugs the repo's own guards caught in production
+
+Both found by running, not by review, and both in stages that had never
+executed successfully before.
+
+1. **`02_embed_deltas` reused one `cache_dir` for every mutant.** boltz's
+   `process_inputs` skips any input whose YAML stem is already in
+   `<cache_dir>/processed/records`, and this repo always writes the stem
+   `"input"`, so every mutant received the WILD-TYPE features and every delta
+   would have been silently zero. `_check_featurised_sequences` stopped it:
+   *"requested 'S', featurised 'F'"* at chain H index 28. `04_scan` already
+   keyed its cache per row; this stage did not.
+
+2. **`09_path_profile` called `torch.autograd.grad` under a reentrant
+   checkpoint.** torch refuses outright: *"When use_reentrant=True,
+   torch.utils.checkpoint is incompatible with .grad() or passing an `inputs`
+   parameter to .backward()"*. Entry 9 records that the non-reentrant outer
+   checkpoint OOMs, so reentrant is load-bearing and the CALL had to change.
+   `attrib.integrated_gradient` already uses `backward()`; matching it also
+   keeps the diagnostic on the same code path as the thing it diagnoses.
+
+## 18. Featurisation is nondeterministic, and the cause is `ref_pos`
+
+Chasing a failed assertion produced the most consequential finding of the
+session. Stage 02 featurises the reference twice — once from the MSA server,
+once re-read from the written files — and asserts the embeddings agree. It
+failed:
+
+```
+Max abs difference between server-MSA and file-loaded-MSA reference
+embeddings: 1.069308e+00   (tolerance 1e-4)
+```
+
+Three probes (`probe_msa.py`, `probe_msa2.py`, `probe_msa3.py`, untracked on the
+VM) took it apart:
+
+| comparison | max abs | rel |
+|---|---|---|
+| server MSA, run 1 vs run 2 | 1.527 | 3.4% |
+| file MSA, run 1 vs run 2 | 1.136 | 2.8% |
+| server vs file | 1.136 | 2.7% |
+
+**MSA reuse is not lossy.** The server-vs-file gap is no larger than the gap
+between two runs of the same path. The 1e-4 tolerance was asserting a
+determinism the pipeline never had, against the wrong pair.
+
+The embedder forward is **bit-deterministic** given fixed features — 0.0
+difference across repeated calls, seeded or not, and the same for different
+seeds — so this is not RNG in the model. `msa`, `res_type` and `token_index` are
+identical across featurisations, and MSA depth is 9348 every time. Comparing
+every feature tensor found exactly one culprit:
+
+```
+ref_pos   DIFFERS  max_abs = 10.7316   shape (1, 5728, 3)   float32
+```
+
+**Reference atom positions, varying by up to 10.7 Angstrom between two
+featurisations of the identical input** — boltz's reference-conformer
+generation (RDKit conformer embedding) is stochastic and unseeded.
+
+Why it matters beyond stage 02: every embedding delta is `s_mut - s_ref`, and if
+mutant and reference are featurised separately they carry independent `ref_pos`
+draws, so the delta mixes the substitution with a conformer resample. Measured
+at the mutated token, a real substitution delta is `|d| = 5.78`, against a
+whole-tensor noise scale of ~1.1-1.5 — so the signal survives, but not by the
+margin one would want, and it is contaminated for no reason.
+
+- **Root cause:** unseeded RDKit conformer generation inside boltz featurisation.
+- **Fix (not yet implemented):** seed conformer generation so mutant and
+  reference share identical `ref_pos`, leaving only the sequence difference.
+  Failing that, hold one featurisation's `ref_pos` and reuse it. Note this also
+  makes `03_attribute`'s reference (server-featurised, bare `cache_dir`) differ
+  from stage 02's (file-featurised) — the gradient is taken at a slightly
+  different point than the deltas are expanded around, and the two stages should
+  be put on one canonical featurisation.
+- **Status:** diagnosed, not fixed. This is the next work item, and it needs no
+  GPU.
+
+Incidental: this is very likely the same root cause as the ~1.6% run-to-run
+score noise recorded in `docs/MEMSCALE_RESULTS.md`, which was attributed to
+kernel nondeterminism. It is not — the forward is deterministic; the *input* was
+changing.
