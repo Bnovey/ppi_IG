@@ -420,3 +420,85 @@ def test_dry_run_with_subset_reports_L(capsys):
     out = capsys.readouterr().out
     assert "L=554" in out
     assert "m_steps: 8" in out
+
+
+# ---------------------------------------------------------------------------
+# 11. --baseline-scale validation and behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestBaselineScale:
+    def _run_main(self, extra_args):
+        argv = sys.argv
+        sys.argv = ["07_sanity.py", "--dataset", "4fqi_h1", "--dry-run"] + extra_args
+        try:
+            sanity.main()
+        finally:
+            sys.argv = argv
+
+    def test_negative_rejected(self):
+        with pytest.raises(SystemExit, match="must be >= 0.0"):
+            self._run_main(["--baseline-scale", "-0.1"])
+
+    def test_one_rejected(self):
+        with pytest.raises(SystemExit, match="must be < 1.0"):
+            self._run_main(["--baseline-scale", "1.0"])
+
+    def test_greater_than_one_rejected(self):
+        with pytest.raises(SystemExit, match="must be < 1.0"):
+            self._run_main(["--baseline-scale", "2.5"])
+
+    def test_zero_accepted(self, capsys):
+        self._run_main(["--baseline-scale", "0.0"])
+        out = capsys.readouterr().out
+        assert "baseline_scale: 0.0" in out
+
+    def test_half_accepted(self, capsys):
+        self._run_main(["--baseline-scale", "0.5"])
+        out = capsys.readouterr().out
+        assert "baseline_scale: 0.5" in out
+
+    def test_zero_takes_zeros_path(self):
+        """scale=0.0 must use torch.zeros_like, not a multiply."""
+        import ast
+        source = _SCRIPT.read_text()
+        tree = ast.parse(source)
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If):
+                test = ast.dump(node.test)
+                if "baseline_scale" in test and "0.0" in test:
+                    body_src = ast.dump(node.body[0])
+                    if "zeros_like" in body_src:
+                        found = True
+                        break
+        assert found, "Could not find the conditional zeros_like path for baseline_scale == 0.0"
+
+    def test_default_template_unchanged_with_baseline_scale(self):
+        template = "results/sanity_{dataset}_{score}.json"
+        rendered = template.format(
+            dataset="4fqi_h1", score="complex_pde",
+            subset="HLA", m_steps=8, baseline_scale=0.0,
+        )
+        assert rendered == "results/sanity_4fqi_h1_complex_pde.json"
+
+    def test_baseline_scale_template_placeholder(self):
+        template = "results/sanity_{dataset}_{score}_bs{baseline_scale}.json"
+        rendered = template.format(
+            dataset="4fqi_h1", score="complex_pde",
+            subset="HLA", m_steps=8, baseline_scale=0.1,
+        )
+        assert rendered == "results/sanity_4fqi_h1_complex_pde_bs0.1.json"
+
+    def test_completeness_detail_includes_baseline_scale(self):
+        def forward_fn(s):
+            return (s * 2.0).sum()
+
+        x = torch.randn(1, L, D)
+        baseline = torch.zeros_like(x)
+        r = sanity.check_completeness(forward_fn, x, baseline, m_steps=8, baseline_scale=0.0)
+        assert "baseline_scale=0.0" in r["detail"]
+
+        baseline_half = 0.5 * x
+        r2 = sanity.check_completeness(forward_fn, x, baseline_half, m_steps=8, baseline_scale=0.5)
+        assert "baseline_scale=0.5" in r2["detail"]

@@ -74,7 +74,7 @@ def _result(name, passed, value, detail):
 # checks
 # --------------------------------------------------------------------------
 
-def check_completeness(forward_fn, s_inputs, baseline, m_steps=16):
+def check_completeness(forward_fn, s_inputs, baseline, m_steps=16, baseline_scale=0.0):
     """Do the attributions sum to f(x) - f(baseline)?"""
     import torch
     from igv.attrib import completeness_error, integrated_gradient
@@ -86,7 +86,7 @@ def check_completeness(forward_fn, s_inputs, baseline, m_steps=16):
     err = completeness_error(res, f_x, f_b)
     return _result(
         "completeness", err < 0.05, float(err),
-        f"m_steps={m_steps} f(x)={f_x:.6f} f(baseline)={f_b:.6f} sum(ig)={float(res.ig.sum()):.6f}",
+        f"m_steps={m_steps} baseline_scale={baseline_scale} f(x)={f_x:.6f} f(baseline)={f_b:.6f} sum(ig)={float(res.ig.sum()):.6f}",
     )
 
 
@@ -362,11 +362,23 @@ def main() -> None:
         "--m-steps", type=int, default=16,
         help="Number of integration steps for the completeness check (default 16).",
     )
+    p.add_argument(
+        "--baseline-scale", type=float, default=0.0,
+        help="Baseline = scale * x. 0.0 = zeros (default). Must be in [0, 1).",
+    )
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
     if args.m_steps < 1:
         raise SystemExit(f"--m-steps must be >= 1, got {args.m_steps}")
+
+    if args.baseline_scale < 0.0:
+        raise SystemExit(f"--baseline-scale must be >= 0.0, got {args.baseline_scale}")
+    if args.baseline_scale >= 1.0:
+        raise SystemExit(
+            f"--baseline-scale must be < 1.0 (at 1.0 the path is a point and the "
+            f"identity is vacuous), got {args.baseline_scale}"
+        )
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -407,6 +419,7 @@ def main() -> None:
         if n_tokens is not None:
             print(f"\nChain subset: {subset_label}  L={n_tokens}")
         print(f"m_steps: {args.m_steps}")
+        print(f"baseline_scale: {args.baseline_scale}")
         print("\nGate: exits non-zero if any non-informational check fails.")
         return
 
@@ -465,7 +478,16 @@ def main() -> None:
     )
     x_pred = ref_feats["coords"].detach()
     s_inputs = embedder_only(model, ref_feats)
-    baseline = torch.zeros_like(s_inputs)
+    if args.baseline_scale == 0.0:
+        baseline = torch.zeros_like(s_inputs)
+    else:
+        baseline = args.baseline_scale * s_inputs
+    x_norm = float(s_inputs.norm())
+    b_norm = float(baseline.norm())
+    log.info(
+        "Baseline: scale=%.4f  ||baseline||/||x|| = %.6f  ||x||=%.4f",
+        args.baseline_scale, b_norm / (x_norm + 1e-30), x_norm,
+    )
 
     def make_forward_fn(m=model, ckpt=True, frozen=False):
         def fn(s):
@@ -490,7 +512,7 @@ def main() -> None:
             ))
 
     runners = {
-        "completeness": lambda: check_completeness(forward_fn, s_inputs, baseline, m_steps=args.m_steps),
+        "completeness": lambda: check_completeness(forward_fn, s_inputs, baseline, m_steps=args.m_steps, baseline_scale=args.baseline_scale),
         "m_sweep": lambda: check_m_sweep(forward_fn, s_inputs, baseline),
         "random_weights": lambda: check_random_weights(
             make_forward_fn, model, s_inputs, baseline),
@@ -514,6 +536,7 @@ def main() -> None:
     out = Path(args.out.format(
         dataset=args.dataset, score=args.score,
         subset=subset_label, m_steps=args.m_steps,
+        baseline_scale=args.baseline_scale,
     ))
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -522,6 +545,7 @@ def main() -> None:
         "n_tokens": n_tokens,
         "n_tokens_pdb": n_tokens_pdb,
         "m_steps": args.m_steps,
+        "baseline_scale": args.baseline_scale,
         "checks": results,
     }
     out.write_text(json.dumps(payload, indent=2, default=str) + "\n")
@@ -535,6 +559,7 @@ def main() -> None:
              "chain_subset": list(struct_chains) if subset_label != "all" else None,
              "n_tokens": n_tokens, "n_tokens_pdb": n_tokens_pdb,
              "m_steps": args.m_steps,
+             "baseline_scale": args.baseline_scale,
              **numerics_arm()},
         notes="Tier-0 gate. Non-informational failures make downstream numbers void.",
     )

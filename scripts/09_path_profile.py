@@ -140,9 +140,10 @@ def estimate_wall_time(
     n_gradcheck: int,
     seconds_per_forward: float,
     seconds_per_backward: float,
+    skip_fd: bool = False,
 ) -> float:
     """Estimated wall clock in seconds."""
-    fwd = n_profile + n_gradcheck * 2
+    fwd = n_profile + (0 if skip_fd else n_gradcheck * 2)
     bwd = n_gradcheck
     return fwd * seconds_per_forward + bwd * seconds_per_backward
 
@@ -186,6 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
         # near 13, while h=0.01 would be swamped by nondeterminism.
         help="Finite-difference step size h (default 0.1).",
     )
+    p.add_argument("--skip-fd", action="store_true",
+                   help="Skip finite-difference comparison; record D_analytic only.")
     p.add_argument(
         "--out", default="results/path_profile_{dataset}_{score}.csv",
     )
@@ -239,17 +242,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  profile steps:  {n_profile} (F(alpha) evaluations, forward-only)")
         print(f"  gradcheck:      {n_gradcheck} alpha(s) at {grad_alphas}")
         print(f"  fd_step (h):    {args.fd_step}")
+        print(f"  skip_fd:        {args.skip_fd}")
         if n_tokens is not None:
             print(f"  chain subset:   {subset_label}  L={n_tokens}")
-        # Cost estimates: bf16 ~55s fwd+bwd at L=554 -> ~27.5s fwd, ~27.5s bwd;
-        # fp32 ~98s -> ~49s fwd, ~49s bwd. Use midpoint as the default estimate.
         for label, fwd_s, bwd_s in [("bf16", 27.5, 27.5), ("fp32", 49.0, 49.0)]:
-            wall = estimate_wall_time(n_profile, n_gradcheck, fwd_s, bwd_s)
+            wall = estimate_wall_time(n_profile, n_gradcheck, fwd_s, bwd_s, skip_fd=args.skip_fd)
             print(f"  est. wall ({label}): {wall / 60:.1f} min ({wall:.0f} s)")
         print(f"\n  output CSV:     {out_csv}")
-        print(f"\nCost: {n_profile} forwards (profile) + "
-              f"{n_gradcheck}*(2 fwd + 1 bwd) (gradcheck) = "
-              f"{n_profile + n_gradcheck * 3} forward-equivalents")
+        if args.skip_fd:
+            fwd_eq = n_profile + n_gradcheck
+            print(f"\nCost: {n_profile} forwards (profile) + "
+                  f"{n_gradcheck}*(1 bwd) (gradcheck, no FD) = "
+                  f"{fwd_eq} forward-equivalents")
+        else:
+            print(f"\nCost: {n_profile} forwards (profile) + "
+                  f"{n_gradcheck}*(2 fwd + 1 bwd) (gradcheck) = "
+                  f"{n_profile + n_gradcheck * 3} forward-equivalents")
         return 0
 
     require_vram()
@@ -350,49 +358,75 @@ def main(argv: list[str] | None = None) -> int:
     # --- Gradcheck: D_analytic vs D_fd ---
     gc_rows = []
     for i, alpha in enumerate(grad_alphas):
-        lo, hi, fk = fd_points(alpha, args.fd_step)
-        f_lo = F_at(lo)
-        f_hi = F_at(hi)
-        d_fd = finite_difference(f_lo, f_hi, lo, hi)
         d_an = D_analytic_at(alpha)
         f_alpha = F_at(alpha) if alpha not in profile_values else profile_values[alpha]
 
-        fd_delta = abs(f_hi - f_lo)
-        snr_warning = fd_delta < 0.5
-
-        r, re = ratio_and_relerr(d_an, d_fd)
-
-        if snr_warning:
-            log.warning(
-                "alpha=%.4f: |F(hi)-F(lo)| = %.4f < 0.5 -- ratio is noise, "
-                "do not interpret as a finding.",
-                alpha, fd_delta,
+        if args.skip_fd:
+            row = {
+                "kind": "gradcheck",
+                "alpha": alpha,
+                "F_alpha": f_alpha,
+                "D_analytic": d_an,
+                "D_fd": None,
+                "ratio": None,
+                "relerr": None,
+                "fd_kind": "skipped",
+                "fd_lo": None,
+                "fd_hi": None,
+                "F_fd_lo": None,
+                "F_fd_hi": None,
+                "fd_delta": None,
+                "fd_snr_warning": None,
+            }
+            gc_rows.append(row)
+            writer.writerow(row)
+            csvfile.flush()
+            log.info(
+                "[gradcheck %d/%d] alpha=%.4f D_analytic=%.6f (FD skipped)",
+                i + 1, len(grad_alphas), alpha, d_an,
             )
+        else:
+            lo, hi, fk = fd_points(alpha, args.fd_step)
+            f_lo = F_at(lo)
+            f_hi = F_at(hi)
+            d_fd = finite_difference(f_lo, f_hi, lo, hi)
 
-        row = {
-            "kind": "gradcheck",
-            "alpha": alpha,
-            "F_alpha": f_alpha,
-            "D_analytic": d_an,
-            "D_fd": d_fd,
-            "ratio": r,
-            "relerr": re,
-            "fd_kind": fk,
-            "fd_lo": lo,
-            "fd_hi": hi,
-            "F_fd_lo": f_lo,
-            "F_fd_hi": f_hi,
-            "fd_delta": fd_delta,
-            "fd_snr_warning": snr_warning,
-        }
-        gc_rows.append(row)
-        writer.writerow(row)
-        csvfile.flush()
-        log.info(
-            "[gradcheck %d/%d] alpha=%.4f D_analytic=%.6f D_fd=%.6f ratio=%.4f "
-            "fd_kind=%s snr_warn=%s",
-            i + 1, len(grad_alphas), alpha, d_an, d_fd, r, fk, snr_warning,
-        )
+            fd_delta = abs(f_hi - f_lo)
+            snr_warning = fd_delta < 0.5
+
+            r, re = ratio_and_relerr(d_an, d_fd)
+
+            if snr_warning:
+                log.warning(
+                    "alpha=%.4f: |F(hi)-F(lo)| = %.4f < 0.5 -- ratio is noise, "
+                    "do not interpret as a finding.",
+                    alpha, fd_delta,
+                )
+
+            row = {
+                "kind": "gradcheck",
+                "alpha": alpha,
+                "F_alpha": f_alpha,
+                "D_analytic": d_an,
+                "D_fd": d_fd,
+                "ratio": r,
+                "relerr": re,
+                "fd_kind": fk,
+                "fd_lo": lo,
+                "fd_hi": hi,
+                "F_fd_lo": f_lo,
+                "F_fd_hi": f_hi,
+                "fd_delta": fd_delta,
+                "fd_snr_warning": snr_warning,
+            }
+            gc_rows.append(row)
+            writer.writerow(row)
+            csvfile.flush()
+            log.info(
+                "[gradcheck %d/%d] alpha=%.4f D_analytic=%.6f D_fd=%.6f ratio=%.4f "
+                "fd_kind=%s snr_warn=%s",
+                i + 1, len(grad_alphas), alpha, d_an, d_fd, r, fk, snr_warning,
+            )
 
     csvfile.close()
     wall = time.time() - t0

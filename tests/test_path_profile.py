@@ -305,3 +305,60 @@ class TestDryRun:
         assert "forward-equivalents" in captured
         assert "bf16" in captured
         assert "fp32" in captured
+
+
+# ---------------------------------------------------------------------------
+# 10. --skip-fd
+# ---------------------------------------------------------------------------
+
+
+class TestSkipFd:
+    def test_parser_default_is_false(self):
+        args = pp.build_parser().parse_args(["--dataset", "4fqi_h1"])
+        assert args.skip_fd is False
+
+    def test_parser_accepts_flag(self):
+        args = pp.build_parser().parse_args(["--dataset", "4fqi_h1", "--skip-fd"])
+        assert args.skip_fd is True
+
+    def test_dry_run_cost_with_skip_fd(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(Path(__file__).resolve().parents[1])
+        out = tmp_path / "pp_{dataset}_{score}.csv"
+        pp.main([
+            "--dataset", "4fqi_h1",
+            "--chain-subset", "H,L,A",
+            "--skip-fd",
+            "--dry-run",
+            "--out", str(out),
+        ])
+        captured = capsys.readouterr().out
+        assert "no FD" in captured
+        assert "skip_fd:        True" in captured
+        # 21 profile + 3 gradcheck (1 bwd each, no 2 fwd) = 24 forward-equivalents
+        assert "24 forward-equivalents" in captured
+
+    def test_dry_run_cost_without_skip_fd(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(Path(__file__).resolve().parents[1])
+        out = tmp_path / "pp_{dataset}_{score}.csv"
+        pp.main([
+            "--dataset", "4fqi_h1",
+            "--chain-subset", "H,L,A",
+            "--dry-run",
+            "--out", str(out),
+        ])
+        captured = capsys.readouterr().out
+        # 21 profile + 3*(2 fwd + 1 bwd) = 30 forward-equivalents
+        assert "30 forward-equivalents" in captured
+        assert "skip_fd:        False" in captured
+
+    def test_estimate_wall_time_skip_fd(self):
+        # 21 profile, 3 gradcheck, skip_fd: 21 fwd + 0 fwd + 3 bwd = 21+3=24
+        t = pp.estimate_wall_time(21, 3, 1.0, 1.0, skip_fd=True)
+        assert t == pytest.approx(24.0)
+
+    def test_estimate_wall_time_no_skip_fd(self):
+        t = pp.estimate_wall_time(21, 3, 1.0, 1.0, skip_fd=False)
+        assert t == pytest.approx(30.0)
+
+    def test_gradcheck_columns_has_fd_kind(self):
+        assert "fd_kind" in pp._GRADCHECK_COLUMNS
