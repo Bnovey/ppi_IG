@@ -36,6 +36,49 @@ log = logging.getLogger("sanity")
 
 _STRUCTURE_FOR = {"4fqi_h1": "4fqi_hlab", "4fqi_h3": "4fqi_hlab"}
 
+
+def resolve_chain_subset(
+    struct_chains: dict[str, str],
+    subset_arg: str | None,
+    mutated_chain: str,
+) -> tuple[dict[str, str], str]:
+    """Filter *struct_chains* to the requested subset.
+
+    Returns ``(filtered_chains, subset_label)`` where *subset_label* is the
+    concatenation of chain IDs (e.g. ``"HLA"``) or ``"all"`` when no subset was
+    requested.  The returned dict preserves the PDB's original chain order.
+    """
+    if subset_arg is None:
+        return dict(struct_chains), "all"
+
+    requested = [c.strip() for c in subset_arg.split(",") if c.strip()]
+    if not requested:
+        raise SystemExit("--chain-subset is empty after parsing.")
+
+    if len(requested) != len(set(requested)):
+        raise SystemExit(
+            f"--chain-subset contains duplicates: {requested}"
+        )
+
+    available = list(struct_chains)
+    unknown = [c for c in requested if c not in struct_chains]
+    if unknown:
+        raise SystemExit(
+            f"Unknown chain(s) {unknown} in --chain-subset. "
+            f"Available chains in PDB: {available}"
+        )
+
+    if mutated_chain not in requested:
+        raise SystemExit(
+            f"--chain {mutated_chain} (the mutated chain) must be included "
+            f"in --chain-subset {requested}."
+        )
+
+    requested_set = set(requested)
+    filtered = {c: s for c, s in struct_chains.items() if c in requested_set}
+    label = "".join(filtered)
+    return filtered, label
+
 THRESHOLDS = {
     "completeness": "relative error < 0.05",
     "m_sweep": "consecutive Spearman > 0.95 by m=32",
@@ -85,7 +128,7 @@ def check_completeness(forward_fn, s_inputs, baseline, m_steps=16):
     err = completeness_error(res, f_x, f_b)
     return _result(
         "completeness", err < 0.05, float(err),
-        f"f(x)={f_x:.6f} f(baseline)={f_b:.6f} sum(ig)={float(res.ig.sum()):.6f}",
+        f"m_steps={m_steps} f(x)={f_x:.6f} f(baseline)={f_b:.6f} sum(ig)={float(res.ig.sum()):.6f}",
     )
 
 
@@ -353,8 +396,19 @@ def main() -> None:
         default=os.path.expanduser(os.environ.get("BOLTZ_CACHE", "~/.boltz")),
     )
     p.add_argument("--no-msa-server", action="store_true")
+    p.add_argument(
+        "--chain-subset", default=None,
+        help="Comma-separated chain IDs (e.g. H,L,A). Default: all chains.",
+    )
+    p.add_argument(
+        "--m-steps", type=int, default=16,
+        help="Number of integration steps for the completeness check (default 16).",
+    )
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
+
+    if args.m_steps < 1:
+        raise SystemExit(f"--m-steps must be >= 1, got {args.m_steps}")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -363,10 +417,38 @@ def main() -> None:
     if unknown:
         raise SystemExit(f"Unknown checks: {sorted(unknown)}. Available: {CHECKS}")
 
+    cache_dir = Path(args.cache_dir)
+    stem = args.structure or _STRUCTURE_FOR.get(args.dataset)
+    if stem is None:
+        raise SystemExit(f"No structure known for {args.dataset}; pass --structure.")
+    pdb = cache_dir / f"{stem}.pdb"
+
+    subset_label = "all"
+    n_tokens = None
+    if pdb.exists():
+        all_chains = read_pdb_chains(pdb)
+        struct_chains, subset_label = resolve_chain_subset(
+            all_chains, args.chain_subset, args.chain,
+        )
+        n_tokens = sum(len(s) for s in struct_chains.values())
+        chain_lengths = {c: len(s) for c, s in struct_chains.items()}
+        log.info(
+            "Chain subset: %s  lengths: %s  L=%d",
+            subset_label, chain_lengths, n_tokens,
+        )
+    elif args.chain_subset is not None:
+        raise SystemExit(
+            f"--chain-subset requires the PDB at {pdb}; "
+            "run scripts/00_fetch_data.py first."
+        )
+
     if args.dry_run:
         print(f"Would run {len(selected)} check(s) on {args.dataset}/{args.score}:\n")
         for c in selected:
             print(f"  {c:<18} {THRESHOLDS[c]}")
+        if n_tokens is not None:
+            print(f"\nChain subset: {subset_label}  L={n_tokens}")
+        print(f"m_steps: {args.m_steps}")
         print("\nGate: exits non-zero if any non-informational check fails.")
         return
 
@@ -383,13 +465,17 @@ def main() -> None:
     if args.score not in SCORES:
         raise SystemExit(f"--score must be one of {sorted(SCORES)}")
 
-    cache_dir = Path(args.cache_dir)
     lib = build_library(args.dataset, cache_dir, chain=args.chain)
-    stem = args.structure or _STRUCTURE_FOR.get(args.dataset)
-    if stem is None:
-        raise SystemExit(f"No structure known for {args.dataset}; pass --structure.")
-    pdb = cache_dir / f"{stem}.pdb"
-    struct_chains = read_pdb_chains(pdb)
+    if not pdb.exists():
+        raise SystemExit(f"Missing PDB: {pdb}")
+    if n_tokens is None:
+        all_chains = read_pdb_chains(pdb)
+        struct_chains, subset_label = resolve_chain_subset(
+            all_chains, args.chain_subset, args.chain,
+        )
+        n_tokens = sum(len(s) for s in struct_chains.values())
+
+    cache_suffix = f"_{subset_label}" if subset_label != "all" else ""
     model, _boltz_version = load_model(args.checkpoint_dir, args.device)
 
     def chains_for(seq):
@@ -397,8 +483,26 @@ def main() -> None:
         d[args.chain] = seq
         return d
 
+    # n_tokens above came from the PDB, but what actually gets featurised has
+    # chain `args.chain` REPLACED by lib.reference_seq. Record the length of the
+    # complex that ran, not the one the PDB implies, and say so when they differ
+    # -- an artifact that reports an L its own run did not use is the same class
+    # of defect as 04_scan's "fixed_wt" geometry claim (docs/MEMSCALE_RESULTS.md
+    # section 5), which was asserted rather than measured and was wrong.
+    ref_chains = chains_for(lib.reference_seq)
+    n_tokens_pdb, n_tokens = n_tokens, sum(len(s) for s in ref_chains.values())
+    if n_tokens != n_tokens_pdb:
+        log.warning(
+            "L=%d as featurised, not the %d the PDB implies: chain %s is "
+            "reference_seq (%d aa) and not the PDB's (%d aa).",
+            n_tokens, n_tokens_pdb, args.chain,
+            len(lib.reference_seq), len(struct_chains[args.chain]),
+        )
+    log.info("Featurising L=%d over chains %s", n_tokens, list(ref_chains))
+
     ref_feats, _ = build_complex_feats(
-        chains_for(lib.reference_seq), pdb, cache_dir / "boltz_ref",
+        ref_chains, pdb,
+        cache_dir / f"boltz_ref{cache_suffix}",
         args.device, use_msa_server=not args.no_msa_server,
     )
     x_pred = ref_feats["coords"].detach()
@@ -417,7 +521,8 @@ def main() -> None:
 
     def score_of_sequence(seq):
         feats, _ = build_complex_feats(
-            chains_for(seq), pdb, cache_dir / "boltz_sanity",
+            chains_for(seq), pdb,
+            cache_dir / f"boltz_sanity{cache_suffix}",
             args.device, use_msa_server=not args.no_msa_server,
         )
         with torch.no_grad():
@@ -427,7 +532,7 @@ def main() -> None:
             ))
 
     runners = {
-        "completeness": lambda: check_completeness(forward_fn, s_inputs, baseline),
+        "completeness": lambda: check_completeness(forward_fn, s_inputs, baseline, m_steps=args.m_steps),
         "m_sweep": lambda: check_m_sweep(forward_fn, s_inputs, baseline),
         "random_weights": lambda: check_random_weights(
             make_forward_fn, model, s_inputs, baseline),
@@ -448,19 +553,31 @@ def main() -> None:
             results.append(_result(name, False, None, f"raised {type(e).__name__}: {e}"))
         log.info("  -> %s", "PASS" if results[-1]["passed"] else "FAIL")
 
-    out = Path(args.out.format(dataset=args.dataset, score=args.score))
+    out = Path(args.out.format(
+        dataset=args.dataset, score=args.score,
+        subset=subset_label, m_steps=args.m_steps,
+    ))
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "dataset": args.dataset, "score": args.score, "chain": args.chain,
+        "chain_subset": list(struct_chains) if subset_label != "all" else None,
+        "n_tokens": n_tokens,
+        "n_tokens_pdb": n_tokens_pdb,
+        "m_steps": args.m_steps,
         "checks": results,
     }
     out.write_text(json.dumps(payload, indent=2, default=str) + "\n")
     prov_write(
         out, stage="07_sanity",
         inputs={"dataset": args.dataset, "structure": str(pdb)},
-        params={"checks": selected, "n_sample": args.n_sample},
+        params={"checks": selected, "n_sample": args.n_sample,
+                "chain_subset": list(struct_chains) if subset_label != "all" else None},
         arm={"score": args.score, "dataset": args.dataset, "chain": args.chain,
-             "method": "sanity", **numerics_arm()},
+             "method": "sanity",
+             "chain_subset": list(struct_chains) if subset_label != "all" else None,
+             "n_tokens": n_tokens, "n_tokens_pdb": n_tokens_pdb,
+             "m_steps": args.m_steps,
+             **numerics_arm()},
         notes="Tier-0 gate. Non-informational failures make downstream numbers void.",
     )
 

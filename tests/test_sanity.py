@@ -285,3 +285,138 @@ def test_dry_run_lists_every_check(capsys):
     assert f"Would run {len(sanity.CHECKS)} check(s)" in out
     for name in sanity.CHECKS:
         assert name in out
+
+
+# ---------------------------------------------------------------------------
+# 6. resolve_chain_subset
+# ---------------------------------------------------------------------------
+
+_MOCK_CHAINS = {"A": "A" * 324, "B": "B" * 176, "H": "H" * 121, "L": "L" * 109}
+
+
+class TestResolveChainSubset:
+    def test_no_subset_returns_all(self):
+        filtered, label = sanity.resolve_chain_subset(_MOCK_CHAINS, None, "H")
+        assert filtered == _MOCK_CHAINS
+        assert label == "all"
+
+    def test_preserves_pdb_order(self):
+        filtered, label = sanity.resolve_chain_subset(_MOCK_CHAINS, "H,L,A", "H")
+        assert list(filtered.keys()) == ["A", "H", "L"]
+        assert label == "AHL"
+
+    def test_4fqi_HLA_gives_554(self):
+        filtered, label = sanity.resolve_chain_subset(_MOCK_CHAINS, "H,L,A", "H")
+        assert sum(len(s) for s in filtered.values()) == 554
+
+    def test_unknown_chain_exits(self):
+        with pytest.raises(SystemExit, match="Unknown chain"):
+            sanity.resolve_chain_subset(_MOCK_CHAINS, "H,L,X", "H")
+
+    def test_mutated_chain_excluded_exits(self):
+        with pytest.raises(SystemExit, match="mutated chain"):
+            sanity.resolve_chain_subset(_MOCK_CHAINS, "A,B", "H")
+
+    def test_empty_subset_exits(self):
+        with pytest.raises(SystemExit, match="empty"):
+            sanity.resolve_chain_subset(_MOCK_CHAINS, "", "H")
+
+    def test_duplicate_chain_ids_exits(self):
+        with pytest.raises(SystemExit, match="duplicates"):
+            sanity.resolve_chain_subset(_MOCK_CHAINS, "H,H,L", "H")
+
+
+# ---------------------------------------------------------------------------
+# 7. cache-dir naming
+# ---------------------------------------------------------------------------
+
+
+class TestCacheDirNaming:
+    def test_subset_suffixed(self):
+        _, label = sanity.resolve_chain_subset(_MOCK_CHAINS, "H,L,A", "H")
+        suffix = f"_{label}"
+        assert suffix == "_AHL"
+        assert f"boltz_ref{suffix}" == "boltz_ref_AHL"
+        assert f"boltz_sanity{suffix}" == "boltz_sanity_AHL"
+
+    def test_no_subset_byte_identical(self):
+        _, label = sanity.resolve_chain_subset(_MOCK_CHAINS, None, "H")
+        suffix = f"_{label}" if label != "all" else ""
+        assert f"boltz_ref{suffix}" == "boltz_ref"
+        assert f"boltz_sanity{suffix}" == "boltz_sanity"
+
+
+# ---------------------------------------------------------------------------
+# 8. --out template rendering
+# ---------------------------------------------------------------------------
+
+
+class TestOutTemplate:
+    def test_default_template_unchanged(self):
+        template = "results/sanity_{dataset}_{score}.json"
+        rendered = template.format(
+            dataset="4fqi_h1", score="complex_pde", subset="HLA", m_steps=8,
+        )
+        assert rendered == "results/sanity_4fqi_h1_complex_pde.json"
+
+    def test_subset_and_m_steps_in_template(self):
+        template = "results/sanity_{dataset}_{score}_{subset}_m{m_steps}.json"
+        rendered = template.format(
+            dataset="4fqi_h1", score="complex_pde", subset="HLA", m_steps=8,
+        )
+        assert rendered == "results/sanity_4fqi_h1_complex_pde_HLA_m8.json"
+
+    def test_all_subset_rendering(self):
+        template = "results/sanity_{dataset}_{score}_{subset}.json"
+        rendered = template.format(
+            dataset="4fqi_h1", score="complex_pde", subset="all", m_steps=16,
+        )
+        assert rendered == "results/sanity_4fqi_h1_complex_pde_all.json"
+
+
+# ---------------------------------------------------------------------------
+# 9. --m-steps validation
+# ---------------------------------------------------------------------------
+
+
+class TestMStepsValidation:
+    def test_zero_exits(self):
+        argv = sys.argv
+        sys.argv = ["07_sanity.py", "--dataset", "4fqi_h1", "--m-steps", "0", "--dry-run"]
+        try:
+            with pytest.raises(SystemExit, match="must be >= 1"):
+                sanity.main()
+        finally:
+            sys.argv = argv
+
+    def test_negative_exits(self):
+        argv = sys.argv
+        sys.argv = ["07_sanity.py", "--dataset", "4fqi_h1", "--m-steps", "-3", "--dry-run"]
+        try:
+            with pytest.raises(SystemExit, match="must be >= 1"):
+                sanity.main()
+        finally:
+            sys.argv = argv
+
+
+# ---------------------------------------------------------------------------
+# 10. dry-run with subset reports resolved L
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_with_subset_reports_L(capsys):
+    argv = sys.argv
+    sys.argv = [
+        "07_sanity.py", "--dataset", "4fqi_h1",
+        "--chain-subset", "H,L,A",
+        "--checks", "completeness",
+        "--m-steps", "8",
+        "--dry-run",
+    ]
+    try:
+        sanity.main()
+    finally:
+        sys.argv = argv
+    out = capsys.readouterr().out
+    assert "L=554" in out
+    assert "m_steps: 8" in out
