@@ -17,19 +17,22 @@ reference and mutant see the same subsample, the noise CANCELS in the delta,
 and stage 02 is trustworthy. If it does not, every embedding delta is
 noise-dominated and T3 cannot be computed this way.
 """
-import sys, logging
+import logging
+import sys
 from pathlib import Path
+
 sys.path.insert(0, "src")
 logging.basicConfig(level=logging.WARNING)
 
-import torch
-from igv.data import build_library, read_pdb_chains
-from igv.boltz_score import build_complex_feats, embedder_only, load_model
+import torch  # noqa: E402
+from igv.data import build_library, read_pdb_chains  # noqa: E402
+from igv.boltz_score import build_complex_feats, embedder_only, load_model  # noqa: E402
 
 cache = Path("data/raw")
 lib = build_library("4fqi_h1", cache, chain="H")
 struct = read_pdb_chains(cache / "4fqi_hlab.pdb")
-chains = dict(struct); chains["H"] = lib.reference_seq
+chains = dict(struct)
+chains["H"] = lib.reference_seq
 pdb = cache / "4fqi_hlab.pdb"
 model, _ = load_model("/root/.boltz", "cuda")
 
@@ -40,7 +43,8 @@ feats, _ = build_complex_feats(chains, pdb, d, "cuda", use_msa_server=True)
 
 def emb(seed=None):
     if seed is not None:
-        torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
     return embedder_only(model, feats)
 
 print("--- same feats, NO seed ---", flush=True)
@@ -66,16 +70,19 @@ for k in ("msa", "res_type", "token_index"):
 print("feats identical across two featurisations:", same, flush=True)
 
 # And how big is a REAL single-substitution delta, against that noise?
-mut = dict(chains); pos = 28
+mut = dict(chains)
+pos = 28
 mut["H"] = lib.reference_seq[:pos] + "S" + lib.reference_seq[pos+1:]
 files = sorted((d / "msa").glob("input_*.csv"), key=lambda p: int(p.stem.rsplit("_",1)[1]))
 msa_by_chain = {cid: f for cid, f in zip(chains.keys(), files)}
 fm, tm = build_complex_feats(mut, pdb, cache / "probe_msa/F_mut", "cuda",
                              use_msa_server=False, msa=msa_by_chain)
 sm = emb_m = None
-torch.manual_seed(0); torch.cuda.manual_seed_all(0)
+torch.manual_seed(0)
+torch.cuda.manual_seed_all(0)
 sm = embedder_only(model, fm)
-torch.manual_seed(0); torch.cuda.manual_seed_all(0)
+torch.manual_seed(0)
+torch.cuda.manual_seed_all(0)
 sr = embedder_only(model, feats)
 ti = tm[("H", pos)]
 delta = (sm[0, ti] - sr[0, ti])

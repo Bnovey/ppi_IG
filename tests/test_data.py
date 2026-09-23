@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from igv.data import (
     _build_consensus,
     _derive_substitutions,
+    _rcsb_url,
     align_reference_to_structure,
     build_library,
+    download_rcsb,
     find_variable_positions,
     read_pdb_chains,
 )
@@ -229,3 +232,88 @@ def test_4fqi_h1_integration(tmp_path):
 
     censored = (lib.frame["binding_score"] == 7.0).sum()
     assert censored == 1675
+
+
+# ---------------------------------------------------------------------------
+# RCSB download
+# ---------------------------------------------------------------------------
+
+def test_rcsb_url_uppercase():
+    assert _rcsb_url("3hfm") == "https://files.rcsb.org/download/3HFM.pdb"
+    assert _rcsb_url("3HFM") == "https://files.rcsb.org/download/3HFM.pdb"
+
+
+def test_download_rcsb_caches(tmp_path):
+    pdb_content = b"ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\nEND\n"
+
+    class FakeResp:
+        content = pdb_content
+        def raise_for_status(self):
+            pass
+
+    call_count = 0
+
+    def fake_get(url, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        return FakeResp()
+
+    with patch("igv.data.requests.get", side_effect=fake_get):
+        p1 = download_rcsb("3hfm", tmp_path)
+        p2 = download_rcsb("3hfm", tmp_path)
+
+    assert p1 == p2
+    assert p1.name == "3hfm.pdb"
+    assert p1.read_bytes() == pdb_content
+    assert call_count == 1
+
+
+def test_download_rcsb_creates_parent(tmp_path):
+    nested = tmp_path / "a" / "b"
+
+    class FakeResp:
+        content = b"END\n"
+        def raise_for_status(self):
+            pass
+
+    with patch("igv.data.requests.get", return_value=FakeResp()):
+        p = download_rcsb("1abc", nested)
+
+    assert p.exists()
+    assert p.name == "1abc.pdb"
+
+
+# ---------------------------------------------------------------------------
+# build_library rejects unrecognised chains
+# ---------------------------------------------------------------------------
+
+def test_build_library_rejects_non_HL_chain():
+    import pandas as pd
+
+    df = pd.DataFrame({
+        "heavy_chain_seq": ["ACGT"],
+        "light_chain_seq": ["MMMM"],
+        "binding_score": [1.0],
+    })
+
+    with patch("igv.data.load_affinity", return_value=df):
+        with pytest.raises(ValueError, match="must be 'H' or 'L'"):
+            build_library("fake", Path("/tmp"), chain="Y")
+
+
+def test_build_library_accepts_H_and_L():
+    import pandas as pd
+
+    df = pd.DataFrame({
+        "heavy_chain_seq": ["ACGT", "AXGT"],
+        "light_chain_seq": ["MMMM", "MMMM"],
+        "binding_score": [1.0, 2.0],
+    })
+
+    with patch("igv.data.load_affinity", return_value=df):
+        lib_h = build_library("fake", Path("/tmp"), chain="H")
+        assert lib_h.chain == "H"
+
+    with patch("igv.data.load_affinity", return_value=df):
+        lib_l = build_library("fake", Path("/tmp"), chain="L")
+        assert lib_l.chain == "L"

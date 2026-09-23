@@ -27,10 +27,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from igv.data import build_library, read_pdb_chains, resolve_chain_subset  # noqa: E402
+from igv.data import build_library, download_rcsb, read_pdb_chains, resolve_chain_subset  # noqa: E402
 from igv.gpu import require_vram  # noqa: E402
 from igv.metrics import spearman  # noqa: E402
 from igv.provenance import assert_provenance, write as prov_write  # noqa: E402
+from igv.skempi import get_complex  # noqa: E402
 
 log = logging.getLogger("sanity")
 
@@ -341,7 +342,7 @@ def check_arm_assertion(dataset, score, chain, results_dir=Path("results")):
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--dataset", required=True)
-    p.add_argument("--chain", default="H", choices=["H", "L"])
+    p.add_argument("--chain", default="H")
     p.add_argument("--score", default="complex_pde")
     p.add_argument("--checks", default="all", help="'all' or comma-separated names")
     p.add_argument("--n-sample", type=int, default=30)
@@ -388,15 +389,33 @@ def main() -> None:
         raise SystemExit(f"Unknown checks: {sorted(unknown)}. Available: {CHECKS}")
 
     cache_dir = Path(args.cache_dir)
-    stem = args.structure or _STRUCTURE_FOR.get(args.dataset)
-    if stem is None:
-        raise SystemExit(f"No structure known for {args.dataset}; pass --structure.")
-    pdb = cache_dir / f"{stem}.pdb"
+
+    skempi = None
+    try:
+        skempi = get_complex(args.dataset)
+    except KeyError:
+        pass
+
+    if skempi is not None:
+        data_source = "skempi"
+        pdb = download_rcsb(skempi.pdb_id, cache_dir)
+        stem = args.structure or skempi.pdb_id.lower()
+    else:
+        data_source = "abbibench"
+        stem = args.structure or _STRUCTURE_FOR.get(args.dataset)
+        if stem is None:
+            raise SystemExit(f"No structure known for {args.dataset}; pass --structure.")
+        pdb = cache_dir / f"{stem}.pdb"
 
     subset_label = "all"
     n_tokens = None
     if pdb.exists():
         all_chains = read_pdb_chains(pdb)
+        if args.chain not in all_chains:
+            raise SystemExit(
+                f"Chain {args.chain!r} not found in PDB {pdb.name}. "
+                f"Available chains: {list(all_chains.keys())}"
+            )
         struct_chains, subset_label = resolve_chain_subset(
             all_chains, args.chain_subset, args.chain,
         )
@@ -436,11 +455,21 @@ def main() -> None:
     if args.score not in SCORES:
         raise SystemExit(f"--score must be one of {sorted(SCORES)}")
 
-    lib = build_library(args.dataset, cache_dir, chain=args.chain)
+    lib = None
+    if skempi is not None:
+        log.info("SKEMPI complex %s — no mutant library", skempi.pdb_id)
+    else:
+        lib = build_library(args.dataset, cache_dir, chain=args.chain)
+
     if not pdb.exists():
         raise SystemExit(f"Missing PDB: {pdb}")
     if n_tokens is None:
         all_chains = read_pdb_chains(pdb)
+        if args.chain not in all_chains:
+            raise SystemExit(
+                f"Chain {args.chain!r} not found in PDB {pdb.name}. "
+                f"Available chains: {list(all_chains.keys())}"
+            )
         struct_chains, subset_label = resolve_chain_subset(
             all_chains, args.chain_subset, args.chain,
         )
@@ -454,20 +483,19 @@ def main() -> None:
         d[args.chain] = seq
         return d
 
-    # n_tokens above came from the PDB, but what actually gets featurised has
-    # chain `args.chain` REPLACED by lib.reference_seq. Record the length of the
-    # complex that ran, not the one the PDB implies, and say so when they differ
-    # -- an artifact that reports an L its own run did not use is the same class
-    # of defect as 04_scan's "fixed_wt" geometry claim (docs/MEMSCALE_RESULTS.md
-    # section 5), which was asserted rather than measured and was wrong.
-    ref_chains = chains_for(lib.reference_seq)
+    if lib is not None:
+        reference_seq = lib.reference_seq
+    else:
+        reference_seq = struct_chains[args.chain]
+
+    ref_chains = chains_for(reference_seq)
     n_tokens_pdb, n_tokens = n_tokens, sum(len(s) for s in ref_chains.values())
     if n_tokens != n_tokens_pdb:
         log.warning(
             "L=%d as featurised, not the %d the PDB implies: chain %s is "
             "reference_seq (%d aa) and not the PDB's (%d aa).",
             n_tokens, n_tokens_pdb, args.chain,
-            len(lib.reference_seq), len(struct_chains[args.chain]),
+            len(reference_seq), len(struct_chains[args.chain]),
         )
     log.info("Featurising L=%d over chains %s", n_tokens, list(ref_chains))
 
@@ -511,14 +539,26 @@ def main() -> None:
                 model, si, feats, x_pred, args.score, gradient_checkpointing=False
             ))
 
+    def _signal_control_runner():
+        if lib is None:
+            r = _result(
+                "signal_control", True, None,
+                "SKIPPED: no mutant library (SKEMPI structure-only path). "
+                "signal_control requires measured binding scores from AbBiBench.",
+            )
+            r["skipped"] = True
+            return r
+        return check_signal_control(
+            score_of_sequence, lib, n_sample=args.n_sample,
+        )
+
     runners = {
         "completeness": lambda: check_completeness(forward_fn, s_inputs, baseline, m_steps=args.m_steps, baseline_scale=args.baseline_scale),
         "m_sweep": lambda: check_m_sweep(forward_fn, s_inputs, baseline),
         "random_weights": lambda: check_random_weights(
             make_forward_fn, model, s_inputs, baseline),
         "dead_target": lambda: check_dead_target(forward_fn, s_inputs, baseline),
-        "signal_control": lambda: check_signal_control(
-            score_of_sequence, lib, n_sample=args.n_sample),
+        "signal_control": _signal_control_runner,
         "frozen_vs_full": lambda: check_frozen_vs_full(
             make_forward_fn, model, s_inputs, baseline),
         "arm_assertion": lambda: check_arm_assertion(args.dataset, args.score, args.chain),
@@ -551,7 +591,7 @@ def main() -> None:
     out.write_text(json.dumps(payload, indent=2, default=str) + "\n")
     prov_write(
         out, stage="07_sanity",
-        inputs={"dataset": args.dataset, "structure": str(pdb)},
+        inputs={"dataset": args.dataset, "structure": str(pdb), "data_source": data_source},
         params={"checks": selected, "n_sample": args.n_sample,
                 "chain_subset": list(struct_chains) if subset_label != "all" else None},
         arm={"score": args.score, "dataset": args.dataset, "chain": args.chain,
@@ -567,7 +607,14 @@ def main() -> None:
     blocking = [r for r in results if not r["passed"] and not r.get("informational")]
     print("\n" + "=" * 68)
     for r in results:
-        tag = "INFO" if r.get("informational") else ("PASS" if r["passed"] else "FAIL")
+        if r.get("skipped"):
+            tag = "SKIP"
+        elif r.get("informational"):
+            tag = "INFO"
+        elif r["passed"]:
+            tag = "PASS"
+        else:
+            tag = "FAIL"
         print(f"  {tag:<5} {r['name']:<18} {r['detail'][:80]}")
     print("=" * 68)
     print(f"Wrote {out}")

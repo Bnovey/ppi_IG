@@ -30,9 +30,10 @@ from igv.attrib import (
     integrated_gradient,
     plain_gradient,
 )
-from igv.data import build_library, download, read_pdb_chains
+from igv.data import build_library, download, download_rcsb, read_pdb_chains
 from igv.gpu import require_vram
 from igv.provenance import write as prov_write
+from igv.skempi import get_complex
 
 log = logging.getLogger(__name__)
 
@@ -162,25 +163,47 @@ def main() -> None:
     require_vram(min_gib=78)
 
     # --- 1. Load library and structure ---
-    log.info("Building library for %s (chain=%s)", dataset, chain)
-    lib = build_library(dataset, cache_dir, chain=chain)
-    reference_seq = lib.reference_seq
+    skempi = None
+    try:
+        skempi = get_complex(dataset)
+    except KeyError:
+        pass
 
-    struct_name = args.structure or STRUCTURE_FOR_DATASET.get(dataset)
-    if struct_name is None:
-        raise ValueError(
-            f"No default structure for dataset {dataset!r}. "
-            "Provide --structure explicitly."
-        )
-    pdb_path = download(struct_name, "structure", cache_dir)
-    pdb_chains = read_pdb_chains(pdb_path)
+    if skempi is not None:
+        data_source = "skempi"
+        log.info("SKEMPI complex %s (chain=%s)", skempi.pdb_id, chain)
+        pdb_path = download_rcsb(skempi.pdb_id, cache_dir)
+        pdb_chains = read_pdb_chains(pdb_path)
+        if chain not in pdb_chains:
+            raise ValueError(
+                f"Chain {chain!r} not found in PDB {skempi.pdb_id}. "
+                f"Available chains: {list(pdb_chains.keys())}"
+            )
+        reference_seq = pdb_chains[chain]
+        struct_name = args.structure or skempi.pdb_id.lower()
+        chains = dict(pdb_chains)
+    else:
+        data_source = "abbibench"
+        log.info("Building library for %s (chain=%s)", dataset, chain)
+        lib = build_library(dataset, cache_dir, chain=chain)
+        reference_seq = lib.reference_seq
 
-    chains: dict[str, str] = {}
-    for ch_id, seq in pdb_chains.items():
-        if ch_id == chain:
-            chains[ch_id] = reference_seq
-        else:
-            chains[ch_id] = seq
+        struct_name = args.structure or STRUCTURE_FOR_DATASET.get(dataset)
+        if struct_name is None:
+            raise ValueError(
+                f"No default structure for dataset {dataset!r}. "
+                "Provide --structure explicitly."
+            )
+        pdb_path = download(struct_name, "structure", cache_dir)
+        pdb_chains = read_pdb_chains(pdb_path)
+
+        chains = {}
+        for ch_id, seq in pdb_chains.items():
+            if ch_id == chain:
+                chains[ch_id] = reference_seq
+            else:
+                chains[ch_id] = seq
+
     log.info(
         "Complex chains: %s",
         {c: len(s) for c, s in chains.items()},
@@ -346,6 +369,7 @@ def main() -> None:
             "structure": struct_name,
             "cache_dir": str(cache_dir),
             "checkpoint_dir": str(checkpoint_dir),
+            "data_source": data_source,
         },
         params={
             "chain": chain,

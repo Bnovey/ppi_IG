@@ -502,3 +502,64 @@ class TestBaselineScale:
         baseline_half = 0.5 * x
         r2 = sanity.check_completeness(forward_fn, x, baseline_half, m_steps=8, baseline_scale=0.5)
         assert "baseline_scale=0.5" in r2["detail"]
+
+
+# ---------------------------------------------------------------------------
+# 12. SKEMPI path: --chain accepts arbitrary PDB chains, dry-run works
+# ---------------------------------------------------------------------------
+
+
+class TestSkempiPath:
+    """Tests that 07_sanity accepts SKEMPI complex keys and arbitrary chains."""
+
+    def test_chain_Y_accepted_in_argparse(self):
+        argv = sys.argv
+        sys.argv = [
+            "07_sanity.py", "--dataset", "3HFM", "--chain", "Y", "--dry-run",
+        ]
+        try:
+            sanity.main()
+        finally:
+            sys.argv = argv
+
+    def test_dry_run_3hfm_chain_Y(self, capsys):
+        argv = sys.argv
+        sys.argv = [
+            "07_sanity.py", "--dataset", "3HFM", "--chain", "Y", "--dry-run",
+        ]
+        try:
+            sanity.main()
+        finally:
+            sys.argv = argv
+        out = capsys.readouterr().out
+        assert f"Would run {len(sanity.CHECKS)} check(s)" in out
+
+    def test_invalid_chain_rejected(self, tmp_path):
+        pdb_text = (
+            "ATOM      1  N   ALA H   1      0.0   0.0   0.0  1.00  0.00           N\n"
+            "ATOM      2  N   ALA L   1      0.0   0.0   0.0  1.00  0.00           N\n"
+            "ATOM      3  N   ALA Y   1      0.0   0.0   0.0  1.00  0.00           N\n"
+            "END\n"
+        )
+        pdb_file = tmp_path / "3hfm.pdb"
+        pdb_file.write_text(pdb_text)
+        argv = sys.argv
+        sys.argv = [
+            "07_sanity.py", "--dataset", "3HFM", "--chain", "Z",
+            "--cache-dir", str(tmp_path), "--dry-run",
+        ]
+        try:
+            with pytest.raises(SystemExit, match="Chain.*not found"):
+                sanity.main()
+        finally:
+            sys.argv = argv
+
+    def test_signal_control_skipped_result(self):
+        r = sanity._result("signal_control", True, None, "SKIPPED: no mutant library")
+        r["skipped"] = True
+        assert r["passed"] is True
+        assert r["skipped"] is True
+        blocking = [
+            x for x in [r] if not x["passed"] and not x.get("informational")
+        ]
+        assert blocking == []

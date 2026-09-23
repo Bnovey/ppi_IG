@@ -81,6 +81,30 @@ def _structure_url(name: str) -> str:
     return f"{_HF_BASE}/complex_structure/{name}.pdb"
 
 
+_RCSB_BASE = "https://files.rcsb.org/download"
+
+
+def _rcsb_url(pdb_id: str) -> str:
+    return f"{_RCSB_BASE}/{pdb_id.upper()}.pdb"
+
+
+def _atomic_download(url: str, dest: Path) -> None:
+    """Fetch *url* and write to *dest* atomically via temp file + os.replace."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    resp = requests.get(url, timeout=120)
+    resp.raise_for_status()
+
+    fd, tmp = tempfile.mkstemp(dir=dest.parent)
+    try:
+        os.write(fd, resp.content)
+        os.close(fd)
+        os.replace(tmp, dest)
+    except BaseException:
+        os.close(fd)
+        os.unlink(tmp)
+        raise
+
+
 def download(name: str, kind: str, cache_dir: Path) -> Path:
     """Download an affinity CSV or structure PDB, caching to disk.
 
@@ -103,20 +127,23 @@ def download(name: str, kind: str, cache_dir: Path) -> Path:
     if dest.exists():
         return dest
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    resp = requests.get(url, timeout=120)
-    resp.raise_for_status()
+    _atomic_download(url, dest)
+    return dest
 
-    fd, tmp = tempfile.mkstemp(dir=cache_dir)
-    try:
-        os.write(fd, resp.content)
-        os.close(fd)
-        os.replace(tmp, dest)
-    except BaseException:
-        os.close(fd)
-        os.unlink(tmp)
-        raise
 
+def download_rcsb(pdb_id: str, cache_dir: Path) -> Path:
+    """Download a PDB file from RCSB by its 4-character id, caching to disk.
+
+    Writes atomically via a temp file + os.replace so interrupted downloads
+    never leave a corrupt cache entry.  Cached as ``{pdb_id_lower}.pdb``.
+    """
+    cache_dir = Path(cache_dir)
+    dest = cache_dir / f"{pdb_id.lower()}.pdb"
+
+    if dest.exists():
+        return dest
+
+    _atomic_download(_rcsb_url(pdb_id), dest)
     return dest
 
 
@@ -265,7 +292,15 @@ def build_library(
     cache_dir = Path(cache_dir)
     df = load_affinity(name, cache_dir)
 
-    col = "heavy_chain_seq" if chain == "H" else "light_chain_seq"
+    if chain == "H":
+        col = "heavy_chain_seq"
+    elif chain == "L":
+        col = "light_chain_seq"
+    else:
+        raise ValueError(
+            f"build_library chain must be 'H' or 'L', got {chain!r}. "
+            f"For non-antibody chains, use read_pdb_chains() directly."
+        )
     seqs = df[col].tolist()
 
     var_pos = find_variable_positions(seqs)

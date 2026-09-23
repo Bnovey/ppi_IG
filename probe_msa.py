@@ -14,19 +14,21 @@ trip is genuinely lossy and reuse needs a different mechanism.
 Also prints feats["msa"].shape per run: a differing MSA DEPTH would explain it
 outright.
 """
-import sys, logging
+import logging
+import sys
 from pathlib import Path
+
 sys.path.insert(0, "src")
 logging.basicConfig(level=logging.WARNING)
 
-import torch
-from igv.data import build_library, read_pdb_chains
-from igv.boltz_score import build_complex_feats, embedder_only, load_model
+from igv.data import build_library, read_pdb_chains  # noqa: E402
+from igv.boltz_score import build_complex_feats, embedder_only, load_model  # noqa: E402
 
 cache = Path("data/raw")
 lib = build_library("4fqi_h1", cache, chain="H")
 struct = read_pdb_chains(cache / "4fqi_hlab.pdb")
-chains = dict(struct); chains["H"] = lib.reference_seq
+chains = dict(struct)
+chains["H"] = lib.reference_seq
 pdb = cache / "4fqi_hlab.pdb"
 model, _ = load_model("/root/.boltz", "cuda")
 
