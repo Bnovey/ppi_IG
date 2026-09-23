@@ -23,12 +23,15 @@ data/
 .claude/
 
 # GPU-only diagnostics that live untracked on the VM (probe_mem.py,
-# probe_snap2.py). git_dirty comes from `git status --porcelain`, which counts
-# untracked files, so leaving these visible stamps git_dirty: true on every
-# artifact and makes a run unreproducible from its commit alone --
+# probe_snap2.py, probe_msa*.py). git_dirty comes from `git status --porcelain`,
+# which counts untracked files, so leaving these visible stamps git_dirty: true
+# on every artifact and makes a run unreproducible from its commit alone --
 # docs/MEMSCALE_RESULTS.md section 7. probe_params.py is tracked and unaffected.
 probe_mem.py
 probe_snap.py
 probe_snap2.py
+probe_msa.py
+probe_msa2.py
+probe_msa3.py
 # macOS AppleDouble sidecars, which arrive when a tarball is built on the Mac.
 ._*

@@ -34,12 +34,17 @@
                             |
                     results/metrics.csv
                             |
-                     (notebooks 02-04)
+                      (analysis)
 
 
                     07_sanity  (standalone gate)
                          |
               results/sanity_<ds>_<sc>.json
+
+
+         10_skempi_hotspots  (SKEMPI validation arm)
+                         |
+              results/skempi_<complex>_hotspots.csv
 ```
 
 Abbreviations: `<ds>` = dataset (e.g. `4fqi_h1`), `<sc>` = score
@@ -60,6 +65,7 @@ Abbreviations: `<ds>` = dataset (e.g. `4fqi_h1`), `<sc>` = score
 | `results/<ds>_<sc>_<meth>_pred.csv` | 05 | 06 | Predicted binding scores from gradient dot embedding delta |
 | `results/metrics.csv` | 06 | notebooks | Tidy long-format table: dataset, method, term (T1/T2/T3), score, value |
 | `results/sanity_<ds>_<sc>.json` | 07 | (gate) | Sanity-check results: completeness, step-count stability, random-weights, dead-score |
+| `results/skempi_<complex>_hotspots.csv` | 10 | 06 | SKEMPI hot-spot ground truth: per-position ddG with wild-type guard, for a given complex (e.g. `1JTG`, `3HFM`) |
 
 ## Provenance convention
 

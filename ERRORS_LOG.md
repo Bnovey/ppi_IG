@@ -109,8 +109,9 @@ entry 12.
   (`~/boltz_cache`, override with `BOLTZ_CACHE`) on the boot disk, which
   survives VM stop/start. Idempotent. Every documented `docker run` now mounts
   `-v $HOME/boltz_cache:/root/.boltz` — `docs/CLOUD.md` (quick-start +
-  full command + a troubleshooting row), `bootstrap.sh`, `gcp_launch.sh`,
-  `aws_launch.sh` (commit `502f207`).
+  full command + a troubleshooting row), `bootstrap.sh`, `gcp_launch.sh`
+  (commit `502f207`; `aws_launch.sh` was also updated but has since been
+  removed — the project runs on GCP).
 - **Status:** fixed
 - **Cache contents:** `boltz2_conf.ckpt` 2.2 GB, `boltz2_aff.ckpt` 2.0 GB,
   `mols/` + `mols.tar` ~3.5 GB. Total ~5.5 GB. One-time.
@@ -566,8 +567,8 @@ Max abs difference between server-MSA and file-loaded-MSA reference
 embeddings: 1.069308e+00   (tolerance 1e-4)
 ```
 
-Three probes (`probe_msa.py`, `probe_msa2.py`, `probe_msa3.py`, untracked on the
-VM) took it apart:
+Three probes (`probe_msa.py`, `probe_msa2.py`, `probe_msa3.py`, committed in
+`525433c` and since removed -- findings are recorded below) took it apart:
 
 | comparison | max abs | rel |
 |---|---|---|

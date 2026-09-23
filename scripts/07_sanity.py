@@ -407,6 +407,10 @@ def main() -> None:
             raise SystemExit(f"No structure known for {args.dataset}; pass --structure.")
         pdb = cache_dir / f"{stem}.pdb"
 
+    chain_subset_arg = args.chain_subset
+    if chain_subset_arg is None and skempi is not None:
+        chain_subset_arg = ",".join(skempi.all_chains)
+
     subset_label = "all"
     n_tokens = None
     if pdb.exists():
@@ -417,7 +421,7 @@ def main() -> None:
                 f"Available chains: {list(all_chains.keys())}"
             )
         struct_chains, subset_label = resolve_chain_subset(
-            all_chains, args.chain_subset, args.chain,
+            all_chains, chain_subset_arg, args.chain,
         )
         n_tokens = sum(len(s) for s in struct_chains.values())
         chain_lengths = {c: len(s) for c, s in struct_chains.items()}
@@ -471,7 +475,7 @@ def main() -> None:
                 f"Available chains: {list(all_chains.keys())}"
             )
         struct_chains, subset_label = resolve_chain_subset(
-            all_chains, args.chain_subset, args.chain,
+            all_chains, chain_subset_arg, args.chain,
         )
         n_tokens = sum(len(s) for s in struct_chains.values())
 

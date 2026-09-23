@@ -174,14 +174,18 @@ def main() -> None:
         log.info("SKEMPI complex %s (chain=%s)", skempi.pdb_id, chain)
         pdb_path = download_rcsb(skempi.pdb_id, cache_dir)
         pdb_chains = read_pdb_chains(pdb_path)
-        if chain not in pdb_chains:
+        subset = set(skempi.all_chains)
+        if chain not in subset:
             raise ValueError(
-                f"Chain {chain!r} not found in PDB {skempi.pdb_id}. "
-                f"Available chains: {list(pdb_chains.keys())}"
+                f"Chain {chain!r} not in registered subset "
+                f"{sorted(subset)} for complex {skempi.pdb_id}. "
+                f"PDB chains: {list(pdb_chains.keys())}"
             )
         reference_seq = pdb_chains[chain]
         struct_name = args.structure or skempi.pdb_id.lower()
-        chains = dict(pdb_chains)
+        chains = {c: s for c, s in pdb_chains.items() if c in subset}
+        n_tokens = sum(len(s) for s in chains.values())
+        log.info("Chain subset: %s  L=%d", sorted(chains), n_tokens)
     else:
         data_source = "abbibench"
         log.info("Building library for %s (chain=%s)", dataset, chain)

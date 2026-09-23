@@ -393,9 +393,9 @@ uncommitted, with 236 tests passing and no new ruff findings.
 5. **A PyTorch bug that disguises OOMs** (section 7). Not fixable here;
    recorded so the next person is not misled.
 
-Also added: `scripts/cloud/run_wave2.sh`, `scripts/cloud/run_wave3.sh` (the
-single-point probe drivers, each carrying the hypothesis it tests in its header)
-and `probe_params.py` (CPU-only trainable-parameter count).
+Also added: `probe_params.py` (CPU-only trainable-parameter count). The
+single-point probe drivers (`run_wave2.sh`, `run_wave3.sh`) were removed after
+their findings were recorded here and in `ERRORS_LOG.md`.
 
 ---
 

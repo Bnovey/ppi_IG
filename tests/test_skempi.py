@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from igv.skempi import (
+    SKEMPI_MUTATION_COL,
     Mutation,
     SkempiComplex,
     add_ddg,
@@ -91,8 +92,9 @@ def test_ddg_hand_computed():
 @pytest.fixture
 def skempi_fixture():
     return pd.DataFrame({
-        "#Pdb": ["1VFB_AB_C", "1vfb_AB_C", "3HFM_HL_Y", "1MHP_A_B"],
+        "#Pdb": ["1VFB_AB_C", "1vfb_AB_C", "3HFM_HL_Y", "1JTG_A_B"],
         "Mutation(s)_cleaned": ["LA38G", "LA38G,SA100AG", "LH50A", "MA10G"],
+        "Mutation(s)_PDB": ["LA38G", "LA38G,SA100AG", "LH50A", "MA10G"],
         "Hold_out_type": ["AB/AG", "", "AB/AG,Pr/PI", "Pr/PI"],
         "Affinity_mut_parsed": [1e-6, 1e-7, 1e-8, 1e-5],
         "Affinity_wt_parsed": [1e-9, 1e-9, 1e-9, 1e-9],
@@ -139,12 +141,21 @@ def test_get_complex_known():
     c = get_complex("3HFM")
     assert isinstance(c, SkempiComplex)
     assert c.pdb_id == "3HFM"
-    assert c.ab_chains == ("H", "L")
-    assert c.ag_chains == ("Y",)
+    assert c.partner1 == ("H", "L")
+    assert c.partner2 == ("Y",)
+    assert c.all_chains == ("H", "L", "Y")
+    assert c.note == "HyHEL-10 / HEW lysozyme"
 
 
 def test_get_complex_case_insensitive():
     assert get_complex("3hfm") == get_complex("3HFM")
+
+
+def test_get_complex_1jtg_subset_excludes_cd():
+    c = get_complex("1JTG")
+    assert c.all_chains == ("A", "B")
+    assert "C" not in c.all_chains
+    assert "D" not in c.all_chains
 
 
 def test_get_complex_unknown():
@@ -313,6 +324,7 @@ def test_aggregation_multiple_mutations_at_position():
 # ---------------------------------------------------------------------------
 
 _PDB_3HFM = Path(__file__).resolve().parent.parent / "data" / "raw" / "3hfm.pdb"
+_PDB_1JTG = Path(__file__).resolve().parent.parent / "data" / "raw" / "1jtg.pdb"
 
 
 @pytest.mark.skipif(not _PDB_3HFM.exists(), reason="3hfm.pdb not on disk")
@@ -324,3 +336,123 @@ def test_read_pdb_residue_ids_real_3hfm():
         assert ch in ids
         assert len(ids[ch]) == len(ref[ch])
         assert seqs[ch] == ref[ch]
+
+
+# ---------------------------------------------------------------------------
+# Regression: Mutation(s)_PDB vs Mutation(s)_cleaned column
+# ---------------------------------------------------------------------------
+
+
+def test_skempi_mutation_col_is_pdb():
+    """The module constant must point to the PDB-numbered column."""
+    assert SKEMPI_MUTATION_COL == "Mutation(s)_PDB"
+
+
+def test_single_point_uses_pdb_column():
+    """single_point must work off the PDB column, not cleaned."""
+    df = pd.DataFrame({
+        "Mutation(s)_cleaned": ["LA38G", "LA38G,SA100AG"],
+        "Mutation(s)_PDB": ["LA50G", "LA50G,SA120AG"],
+    })
+    result = single_point(df)
+    assert len(result) == 1
+    # Verify the PDB column value survived (not just cleaned)
+    assert result.iloc[0]["Mutation(s)_PDB"] == "LA50G"
+
+
+def test_pdb_column_diverges_from_cleaned():
+    """When the two columns disagree, code must use Mutation(s)_PDB.
+
+    Simulates a protein like TEM-1 beta-lactamase (1JTG) where Ambler
+    numbering differs from sequential numbering.
+    """
+    residue_ids = ["104", "238"]
+    sequence = "EG"
+
+    # The PDB column uses author numbering that matches the structure.
+    pdb_mut = parse_mutation("EA104K")
+    mapped, mismatches = map_mutations_to_indices(
+        [pdb_mut], residue_ids, sequence,
+    )
+    assert len(mapped) == 1
+    assert len(mismatches) == 0
+    assert mapped[0] == (pdb_mut, 0)
+
+    # The cleaned column uses sequential numbering -- wrong residue number.
+    cleaned_mut = parse_mutation("EA79K")
+    with pytest.raises(ValueError, match="not found in the PDB"):
+        map_mutations_to_indices([cleaned_mut], residue_ids, sequence)
+
+
+@pytest.mark.skipif(
+    not (_SKEMPI_CSV.exists() and _PDB_1JTG.exists()),
+    reason="SKEMPI CSV or 1jtg.pdb not on disk",
+)
+def test_1jtg_pdb_column_zero_mismatches():
+    """All 138 single-point 1JTG mutations from Mutation(s)_PDB must match
+    the deposited PDB wild-type residues with zero mismatches.
+
+    This test fails if mutations are read from Mutation(s)_cleaned, because
+    that column uses sequential numbering which does not match the Ambler
+    numbering in the deposited 1JTG structure.
+    """
+    from igv.skempi import add_ddg, filter_complex, single_point
+
+    df = pd.read_csv(_SKEMPI_CSV, sep=";")
+    df = filter_complex(df, "1JTG")
+    df = single_point(df)
+    df = add_ddg(df)
+
+    assert len(df) == 138, f"Expected 138 single-point 1JTG mutations, got {len(df)}"
+
+    residue_ids, sequences = read_pdb_residue_ids(_PDB_1JTG)
+
+    total_mapped = 0
+    total_mismatches = 0
+    for _, row in df.iterrows():
+        mut = parse_mutation(row[SKEMPI_MUTATION_COL].strip())
+        ch = mut.chain
+        assert ch in residue_ids, f"Chain {ch} not in PDB"
+        mapped, mismatches = map_mutations_to_indices(
+            [mut], residue_ids[ch], sequences[ch], allow_mismatch=True,
+        )
+        total_mapped += len(mapped)
+        total_mismatches += len(mismatches)
+
+    assert total_mismatches == 0, (
+        f"{total_mismatches} wild-type mismatches mapping 1JTG mutations "
+        f"from {SKEMPI_MUTATION_COL} -- wrong column?"
+    )
+    assert total_mapped == 138
+
+
+@pytest.mark.skipif(
+    not (_SKEMPI_CSV.exists() and _PDB_3HFM.exists()),
+    reason="SKEMPI CSV or 3hfm.pdb not on disk",
+)
+def test_3hfm_pdb_column_zero_mismatches():
+    """3HFM: 96 single-point mutations, zero mismatches from Mutation(s)_PDB."""
+    from igv.skempi import add_ddg, filter_complex, single_point
+
+    df = pd.read_csv(_SKEMPI_CSV, sep=";")
+    df = filter_complex(df, "3HFM")
+    df = single_point(df)
+    df = add_ddg(df)
+
+    assert len(df) == 96
+
+    residue_ids, sequences = read_pdb_residue_ids(_PDB_3HFM)
+
+    total_mapped = 0
+    total_mismatches = 0
+    for _, row in df.iterrows():
+        mut = parse_mutation(row[SKEMPI_MUTATION_COL].strip())
+        ch = mut.chain
+        mapped, mismatches = map_mutations_to_indices(
+            [mut], residue_ids[ch], sequences[ch], allow_mismatch=True,
+        )
+        total_mapped += len(mapped)
+        total_mismatches += len(mismatches)
+
+    assert total_mismatches == 0
+    assert total_mapped == 96

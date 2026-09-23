@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from igv.metrics import precision_at_k, spearman
 from igv.provenance import write as prov_write
 from igv.skempi import (
+    SKEMPI_MUTATION_COL,
     add_ddg,
     filter_complex,
     load_skempi,
@@ -94,7 +95,7 @@ def main() -> None:
     df = add_ddg(df)
     log.info("SKEMPI after filtering: %d single-point mutations with ΔΔG", len(df))
 
-    mutations = [parse_mutation(m.strip()) for m in df["Mutation(s)_cleaned"]]
+    mutations = [parse_mutation(m.strip()) for m in df[SKEMPI_MUTATION_COL]]
     chain_mutations = [(mut, i) for i, mut in enumerate(mutations) if mut.chain == chain]
 
     if not chain_mutations:

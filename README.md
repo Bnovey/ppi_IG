@@ -18,19 +18,24 @@ validation project, not a tool — the answer may well be no.
 
 ## The three questions
 
-Ground truth is [AbBiBench](https://huggingface.co/datasets/AbBibench/Antibody_Binding_Benchmark_Dataset):
-184,500 measured binding affinities across 14 antibodies and 9 antigens.
+Ground truth comes from two sources:
+[AbBiBench](https://huggingface.co/datasets/AbBibench/Antibody_Binding_Benchmark_Dataset)
+(184,500 antibody binding affinities) and
+[SKEMPI 2.0](https://life.bsc.es/pid/skempi2/) (7,085 measured ddG values
+across 348 complexes). The primary target is **1JTG** (TEM-1 / BLIP, 49
+measured positions, 13 hot spots); **3HFM** (HyHEL-10 / lysozyme) is the
+second validation arm.
 
 | | What we compare | What it tells us |
 |---|---|---|
-| **T1** | gradient shortcut vs the model's own brute-force scan | Does the shortcut match the model it came from? |
-| **T2** | the model's scan vs real lab measurements | Is the model right about biology at all? |
-| **T3** | gradient shortcut vs real lab measurements | What would someone actually get from this? |
+| **shortcut vs slow way** | gradient shortcut vs the model's own brute-force scan | Does the shortcut match the model it came from? |
+| **model vs lab** | the model's scan vs real lab measurements | Is the model right about biology at all? |
+| **shortcut vs lab** | gradient shortcut vs real lab measurements | What would someone actually get from this? |
 
-T1 is the honest test of the shortcut. T2 is a property of Boltz-2 and is
-already known to be weak (Spearman ~0.13, below ProteinMPNN's 0.30). If T2 is
-near zero, T3 cannot be good no matter how well the shortcut works — so the
-three terms have to be read together.
+The first is the honest test of the shortcut. The second is a property of
+Boltz-2 and is already known to be weak (Spearman ~0.13, below ProteinMPNN's
+0.30). If it is near zero, the third cannot be good no matter how well the
+shortcut works — so the three have to be read together.
 
 ## Status
 
@@ -42,21 +47,24 @@ through the whole model, which did not fit on an 80 GB GPU at the size we need
 IGV_TRI_ATTN_CKPT=1 IGV_AUTOCAST=bf16
 ```
 
-That brings the requirement from 93.7 GB down to a measured **55.2 GB**, and
-runs faster than before. Details and all measurements:
-[docs/MEMSCALE_RESULTS.md](docs/MEMSCALE_RESULTS.md).
+That brings the requirement from 93.7 GB down to a measured **55.2 GB**, and a
+single backward pass at 730 tokens takes 104 seconds. Details and all
+measurements: [docs/MEMSCALE_RESULTS.md](docs/MEMSCALE_RESULTS.md).
 
-**The correctness problem is open.** With the memory fixed, the main
-correctness check could finally run — and it fails. Integrated Gradients
-guarantees that the individual attributions add up to the total change in
-score; ours overshoot by 4.6x. We do not yet know whether that is caused by the
-half-precision setting above, by too few integration steps, or by a poor
-choice of reference point. **Until that is resolved, no result from this
-pipeline should be trusted.**
+**The correctness problem is resolved.** The Integrated Gradients completeness
+check (attributions must sum to the total score change) failed at m=16
+integration steps. The cause was quadrature resolution, not half precision: fp32
+fails *worse* than bf16 at the same step count (rel err 1.7205 vs 1.1709). At
+m=32, completeness passes with rel err **0.0442** on L=554. bf16 is exonerated.
 
-Also unresolved: the model is being scored on a structure where every atom sits
-at the origin, because the input is built from sequence only. Fixed geometry,
-but not the real structure.
+**The `random_weights` sanity check passes.** Randomising all 5,035 parameter
+tensors destroys the attribution (Spearman 0.077 against a 0.3 threshold), so
+the gradient depends on what Boltz-2 learned rather than on input geometry.
+
+**No end-to-end result yet.** The pipeline has never produced a shortcut-vs-lab
+or shortcut-vs-slow-way number. The next step is seeding the `ref_pos` conformer
+generation (which introduces up to 10.7 Angstrom of noise between featurisations)
+and running 1JTG on the SKEMPI validation arm.
 
 ## Running it
 
@@ -64,7 +72,7 @@ CPU, on a laptop:
 
 ```bash
 pip install -e ".[dev]"    # or: make setup
-make test                  # 236 tests, no GPU needed
+make test                  # 351 tests, no GPU needed
 make fetch library         # download the data, build the mutant list
 ```
 

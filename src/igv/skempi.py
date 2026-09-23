@@ -22,6 +22,13 @@ log = logging.getLogger(__name__)
 
 SKEMPI_URL = "https://life.bsc.es/pid/skempi2/database/download/skempi_v2.csv"
 
+# Column that maps mutations to author-deposited PDB residue numbering.
+# ``Mutation(s)_cleaned`` uses sequential numbering, which silently maps to the
+# wrong residues whenever the PDB uses non-sequential author numbering (e.g.
+# Ambler numbering in TEM-1 beta-lactamase, PDB 1JTG).  Always use the PDB
+# column for structural lookups.
+SKEMPI_MUTATION_COL = "Mutation(s)_PDB"
+
 _R_KCAL = 1.987204259e-3  # kcal/(mol·K)
 
 _MUTATION_RE = re.compile(r"^([A-Z])([A-Za-z])(.+?)([A-Z])$")
@@ -33,15 +40,46 @@ _MUTATION_RE = re.compile(r"^([A-Z])([A-Za-z])(.+?)([A-Z])$")
 
 @dataclass(frozen=True)
 class SkempiComplex:
+    """A protein-protein complex from SKEMPI 2.0.
+
+    ``partner1`` and ``partner2`` name the two sides of the interface
+    and together define the chain subset to featurise.  Their union is
+    the full set of chains the pipeline will use -- any extra chains in
+    the PDB (e.g. duplicate copies in the asymmetric unit) are ignored.
+    """
+
     pdb_id: str
-    ab_chains: tuple[str, ...]
-    ag_chains: tuple[str, ...]
+    partner1: tuple[str, ...]
+    partner2: tuple[str, ...]
+    note: str = ""
+
+    @property
+    def all_chains(self) -> tuple[str, ...]:
+        """Chains to featurise (partner1 + partner2)."""
+        return self.partner1 + self.partner2
 
 
 SKEMPI_COMPLEXES: dict[str, SkempiComplex] = {
-    "3HFM": SkempiComplex(pdb_id="3HFM", ab_chains=("H", "L"), ag_chains=("Y",)),
-    "1VFB": SkempiComplex(pdb_id="1VFB", ab_chains=("A", "B"), ag_chains=("C",)),
-    "1MHP": SkempiComplex(pdb_id="1MHP", ab_chains=("H", "L"), ag_chains=("A",)),
+    "1JTG": SkempiComplex(
+        pdb_id="1JTG", partner1=("A",), partner2=("B",),
+        note="TEM-1 beta-lactamase / BLIP",
+    ),
+    "3HFM": SkempiComplex(
+        pdb_id="3HFM", partner1=("H", "L"), partner2=("Y",),
+        note="HyHEL-10 / HEW lysozyme",
+    ),
+    "1VFB": SkempiComplex(
+        pdb_id="1VFB", partner1=("A", "B"), partner2=("C",),
+        note="D1.3 Fv / HEW lysozyme",
+    ),
+    "1JRH": SkempiComplex(
+        pdb_id="1JRH", partner1=("L", "H"), partner2=("I",),
+        note="mAb A6 / interferon gamma receptor",
+    ),
+    "2JEL": SkempiComplex(
+        pdb_id="2JEL", partner1=("L", "H"), partner2=("P",),
+        note="Jel42 / HPr",
+    ),
 }
 
 
@@ -180,7 +218,7 @@ def add_ddg(df: pd.DataFrame) -> pd.DataFrame:
 
 def single_point(df: pd.DataFrame) -> pd.DataFrame:
     """Rows with exactly one mutation."""
-    counts = df["Mutation(s)_cleaned"].str.count(",") + 1
+    counts = df[SKEMPI_MUTATION_COL].str.count(",") + 1
     return df[counts == 1].reset_index(drop=True)
 
 

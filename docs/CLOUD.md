@@ -1,19 +1,19 @@
 # Cloud Provisioning Runbook
 
-Run the IG (Boltz-2 gradient attribution) pipeline on AWS or GCP GPU instances.
+Run the IG (Boltz-2 gradient attribution) pipeline on GCP GPU instances.
 
 ## Quick reference
 
 | Step | Command |
 |------|---------|
-| 1. Launch instance | `bash scripts/cloud/aws_launch.sh --key-name ... --security-group ...` |
-| 2. SSH in | `ssh -i ~/.ssh/key.pem ubuntu@<IP>` |
+| 1. Launch instance | `bash scripts/cloud/gcp_launch.sh --project agrosbio` |
+| 2. SSH in | `gcloud compute ssh igv-gpu --zone=us-central1-a --project=agrosbio` |
 | 3. Clone repo | `git clone ... && cd IG` |
 | 4. Bootstrap | `bash scripts/cloud/bootstrap.sh` |
 | 5. Fetch weights | `bash scripts/cloud/fetch_weights.sh` (one time; several GB into `~/boltz_cache`) |
 | 6. Run pipeline | `tmux new -s igv` then `docker run --rm --gpus all --shm-size=32g --ipc=host -v $(pwd):/app -w /app -v $HOME/boltz_cache:/root/.boltz igv:latest bash scripts/run_all.sh` |
-| 6. Sync results | `bash scripts/cloud/sync_results.sh --host ubuntu@<IP> --remote-dir /home/ubuntu/IG` |
-| 7. Tear down | `bash scripts/cloud/aws_launch.sh --terminate <instance-id>` |
+| 7. Sync results | `bash scripts/cloud/sync_results.sh --host ubuntu@<IP> --remote-dir /home/ubuntu/IG` |
+| 8. Tear down | `gcloud compute instances stop igv-gpu --zone=us-central1-a --project=agrosbio --discard-local-ssd=true` |
 
 ## Instance selection
 
@@ -25,9 +25,7 @@ Full-trunk Boltz-2 backprop with per-block gradient checkpointing fills an entir
 
 | Provider | Instance | GPUs | VRAM/GPU | $/hr | $/day | Notes |
 |----------|----------|------|----------|------|-------|-------|
-| AWS | p4de.24xlarge | 8x A100-80GB | 80 GB | ~$40.97 | ~$983 | AWS has **no single-GPU 80 GB option** -- 8 GPUs is the floor, billed whether used or not. Worth it only for the parallel sweep. |
-| AWS | p5.48xlarge | 8x H100-80GB | 80 GB | ~$98.32 | ~$2,360 | Fastest |
-| GCP | a2-ultragpu-1g | 1x A100-80GB | 80 GB | **~$5.07** | ~$122 | **Recommended start.** The only way to rent a *single* 80 GB GPU. 12 vCPU / 170 GB RAM. |
+| GCP | a2-ultragpu-1g | 1x A100-80GB | 80 GB | **~$5.07** | ~$122 | **Current instance.** The only way to rent a *single* 80 GB GPU. 12 vCPU / 170 GB RAM. |
 | GCP | a2-ultragpu-8g | 8x A100-80GB | 80 GB | ~$80.29 | ~$1,927 | |
 | GCP | a3-highgpu-8g | 8x H100-80GB | 80 GB | ~$98.32 | ~$2,360 | Fastest |
 
@@ -37,24 +35,11 @@ Workload is approximately 40 GPU-hours. GPU stages are 02 (embed), 03 (attribute
 
 **Use on-demand for GPU stages.** Spot/preemptible instances will kill a running job. Stage 04 (scan) is resumable (skips computed rows), but stage 03 (attribute) is not -- a preemption during attribution loses all progress with no recovery. At ~40 GPU-hours total, the spot savings are not worth the risk of lost runs.
 
-## Which provider: AWS today (verified for account 516962256450)
+## GCP state
 
 **Quota and capacity are different things.** Quota is an account limit you can
 raise by asking. Capacity is whether the zone physically has a free machine
-right now. You can hold quota and still get `InsufficientInstanceCapacity`.
-
-### Verified quota state, checked 2026-08-30
-
-| | Needs | Your quota | Verdict |
-|---|---|---|---|
-| `p4de.24xlarge` (8x A100-80GB) | 96 vCPU | **97 vCPU** | **launchable today, no request needed** |
-| `p5.48xlarge` (8x H100-80GB) | 192 vCPU | 97 vCPU | needs an increase to >= 192 |
-
-"Running On-Demand P instances" is 97 in both `us-east-1` and `us-west-2`, and
-`p4de.24xlarge` is 96 vCPU -- so there is room for exactly one.
-
-`p4de.24xlarge` is offered only in **us-east-1c** and **us-east-1d**.
-`p5.48xlarge` is offered in all six us-east-1 AZs.
+right now. You can hold quota and still get `ZONE_RESOURCE_POOL_EXHAUSTED`.
 
 ### Verified GCP state, project `agrosbio`, checked 2026-08-30
 
@@ -80,41 +65,11 @@ Note also that the default `gcloud` project was `g-prs-478707`, which is not in
 this account's project list. The correct project is `agrosbio`:
 `gcloud config set project agrosbio`.
 
-### Therefore
+### Current instance
 
-Earlier guidance in this file preferred GCP on cost-per-GPU-hour, and that is
-still true in isolation: `a2-ultragpu-1g` is ~$5.07/hr for one A100-80GB versus
-~$41/hr for eight on AWS. But **having quota now beats being cheaper later.**
-
-Since the AWS box comes with 8 GPUs whether you use them or not, do not run the
-pipeline sequentially on it. Run the sanity gate, then fan the 16 datasets out
-across all 8 GPUs -- that is where p4de earns its rate.
-
-Use GCP instead if you would rather wait for quota and spend ~$20 on the
-go/no-go than ~$150.
-
-
-
-The deciding fact is instance shape, not price per GPU.
-
-**AWS has no single-GPU 80 GB instance.** The smallest option meeting the >= 80 GB
-requirement is `p4de.24xlarge`, which is 8x A100-80GB at ~$41/hr -- billed in full
-even while 7 GPUs sit idle. **GCP `a2-ultragpu-1g` rents exactly one A100-80GB at
-~$5.07/hr.**
-
-That matters because the first milestone is inherently sequential: run stage 07
-(sanity gate), then stage 0 on a single dataset, and look at one number before
-committing to anything else.
-
-| Phase | Instance | Wall clock | Cost |
-|---|---|---|---|
-| Sanity gate + stage 0 go/no-go | GCP `a2-ultragpu-1g` | ~3-4 h | **~$20** |
-| Same on AWS `p4de.24xlarge` | 8 GPUs, 7 idle | ~3-4 h | ~$160 |
-| Full 16-dataset sweep, parallel | AWS `p4de.24xlarge` or GCP `a2-ultragpu-8g` | ~5-6 h | ~$210-250 |
-
-So: **GCP single GPU to find out whether the method works at all; an 8-GPU box
-later only if it does.** Stages 03 and 04 are embarrassingly parallel across
-datasets, so the multi-GPU box genuinely pays off for the sweep -- but only then.
+`igv-gpu`, `a2-ultragpu-1g`, `us-central1-a`, project `agrosbio`. Quota was
+approved 2026-09-02. The 500 GB pd-ssd boot disk is retained while the VM is
+stopped (~$2.83/day).
 
 ### Do this first, today
 
@@ -219,32 +174,6 @@ Discover ids for any other quota:
 curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
   "https://cloudquotas.googleapis.com/v1/projects/agrosbio/locations/global/services/compute.googleapis.com/quotaInfos?pageSize=500"
 ```
-
-## AWS launch
-
-```bash
-# Find the latest Deep Learning AMI:
-aws ec2 describe-images --owners amazon \
-  --filters 'Name=name,Values=Deep Learning Base OSS Nvidia Driver AMI (Ubuntu 22.04)*' \
-  --query 'reverse(sort_by(Images,&CreationDate))[0].[ImageId,Name]' \
-  --output text --region us-east-1
-
-# Launch (dry run first):
-bash scripts/cloud/aws_launch.sh \
-  --key-name my-keypair \
-  --security-group sg-0123456789abcdef0 \
-  --dry-run
-
-# Launch for real:
-bash scripts/cloud/aws_launch.sh \
-  --key-name my-keypair \
-  --security-group sg-0123456789abcdef0
-
-# Terminate when done:
-bash scripts/cloud/aws_launch.sh --terminate i-0123456789abcdef0
-```
-
-See `bash scripts/cloud/aws_launch.sh --help` for all options.
 
 ## GCP launch
 
@@ -372,8 +301,6 @@ Run through this list **every time** you finish a session:
 
 - [ ] Pipeline results synced locally (run `sync_results.sh`)
 - [ ] Provenance sidecars present for all artifacts (sync script reports orphans)
-- [ ] **AWS**: Instance terminated (`aws_launch.sh --terminate <id>` or console)
-- [ ] **GCP**: VM deleted (`gcp_launch.sh --delete <name>` or console)
+- [ ] **GCP**: VM stopped (`gcloud compute instances stop igv-gpu --zone=us-central1-a --project=agrosbio --discard-local-ssd=true`)
 - [ ] Verify in cloud console that no instances are running
-- [ ] Check for leftover EBS volumes (AWS) or persistent disks (GCP) that may still incur charges
-- [ ] Revoke any temporary security group rules you added
+- [ ] Check for leftover persistent disks (GCP) that may still incur charges
