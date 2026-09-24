@@ -213,38 +213,53 @@ def main():
         shutil.rmtree(ref_cache, ignore_errors=True)
         shutil.rmtree(mut_cache, ignore_errors=True)
 
-    # Compare ref_pos at shared (non-mutated) token positions.
-    # Per-token atom-level comparison is not feasible without the
-    # atom_to_token mapping; compare the full ref_pos tensor globally.
     ref_pos_ref = ref_feats["ref_pos"].detach().cpu()
     ref_pos_mut = mut_feats["ref_pos"].detach().cpu()
 
-    # Global comparison: ref_pos should be identical except at atoms
-    # belonging to the mutated residue
-    if ref_pos_ref.shape == ref_pos_mut.shape:
-        diff_tensor = (ref_pos_ref - ref_pos_mut).abs()
-        max_diff = diff_tensor.max().item()
-        print(f"ref_pos global max_abs_diff: {max_diff:.6e}")
-        if max_diff == 0:
-            print("PASS: ref_pos is byte-identical between reference and mutant")
-            print("      (mutation did not change any ref_pos -- expected for")
-            print("      same-length substitution with augmentation disabled,")
-            print("      since centering is per-residue and the conformer for")
-            print("      the mutated residue comes from a different CCD molecule)")
-        else:
-            print(f"ref_pos differs (max {max_diff:.6e})")
-            print("This is expected ONLY at the mutated residue's atoms.")
-    else:
-        print(f"ref_pos shapes differ: {ref_pos_ref.shape} vs {ref_pos_mut.shape}")
-        print("Different atom counts -- expected if mutation changes residue size.")
-
-    # Also check that res_type differs at exactly one position
+    # Which token was mutated?
     rt_ref = ref_feats["res_type"].detach().cpu()
     rt_mut = mut_feats["res_type"].detach().cpu()
-    rt_diff_count = (rt_ref != rt_mut).any(dim=-1).sum().item()
-    print(f"res_type differs at {rt_diff_count} token(s) (expected: 1)")
-    if rt_diff_count != 1:
+    rt_diff = (rt_ref != rt_mut).any(dim=-1)[0]
+    mutated_tokens = rt_diff.nonzero().flatten().tolist()
+    print(f"res_type differs at {len(mutated_tokens)} token(s) (expected: 1)"
+          f"  -> {mutated_tokens}")
+
+    if ref_pos_ref.shape != ref_pos_mut.shape:
+        print(f"ref_pos shapes differ: {ref_pos_ref.shape} vs {ref_pos_mut.shape}")
+        print("FAIL: atom counts differ, so element-wise comparison is meaningless.")
+        sys.exit(1)
+
+    # A global max is not the question. ref_pos MUST change at the mutated
+    # residue -- a different side chain has different atoms. What must NOT
+    # happen is contamination of any OTHER residue, because every embedding
+    # delta is s_mut - s_ref and leakage there is exactly the defect entry 18
+    # describes. Localise the difference via atom_to_token.
+    per_atom = (ref_pos_ref - ref_pos_mut).abs().amax(dim=-1)[0]   # (n_atoms,)
+    token_of_atom = ref_feats["atom_to_token"].detach().cpu()[0].argmax(dim=-1)
+
+    changed = (per_atom > 0).nonzero().flatten()
+    changed_tokens = sorted(set(token_of_atom[changed].tolist()))
+    leaked = [t for t in changed_tokens if t not in mutated_tokens]
+
+    print(f"ref_pos global max_abs_diff: {per_atom.max().item():.6e}")
+    print(f"ref_pos changed at {len(changed)} atom(s) across "
+          f"{len(changed_tokens)} token(s): {changed_tokens[:10]}"
+          f"{' ...' if len(changed_tokens) > 10 else ''}")
+
+    if leaked:
+        worst = max(per_atom[changed][
+            [i for i, a in enumerate(changed) if token_of_atom[a].item() in leaked]
+        ].tolist())
+        print(f"FAIL: {len(leaked)} token(s) outside the mutation changed, "
+              f"max {worst:.4e} A. Leakage contaminates every delta.")
+        print(f"      leaked tokens: {leaked[:20]}")
+        sys.exit(1)
+
+    print("PASS: ref_pos changes are confined to the mutated residue. "
+          "Every other residue is byte-identical.")
+    if len(mutated_tokens) != 1:
         print("WARNING: expected exactly 1 res_type difference for a point mutant")
+        sys.exit(1)
 
     sys.exit(0)
 
