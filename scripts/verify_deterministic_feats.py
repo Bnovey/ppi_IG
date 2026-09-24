@@ -241,8 +241,17 @@ def main():
     # because every embedding delta is s_mut - s_ref and leakage there is the
     # defect entry 18 describes. So compare per token, gathering each token's
     # atoms through that featurisation's OWN atom_to_token mapping.
+    # Padding atoms have an all-zero atom_to_token row, and argmax on all-zero
+    # returns 0 -- so every pad atom would be attributed to token 0. The mutant
+    # has fewer real atoms and therefore more padding, which shows up as a
+    # spurious atom-count mismatch at token 0. Mask padding out first.
+    pad_ref = ref_feats["atom_pad_mask"].detach().cpu()[0].bool()
+    pad_mut = mut_feats["atom_pad_mask"].detach().cpu()[0].bool()
     tok_ref = ref_feats["atom_to_token"].detach().cpu()[0].argmax(dim=-1)
     tok_mut = mut_feats["atom_to_token"].detach().cpu()[0].argmax(dim=-1)
+    tok_ref = torch.where(pad_ref, tok_ref, torch.full_like(tok_ref, -1))
+    tok_mut = torch.where(pad_mut, tok_mut, torch.full_like(tok_mut, -1))
+    print(f"real atoms: reference {int(pad_ref.sum())}, mutant {int(pad_mut.sum())}")
 
     n_tokens = int(max(tok_ref.max(), tok_mut.max())) + 1
     leaked: list[tuple[int, float]] = []
