@@ -229,30 +229,56 @@ def main():
         print("FAIL: atom counts differ, so element-wise comparison is meaningless.")
         sys.exit(1)
 
-    # A global max is not the question. ref_pos MUST change at the mutated
-    # residue -- a different side chain has different atoms. What must NOT
-    # happen is contamination of any OTHER residue, because every embedding
-    # delta is s_mut - s_ref and leakage there is exactly the defect entry 18
-    # describes. Localise the difference via atom_to_token.
-    per_atom = (ref_pos_ref - ref_pos_mut).abs().amax(dim=-1)[0]   # (n_atoms,)
-    token_of_atom = ref_feats["atom_to_token"].detach().cpu()[0].argmax(dim=-1)
+    # A global max is not the question, and neither is an element-wise diff.
+    # ref_pos MUST change at the mutated residue -- a different side chain has
+    # different atoms. And because a substitution changes the atom COUNT
+    # (Asp has 8 heavy atoms, Ala 5), every atom after the mutation site shifts
+    # index, so ref_pos[i] refers to a different atom in the two tensors. An
+    # element-wise comparison reports the whole tail as "changed" and means
+    # nothing.
+    #
+    # The real question is whether any residue OTHER than the mutated one moved,
+    # because every embedding delta is s_mut - s_ref and leakage there is the
+    # defect entry 18 describes. So compare per token, gathering each token's
+    # atoms through that featurisation's OWN atom_to_token mapping.
+    tok_ref = ref_feats["atom_to_token"].detach().cpu()[0].argmax(dim=-1)
+    tok_mut = mut_feats["atom_to_token"].detach().cpu()[0].argmax(dim=-1)
 
-    changed = (per_atom > 0).nonzero().flatten()
-    changed_tokens = sorted(set(token_of_atom[changed].tolist()))
-    leaked = [t for t in changed_tokens if t not in mutated_tokens]
+    n_tokens = int(max(tok_ref.max(), tok_mut.max())) + 1
+    leaked: list[tuple[int, float]] = []
+    count_mismatch: list[int] = []
 
-    print(f"ref_pos global max_abs_diff: {per_atom.max().item():.6e}")
-    print(f"ref_pos changed at {len(changed)} atom(s) across "
-          f"{len(changed_tokens)} token(s): {changed_tokens[:10]}"
-          f"{' ...' if len(changed_tokens) > 10 else ''}")
+    for t in range(n_tokens):
+        if t in mutated_tokens:
+            continue
+        a_ref = ref_pos_ref[0][tok_ref == t]
+        a_mut = ref_pos_mut[0][tok_mut == t]
+        if a_ref.shape != a_mut.shape:
+            count_mismatch.append(t)
+            continue
+        if a_ref.numel() == 0:
+            continue
+        d = (a_ref - a_mut).abs().max().item()
+        if d > 0:
+            leaked.append((t, d))
+
+    print(f"ref_pos element-wise global max_abs_diff: "
+          f"{(ref_pos_ref - ref_pos_mut).abs().max().item():.6e} "
+          f"(expected non-zero: atom indices shift after the mutation)")
+    print(f"Per-token comparison over {n_tokens} tokens, "
+          f"excluding mutated {mutated_tokens}")
+
+    if count_mismatch:
+        print(f"FAIL: {len(count_mismatch)} unmutated token(s) have different "
+              f"atom counts: {count_mismatch[:20]}")
+        sys.exit(1)
 
     if leaked:
-        worst = max(per_atom[changed][
-            [i for i, a in enumerate(changed) if token_of_atom[a].item() in leaked]
-        ].tolist())
-        print(f"FAIL: {len(leaked)} token(s) outside the mutation changed, "
-              f"max {worst:.4e} A. Leakage contaminates every delta.")
-        print(f"      leaked tokens: {leaked[:20]}")
+        worst_t, worst_d = max(leaked, key=lambda x: x[1])
+        print(f"FAIL: {len(leaked)} token(s) outside the mutation moved, "
+              f"worst token {worst_t} at {worst_d:.4e} A. "
+              f"Leakage contaminates every delta.")
+        print(f"      leaked tokens: {[t for t, _ in leaked[:20]]}")
         sys.exit(1)
 
     print("PASS: ref_pos changes are confined to the mutated residue. "
