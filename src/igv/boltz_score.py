@@ -1189,6 +1189,94 @@ def embedder_only(model, feats):
         return model.input_embedder(feats)
 
 
+def compute_homopolymer_embeddings(
+    model,
+    chains: dict[str, str],
+    chain: str,
+    structure_pdb: Path,
+    cache_dir: Path,
+    device,
+    use_msa_server: bool = False,
+    feat_seed: int | None = None,
+) -> list:
+    """Featurise 20 canonical homopolymer complexes and return per-AA embeddings.
+
+    For each amino acid in ``CANONICAL_AMINO_ACIDS``, replaces the attributed
+    *chain* with a homopolymer of that residue (same length) and runs the
+    input embedder. Returns a list of 20 tensors, each shaped
+    ``(len_chain, D)``, suitable for :func:`igv.attrib.build_mean_aa_baseline`.
+
+    Uses ``msa="empty"`` for every homopolymer complex: a poly-alanine chain
+    has no evolutionary profile, so an MSA query would be meaningless (and 20
+    novel queries would be slow). This is a deliberate asymmetry with the real
+    input, which may use the MSA server.
+
+    Parameters
+    ----------
+    model
+        Loaded Boltz-2 model (used for ``input_embedder``).
+    chains : dict[str, str]
+        Chain id -> sequence for the full complex.
+    chain : str
+        The attributed chain id (the one to replace with homopolymers).
+    structure_pdb : Path
+        Passed through to ``build_complex_feats`` (accepted but never read).
+    cache_dir : Path
+        Parent cache directory. Each homopolymer gets a unique subdirectory
+        at ``cache_dir / "boltz_homopolymer" / aa`` to avoid the stale-cache
+        hazard (boltz skips inputs whose YAML stem already exists).
+    device
+        Torch device.
+    use_msa_server : bool
+        Passed to ``build_complex_feats``. Defaults to False because
+        ``msa="empty"`` makes the server unnecessary.
+    feat_seed : int or None
+        Seed for deterministic featurisation.
+
+    Returns
+    -------
+    list[Tensor]
+        20 tensors, one per canonical amino acid in the order of
+        ``igv.attrib.CANONICAL_AMINO_ACIDS``. Each has shape
+        ``(len(chains[chain]), D)``.
+    """
+    from igv.attrib import CANONICAL_AMINO_ACIDS
+
+    chain_len = len(chains[chain])
+    per_aa: list = []
+
+    for aa in CANONICAL_AMINO_ACIDS:
+        homo_chains = dict(chains)
+        homo_chains[chain] = aa * chain_len
+
+        aa_cache = cache_dir / "boltz_homopolymer" / aa
+        log.info("Homopolymer %s: featurising (%s)", aa, aa_cache)
+
+        # msa="empty": a homopolymer has no evolutionary profile, so querying
+        # the MSA server is meaningless. This is a deliberate asymmetry with
+        # the real input. Do not "fix" this to use the server.
+        feats, token_map = build_complex_feats(
+            homo_chains,
+            structure_pdb,
+            aa_cache,
+            device,
+            use_msa_server=use_msa_server,
+            msa="empty",
+            feat_seed=feat_seed,
+        )
+
+        s = embedder_only(model, feats)
+
+        token_indices = [token_map[(chain, i)] for i in range(chain_len)]
+        emb = s[0, token_indices, :].detach()
+        per_aa.append(emb)
+        log.info("Homopolymer %s: embedding shape %s", aa, list(emb.shape))
+
+        del feats, s
+
+    return per_aa
+
+
 def enable_confidence_checkpointing(model) -> int:
     """Per-block gradient checkpointing inside the CONFIDENCE pairformer stack.
 

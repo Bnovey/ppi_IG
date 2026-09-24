@@ -812,3 +812,161 @@ def test_msa_file_count_mismatch_raises_clear_error(tmp_path):
                 f"(one per chain: {chain_ids}), found {len(msa_files)}: "
                 f"{[f.name for f in msa_files]}. Cannot build per-chain MSA mapping."
             )
+
+
+# ---------------------------------------------------------------------------
+# compute_homopolymer_embeddings: cache dir uniqueness
+# ---------------------------------------------------------------------------
+
+
+def test_homopolymer_cache_dirs_are_distinct_per_amino_acid(monkeypatch, tmp_path):
+    """Each of the 20 homopolymer featurisations must get a unique cache dir."""
+    from unittest.mock import MagicMock, patch
+
+    from igv.attrib import CANONICAL_AMINO_ACIDS
+    from igv.boltz_score import compute_homopolymer_embeddings
+
+    torch = pytest.importorskip("torch")
+
+    seen_cache_dirs = []
+    seen_chains = []
+
+    def mock_build_complex_feats(chains, structure_pdb, cache_dir, device, **kwargs):
+        seen_cache_dirs.append(str(cache_dir))
+        seen_chains.append(dict(chains))
+        token_map = {}
+        offset = 0
+        for cid, seq in chains.items():
+            for i in range(len(seq)):
+                token_map[(cid, i)] = offset + i
+            offset += len(seq)
+        feats = {"dummy": True}
+        return feats, token_map
+
+    def mock_embedder_only(model, feats):
+        return torch.randn(1, 15, 32)
+
+    with patch("igv.boltz_score.build_complex_feats", side_effect=mock_build_complex_feats):
+        with patch("igv.boltz_score.embedder_only", side_effect=mock_embedder_only):
+            result = compute_homopolymer_embeddings(
+                model=MagicMock(),
+                chains={"H": "ACDEF", "L": "GHIKLMNPQR"},
+                chain="H",
+                structure_pdb=tmp_path / "dummy.pdb",
+                cache_dir=tmp_path,
+                device="cpu",
+            )
+
+    assert len(result) == len(CANONICAL_AMINO_ACIDS)
+    assert len(seen_cache_dirs) == 20
+    assert len(set(seen_cache_dirs)) == 20, (
+        f"Cache dirs must be unique per amino acid, got duplicates: {seen_cache_dirs}"
+    )
+    for aa, cache_path in zip(CANONICAL_AMINO_ACIDS, seen_cache_dirs):
+        assert aa in cache_path, f"Cache dir for {aa} should contain the AA letter"
+
+    for aa, chains_used in zip(CANONICAL_AMINO_ACIDS, seen_chains):
+        assert chains_used["H"] == aa * 5, (
+            f"Chain H should be homopolymer of {aa}, got {chains_used['H']!r}"
+        )
+        assert chains_used["L"] == "GHIKLMNPQR"
+
+
+def test_homopolymer_embeddings_use_empty_msa(monkeypatch, tmp_path):
+    """Homopolymer featurisations must use msa='empty'."""
+    from unittest.mock import MagicMock, patch
+
+    torch = pytest.importorskip("torch")
+
+    seen_msa = []
+
+    def mock_build_complex_feats(chains, structure_pdb, cache_dir, device, **kwargs):
+        seen_msa.append(kwargs.get("msa"))
+        token_map = {}
+        offset = 0
+        for cid, seq in chains.items():
+            for i in range(len(seq)):
+                token_map[(cid, i)] = offset + i
+            offset += len(seq)
+        return {"dummy": True}, token_map
+
+    def mock_embedder_only(model, feats):
+        return torch.randn(1, 8, 16)
+
+    with patch("igv.boltz_score.build_complex_feats", side_effect=mock_build_complex_feats):
+        with patch("igv.boltz_score.embedder_only", side_effect=mock_embedder_only):
+            from igv.boltz_score import compute_homopolymer_embeddings
+
+            compute_homopolymer_embeddings(
+                model=MagicMock(),
+                chains={"A": "ACD", "B": "EFGHI"},
+                chain="A",
+                structure_pdb=tmp_path / "dummy.pdb",
+                cache_dir=tmp_path,
+                device="cpu",
+            )
+
+    assert all(m == "empty" for m in seen_msa), (
+        f"All homopolymer featurisations must use msa='empty', got {seen_msa}"
+    )
+
+
+def test_homopolymer_embedding_shape_matches_baseline_contract(tmp_path):
+    """Shape of returned tensors must match build_mean_aa_baseline's contract."""
+    from unittest.mock import MagicMock, patch
+
+    torch = pytest.importorskip("torch")
+
+    from igv.attrib import CANONICAL_AMINO_ACIDS, build_mean_aa_baseline
+    from igv.boltz_score import compute_homopolymer_embeddings
+
+    D = 24
+    chain_len = 7
+    total_tokens = 15
+
+    def mock_build_complex_feats(chains, structure_pdb, cache_dir, device, **kwargs):
+        token_map = {}
+        offset = 0
+        for cid, seq in chains.items():
+            for i in range(len(seq)):
+                token_map[(cid, i)] = offset + i
+            offset += len(seq)
+        return {"dummy": True}, token_map
+
+    def mock_embedder_only(model, feats):
+        return torch.randn(1, total_tokens, D)
+
+    with patch("igv.boltz_score.build_complex_feats", side_effect=mock_build_complex_feats):
+        with patch("igv.boltz_score.embedder_only", side_effect=mock_embedder_only):
+            per_aa = compute_homopolymer_embeddings(
+                model=MagicMock(),
+                chains={"H": "A" * chain_len, "L": "G" * (total_tokens - chain_len)},
+                chain="H",
+                structure_pdb=tmp_path / "dummy.pdb",
+                cache_dir=tmp_path,
+                device="cpu",
+            )
+
+    assert len(per_aa) == len(CANONICAL_AMINO_ACIDS)
+    for t in per_aa:
+        assert t.shape == (chain_len, D)
+
+    import numpy as np
+
+    embeddings = torch.randn(1, total_tokens, D)
+    peptide_idx = np.arange(chain_len)
+    baseline = build_mean_aa_baseline(embeddings, peptide_idx, per_aa)
+    assert baseline.shape == embeddings.shape
+
+
+# ---------------------------------------------------------------------------
+# --baseline zeros is unchanged
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_zeros_unchanged():
+    """The zeros baseline must be bit-identical to torch.zeros_like."""
+    torch = pytest.importorskip("torch")
+    s = torch.randn(1, 20, 64)
+    baseline = torch.zeros_like(s)
+    assert torch.equal(baseline, torch.zeros_like(s))

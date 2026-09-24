@@ -417,3 +417,74 @@ def test_uniform_quadrature_respects_embedding_dtype():
     np.testing.assert_allclose(
         res.grad.squeeze(0).numpy(), W.squeeze(0).numpy(), atol=1e-12,
     )
+
+
+# ---------------------------------------------------------------------------
+# build_mean_aa_baseline
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMeanAABaseline:
+    """Shape, dtype, and guard contract for the mean-AA baseline builder."""
+
+    def test_shape_and_dtype_contract(self):
+        from igv.attrib import CANONICAL_AMINO_ACIDS, build_mean_aa_baseline
+
+        B, L_total, D = 1, 50, 64
+        L_peptide = 20
+        embeddings = torch.randn(B, L_total, D)
+        peptide_token_indices = np.arange(10, 10 + L_peptide)
+        per_aa = [torch.randn(L_peptide, D) for _ in range(len(CANONICAL_AMINO_ACIDS))]
+
+        baseline = build_mean_aa_baseline(embeddings, peptide_token_indices, per_aa)
+        assert baseline.shape == embeddings.shape
+        assert baseline.dtype == embeddings.dtype
+
+    def test_non_peptide_positions_unchanged(self):
+        from igv.attrib import CANONICAL_AMINO_ACIDS, build_mean_aa_baseline
+
+        B, L_total, D = 1, 30, 16
+        L_peptide = 10
+        embeddings = torch.randn(B, L_total, D)
+        peptide_idx = np.arange(5, 5 + L_peptide)
+        non_peptide_idx = [i for i in range(L_total) if i not in peptide_idx]
+        per_aa = [torch.randn(L_peptide, D) for _ in range(len(CANONICAL_AMINO_ACIDS))]
+
+        baseline = build_mean_aa_baseline(embeddings, peptide_idx, per_aa)
+        torch.testing.assert_close(
+            baseline[0, non_peptide_idx, :],
+            embeddings[0, non_peptide_idx, :],
+        )
+
+    def test_peptide_positions_are_mean_of_per_aa(self):
+        from igv.attrib import CANONICAL_AMINO_ACIDS, build_mean_aa_baseline
+
+        B, L_total, D = 1, 20, 8
+        L_peptide = 5
+        embeddings = torch.randn(B, L_total, D)
+        peptide_idx = np.arange(0, L_peptide)
+        per_aa = [torch.randn(L_peptide, D) for _ in range(len(CANONICAL_AMINO_ACIDS))]
+
+        baseline = build_mean_aa_baseline(embeddings, peptide_idx, per_aa)
+        expected_mean = torch.stack(per_aa, dim=0).mean(dim=0)
+        torch.testing.assert_close(baseline[0, :L_peptide, :], expected_mean)
+
+    def test_wrong_count_raises(self):
+        from igv.attrib import build_mean_aa_baseline
+
+        embeddings = torch.randn(1, 10, 8)
+        peptide_idx = np.arange(5)
+        too_few = [torch.randn(5, 8) for _ in range(10)]
+        with pytest.raises(ValueError, match="Expected 20"):
+            build_mean_aa_baseline(embeddings, peptide_idx, too_few)
+
+    def test_broadcast_with_single_token(self):
+        """A chain of length 1 should still work."""
+        from igv.attrib import CANONICAL_AMINO_ACIDS, build_mean_aa_baseline
+
+        embeddings = torch.randn(1, 10, 8)
+        peptide_idx = np.array([3])
+        per_aa = [torch.randn(1, 8) for _ in range(len(CANONICAL_AMINO_ACIDS))]
+
+        baseline = build_mean_aa_baseline(embeddings, peptide_idx, per_aa)
+        assert baseline.shape == (1, 10, 8)

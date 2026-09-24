@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from igv.boltz_score import (
     SCORES,
     build_complex_feats,
+    compute_homopolymer_embeddings,
     confidence_forward,
     embedder_only,
     load_model,
@@ -25,6 +26,7 @@ from igv.boltz_score import (
     record_iptm_argmax,
 )
 from igv.attrib import (
+    build_mean_aa_baseline,
     completeness_error,
     free_cuda_memory,
     integrated_gradient,
@@ -131,8 +133,8 @@ def main() -> None:
     parser.add_argument(
         "--baseline",
         default="zeros",
-        choices=["zeros", "none"],
-        help="Baseline for IG (zeros or none)",
+        choices=["zeros", "none", "mean_aa"],
+        help="Baseline for IG (zeros, none, or mean_aa)",
     )
     args = parser.parse_args()
 
@@ -268,6 +270,23 @@ def main() -> None:
     # --- 5. Baseline ---
     if args.baseline == "zeros":
         baseline = torch.zeros_like(s_inputs)
+    elif args.baseline == "mean_aa":
+        log.info("Computing mean-AA baseline (20 homopolymer embeddings)")
+        token_indices_arr = np.array(
+            [token_map[(chain, i)] for i in range(len(reference_seq))],
+            dtype=np.int64,
+        )
+        per_aa_embs = compute_homopolymer_embeddings(
+            model,
+            chains,
+            chain,
+            pdb_path,
+            cache_dir,
+            args.device,
+            use_msa_server=not args.no_msa_server,
+        )
+        baseline = build_mean_aa_baseline(s_inputs, token_indices_arr, per_aa_embs)
+        log.info("mean_aa baseline built, shape %s", list(baseline.shape))
     else:
         baseline = None
 
