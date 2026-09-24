@@ -139,7 +139,12 @@ def main():
             any_diff = True
             continue
 
-        if t1.dtype.is_floating_point:
+        if t1.numel() == 0:
+            # Boltz emits zero-size tensors for absent features (chiral_*,
+            # connected_*, contact_* on a protein-only complex). .max() raises
+            # on an empty reduction -- the same crash probe_msa3.py hit.
+            diff = 0.0
+        elif t1.dtype.is_floating_point:
             diff = (t1 - t2).abs().max().item()
         else:
             diff = (t1 != t2).sum().item()
