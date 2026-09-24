@@ -217,9 +217,16 @@ def main() -> None:
     log.info("Loading model from %s", checkpoint_dir)
     model, boltz_version = load_model(checkpoint_dir, args.device)
 
-    log.info("Building complex features (use_msa_server=%s)", not args.no_msa_server)
+    # Per-dataset cache dir. boltz's process_inputs SKIPS any input whose YAML
+    # stem is already in <cache_dir>/processed/records, and this repo always
+    # writes the stem "input" -- so a shared cache_dir silently returns the
+    # FIRST complex ever featurised there. Caught in production on 1JTG, which
+    # came back with 4fqi_hlab's asym_id runs [121, 324, 176, 109].
+    feat_cache = cache_dir / "boltz_attr" / f"{dataset}_{chain}"
+    log.info("Building complex features (use_msa_server=%s, cache=%s)",
+             not args.no_msa_server, feat_cache)
     feats, token_map = build_complex_feats(
-        chains, pdb_path, cache_dir, args.device,
+        chains, pdb_path, feat_cache, args.device,
         use_msa_server=not args.no_msa_server,
     )
 

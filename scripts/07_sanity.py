@@ -479,7 +479,14 @@ def main() -> None:
         )
         n_tokens = sum(len(s) for s in struct_chains.values())
 
-    cache_suffix = f"_{subset_label}" if subset_label != "all" else ""
+    # Keyed on dataset as well as subset. boltz's process_inputs skips any input
+    # whose YAML stem already exists under <cache_dir>/processed/records, and
+    # the repo always writes stem "input" -- so a cache dir shared between two
+    # complexes silently returns the first one's features. Keying on the subset
+    # alone was not enough once a second complex existed.
+    cache_suffix = f"_{args.dataset}"
+    if subset_label != "all":
+        cache_suffix += f"_{subset_label}"
     model, _boltz_version = load_model(args.checkpoint_dir, args.device)
 
     def chains_for(seq):
