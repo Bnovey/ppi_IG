@@ -366,3 +366,173 @@ def map_mutations_to_indices(
         )
 
     return mapped, mismatches
+
+
+# ---------------------------------------------------------------------------
+# Amino-acid scales
+# ---------------------------------------------------------------------------
+
+# Kyte-Doolittle hydrophobicity
+HYDROPHOBICITY_KD: dict[str, float] = {
+    "A": 1.8, "R": -4.5, "N": -3.5, "D": -3.5, "C": 2.5,
+    "Q": -3.5, "E": -3.5, "G": -0.4, "H": -3.2, "I": 4.5,
+    "L": 3.8, "K": -3.9, "M": 1.9, "F": 2.8, "P": -1.6,
+    "S": -0.8, "T": -0.7, "W": -0.9, "Y": -1.3, "V": 4.2,
+}
+
+# Zamyatn residue volumes (angstrom^3)
+RESIDUE_VOLUME: dict[str, float] = {
+    "A": 88.6, "R": 173.4, "N": 114.1, "D": 111.1, "C": 108.5,
+    "Q": 143.8, "E": 138.4, "G": 60.1, "H": 153.2, "I": 166.7,
+    "L": 166.7, "K": 168.6, "M": 162.9, "F": 189.9, "P": 112.7,
+    "S": 89.0, "T": 116.1, "W": 227.8, "Y": 193.6, "V": 140.0,
+}
+
+
+# ---------------------------------------------------------------------------
+# PDB heavy-atom parsing for structural confounds
+# ---------------------------------------------------------------------------
+
+
+def parse_pdb_heavy_atoms(
+    pdb_path: Path,
+) -> tuple[np.ndarray, list[str], list[str]]:
+    """Parse heavy-atom coordinates from ATOM records.
+
+    Returns ``(coords, atom_chains, atom_res_keys)`` where *coords* is
+    an (N, 3) float64 array, *atom_chains* is a list of chain IDs, and
+    *atom_res_keys* is a list of author residue identifiers.
+    """
+    coords: list[list[float]] = []
+    chains: list[str] = []
+    res_keys: list[str] = []
+
+    with open(pdb_path) as f:
+        for line in f:
+            if not line.startswith("ATOM"):
+                continue
+            if len(line) >= 78:
+                element = line[76:78].strip()
+                if element in ("H", "D"):
+                    continue
+            coords.append(
+                [float(line[30:38]), float(line[38:46]), float(line[46:54])]
+            )
+            chains.append(line[21])
+            res_keys.append(line[22:27].strip())
+
+    return np.array(coords, dtype=np.float64), chains, res_keys
+
+
+def compute_burial(
+    coords: np.ndarray,
+    atom_chains: list[str],
+    atom_res_keys: list[str],
+    chain: str,
+    residue_ids: list[str],
+    radius: float = 10.0,
+) -> np.ndarray:
+    """Approximate solvent burial by counting neighbouring heavy atoms.
+
+    For each residue in *chain*, counts heavy atoms from other residues
+    (any chain) within *radius* angstrom of any of the residue's own atoms.
+    """
+    from collections import defaultdict
+
+    idx_map: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for i, (ch, rk) in enumerate(zip(atom_chains, atom_res_keys)):
+        idx_map[(ch, rk)].append(i)
+
+    r2 = radius * radius
+    result = np.zeros(len(residue_ids))
+
+    for i, rid in enumerate(residue_ids):
+        own = idx_map.get((chain, rid))
+        if own is None:
+            continue
+        res_c = coords[own]
+        diffs = res_c[:, None, :] - coords[None, :, :]
+        d2 = (diffs * diffs).sum(axis=2)
+        within = d2.min(axis=0) <= r2
+        result[i] = within.sum() - len(own)
+
+    return result
+
+
+def compute_distance_to_partner(
+    coords: np.ndarray,
+    atom_chains: list[str],
+    atom_res_keys: list[str],
+    chain: str,
+    partner_chains: tuple[str, ...],
+    residue_ids: list[str],
+) -> np.ndarray:
+    """Minimum heavy-atom distance from each residue to the binding partner."""
+    from collections import defaultdict
+
+    idx_map: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for i, (ch, rk) in enumerate(zip(atom_chains, atom_res_keys)):
+        idx_map[(ch, rk)].append(i)
+
+    partner_set = set(partner_chains)
+    partner_idx = [i for i, ch in enumerate(atom_chains) if ch in partner_set]
+    if not partner_idx:
+        return np.full(len(residue_ids), np.inf)
+    partner_coords = coords[partner_idx]
+
+    result = np.full(len(residue_ids), np.inf)
+    for i, rid in enumerate(residue_ids):
+        own = idx_map.get((chain, rid))
+        if own is None:
+            continue
+        res_c = coords[own]
+        diffs = res_c[:, None, :] - partner_coords[None, :, :]
+        d2 = (diffs * diffs).sum(axis=2)
+        result[i] = float(np.sqrt(d2.min()))
+
+    return result
+
+
+def compute_confounds(
+    pdb_path: Path,
+    chain: str,
+    residue_ids: list[str],
+    sequence: str,
+    partner_chains: tuple[str, ...],
+    positions: list[int],
+) -> dict[str, np.ndarray]:
+    """Compute structural and sequence confounds for mutated positions.
+
+    Returns a dict mapping confound name to a 1-D array aligned with
+    *positions* (which are 0-based indices into *residue_ids*/*sequence*).
+    """
+    coords, atom_chains, atom_res_keys = parse_pdb_heavy_atoms(pdb_path)
+
+    all_burial = compute_burial(
+        coords, atom_chains, atom_res_keys, chain, residue_ids,
+    )
+
+    n_chain = len(residue_ids)
+    confounds: dict[str, np.ndarray] = {}
+    confounds["burial"] = np.array([all_burial[p] for p in positions])
+
+    if partner_chains:
+        all_distance = compute_distance_to_partner(
+            coords, atom_chains, atom_res_keys, chain, partner_chains,
+            residue_ids,
+        )
+        confounds["distance_to_partner"] = np.array(
+            [all_distance[p] for p in positions]
+        )
+
+    confounds["hydrophobicity"] = np.array(
+        [HYDROPHOBICITY_KD.get(sequence[p], 0.0) for p in positions]
+    )
+    confounds["residue_volume"] = np.array(
+        [RESIDUE_VOLUME.get(sequence[p], 0.0) for p in positions]
+    )
+    confounds["norm_position"] = np.array(
+        [p / max(n_chain - 1, 1) for p in positions]
+    )
+
+    return confounds

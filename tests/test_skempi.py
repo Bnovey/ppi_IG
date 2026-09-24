@@ -10,17 +10,23 @@ import pandas as pd
 import pytest
 
 from igv.skempi import (
+    HYDROPHOBICITY_KD,
+    RESIDUE_VOLUME,
     SKEMPI_MUTATION_COL,
     Mutation,
     SkempiComplex,
     add_ddg,
     antibody_antigen,
+    compute_burial,
+    compute_confounds,
+    compute_distance_to_partner,
     ddg,
     filter_complex,
     get_complex,
     map_mutations_to_indices,
     parse_mutation,
     parse_mutations,
+    parse_pdb_heavy_atoms,
     read_pdb_residue_ids,
     single_point,
 )
@@ -456,3 +462,157 @@ def test_3hfm_pdb_column_zero_mismatches():
 
     assert total_mismatches == 0
     assert total_mapped == 96
+
+
+# ---------------------------------------------------------------------------
+# Structural confound unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_compute_burial_known_geometry():
+    """Three atoms along a line: burial counts neighbours within radius."""
+    coords = np.array([[0, 0, 0], [5, 0, 0], [20, 0, 0]], dtype=np.float64)
+    chains = ["A", "A", "A"]
+    res_keys = ["1", "2", "3"]
+    burial = compute_burial(coords, chains, res_keys, "A", ["1", "2", "3"], radius=10.0)
+    assert burial[0] == 1  # atom at (5,0,0) is within 10 A
+    assert burial[1] == 1  # atom at (0,0,0) is within 10 A
+    assert burial[2] == 0  # both other atoms are > 10 A away
+
+
+def test_compute_burial_multi_atom_residue():
+    """Residue with two atoms; neighbour within range of one counts."""
+    coords = np.array([
+        [0, 0, 0], [1, 0, 0],   # residue "1" (two atoms)
+        [8, 0, 0],               # residue "2" (one atom, 8 A from atom 2 of res 1)
+    ], dtype=np.float64)
+    chains = ["A", "A", "A"]
+    res_keys = ["1", "1", "2"]
+    burial = compute_burial(coords, chains, res_keys, "A", ["1", "2"], radius=10.0)
+    assert burial[0] == 1  # residue "2"'s atom is within 10 A of (1,0,0)
+    assert burial[1] == 2  # both atoms of residue "1" are within 10 A of (8,0,0)
+
+
+def test_compute_distance_to_partner_two_chains():
+    """Min distance from chain A residue to chain B atoms."""
+    coords = np.array([
+        [0, 0, 0],    # chain A, res 1
+        [3, 0, 0],    # chain A, res 2
+        [10, 0, 0],   # chain B, res 1
+        [12, 0, 0],   # chain B, res 2
+    ], dtype=np.float64)
+    chains = ["A", "A", "B", "B"]
+    res_keys = ["1", "2", "1", "2"]
+    dist = compute_distance_to_partner(
+        coords, chains, res_keys, "A", ("B",), ["1", "2"],
+    )
+    assert dist[0] == pytest.approx(10.0)
+    assert dist[1] == pytest.approx(7.0)
+
+
+def test_compute_distance_to_partner_closest_atom():
+    """Distance picks the minimum across all atom pairs."""
+    coords = np.array([
+        [0, 0, 0], [2, 0, 0],   # chain A, res 1 (two atoms)
+        [5, 0, 0],               # chain B, res 1
+    ], dtype=np.float64)
+    chains = ["A", "A", "B"]
+    res_keys = ["1", "1", "1"]
+    dist = compute_distance_to_partner(
+        coords, chains, res_keys, "A", ("B",), ["1"],
+    )
+    assert dist[0] == pytest.approx(3.0)  # min(5, 3) = 3
+
+
+def test_amino_acid_scales_complete():
+    """Both scales cover all 20 standard amino acids."""
+    standard = set("ACDEFGHIKLMNPQRSTVWY")
+    assert set(HYDROPHOBICITY_KD.keys()) == standard
+    assert set(RESIDUE_VOLUME.keys()) == standard
+
+
+def test_parse_pdb_heavy_atoms(mini_pdb_path):
+    """parse_pdb_heavy_atoms returns correct shape and chain assignments."""
+    coords, chains, res_keys = parse_pdb_heavy_atoms(mini_pdb_path)
+    assert coords.shape[1] == 3
+    assert len(chains) == coords.shape[0]
+    assert len(res_keys) == coords.shape[0]
+    assert set(chains) == {"A", "B"}
+
+
+# ---------------------------------------------------------------------------
+# Integration test: confound panel on 1JTG chain B
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not (_SKEMPI_CSV.exists() and _PDB_1JTG.exists()),
+    reason="SKEMPI CSV or 1jtg.pdb not on disk",
+)
+def test_1jtg_confound_panel():
+    """Run confound panel on 1JTG chain B with synthetic random gradient.
+
+    Reports each confound's Spearman correlation with |ddG| -- these
+    numbers set the bar the gradient must clear.
+    """
+    from igv.metrics import auroc, auprc, partial_spearman, spearman
+
+    df = pd.read_csv(_SKEMPI_CSV, sep=";")
+    df = filter_complex(df, "1JTG")
+    df = single_point(df)
+    df = add_ddg(df)
+
+    chain = "B"
+    residue_ids, sequences = read_pdb_residue_ids(_PDB_1JTG)
+    chain_ids = residue_ids[chain]
+    chain_seq = sequences[chain]
+
+    mutations = [parse_mutation(m.strip()) for m in df[SKEMPI_MUTATION_COL]]
+    chain_mutations = [(mut, i) for i, mut in enumerate(mutations) if mut.chain == chain]
+    chain_muts = [m for m, _ in chain_mutations]
+    chain_ddgs = [float(df.iloc[i]["ddg_kcal_mol"]) for _, i in chain_mutations]
+
+    mapped, _ = map_mutations_to_indices(chain_muts, chain_ids, chain_seq)
+
+    pos_ddgs: dict[int, list[float]] = {}
+    for mut, seq_idx in mapped:
+        orig_pos = chain_muts.index(mut)
+        pos_ddgs.setdefault(seq_idx, []).append(chain_ddgs[orig_pos])
+
+    positions = sorted(pos_ddgs)
+    ddg_max = np.array([max(pos_ddgs[p]) for p in positions])
+    ddg_abs_max = np.abs(ddg_max)
+    hot_labels = (ddg_max >= 2.0).astype(float)
+
+    complex_info = get_complex("1JTG")
+    partner_chains = complex_info.partner1
+
+    confounds = compute_confounds(
+        _PDB_1JTG, chain, chain_ids, chain_seq, partner_chains, positions,
+    )
+
+    assert len(positions) >= 25
+    assert "burial" in confounds
+    assert "distance_to_partner" in confounds
+    assert "hydrophobicity" in confounds
+    assert "residue_volume" in confounds
+    assert "norm_position" in confounds
+
+    print("\n--- 1JTG chain B confound correlations with |ddG| ---")
+    print(f"Positions: {len(positions)}, hot spots: {int(hot_labels.sum())}")
+    for name in sorted(confounds):
+        vals = confounds[name]
+        rho = spearman(vals, ddg_abs_max)
+        print(f"  {name:25s}  rho = {rho:+.4f}")
+
+    rng = np.random.default_rng(42)
+    fake_grad = rng.standard_normal(len(positions))
+
+    confound_matrix = np.column_stack(
+        [confounds[k] for k in sorted(confounds)]
+    )
+    partial_rho = partial_spearman(fake_grad, ddg_abs_max, confound_matrix)
+    rho_grad = spearman(fake_grad, ddg_abs_max)
+    print(f"\n  random gradient vs |ddG|:  simple {rho_grad:+.4f}  partial {partial_rho:+.4f}")
+    print(f"  AUROC (random grad):      {auroc(fake_grad, hot_labels):.4f}")
+    print(f"  AUPRC (random grad):      {auprc(fake_grad, hot_labels):.4f}")

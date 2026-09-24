@@ -13,12 +13,14 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from igv.metrics import precision_at_k, spearman
+from igv.metrics import auroc, auprc, bootstrap_ci, partial_spearman, precision_at_k, spearman
 from igv.provenance import write as prov_write
 from igv.skempi import (
     SKEMPI_MUTATION_COL,
     add_ddg,
+    compute_confounds,
     filter_complex,
+    get_complex,
     load_skempi,
     map_mutations_to_indices,
     parse_mutation,
@@ -170,6 +172,95 @@ def main() -> None:
     print(f"Hot spots (ΔΔG >= {HOTSPOT_THRESHOLD}, max agg): {n_hotspots_max}")
     print(f"Hot spots (ΔΔG >= {HOTSPOT_THRESHOLD}, mean agg): {n_hotspots_mean}")
 
+    # --- Confound panel ---
+    try:
+        complex_info = get_complex(pdb_id)
+        if chain in complex_info.partner1:
+            partner_chains = complex_info.partner2
+        elif chain in complex_info.partner2:
+            partner_chains = complex_info.partner1
+        else:
+            partner_chains = ()
+    except KeyError:
+        partner_chains = ()
+        log.warning("Complex %s not registered; distance_to_partner unavailable", pdb_id)
+
+    confounds = compute_confounds(
+        pdb_path, chain, chain_ids, chain_seq, partner_chains, positions,
+    )
+
+    confound_corrs: dict[str, dict] = {}
+    print("\n--- Confound panel ---")
+    for name in sorted(confounds):
+        vals = confounds[name]
+        rho_ddg = spearman(vals, ddg_abs_max)
+        rho_grad = spearman(vals, grad_scores)
+        _, ci_ddg_lo, ci_ddg_hi = bootstrap_ci(spearman, vals, ddg_abs_max)
+        _, ci_grad_lo, ci_grad_hi = bootstrap_ci(spearman, vals, grad_scores)
+        confound_corrs[name] = {
+            "rho_vs_abs_ddg": rho_ddg,
+            "rho_vs_abs_ddg_ci": [ci_ddg_lo, ci_ddg_hi],
+            "rho_vs_grad": rho_grad,
+            "rho_vs_grad_ci": [ci_grad_lo, ci_grad_hi],
+        }
+        print(
+            f"  {name:25s}  vs |ddG|: {rho_ddg:+.4f} [{ci_ddg_lo:+.4f},{ci_ddg_hi:+.4f}]"
+            f"   vs grad: {rho_grad:+.4f} [{ci_grad_lo:+.4f},{ci_grad_hi:+.4f}]"
+        )
+
+    # --- Partial correlation ---
+    confound_names_sorted = sorted(confounds)
+    confound_matrix = np.column_stack(
+        [confounds[k] for k in confound_names_sorted]
+    )
+    partial_rho_abs_max = partial_spearman(grad_scores, ddg_abs_max, confound_matrix)
+    partial_rho_abs_mean = partial_spearman(grad_scores, ddg_abs_mean, confound_matrix)
+    print("\nPartial Spearman (grad vs |ddG|, controlling all confounds):")
+    print(f"  max agg:  simple {rho_abs_max:+.4f}  partial {partial_rho_abs_max:+.4f}")
+    print(f"  mean agg: simple {rho_abs_mean:+.4f}  partial {partial_rho_abs_mean:+.4f}")
+
+    # --- AUROC / AUPRC for hot-spot classification ---
+    auroc_max = auroc(grad_scores, hot_max)
+    auroc_mean_val = auroc(grad_scores, hot_mean)
+    auprc_max = auprc(grad_scores, hot_max)
+    auprc_mean_val = auprc(grad_scores, hot_mean)
+    print(f"\nHot-spot classification (ddG >= {HOTSPOT_THRESHOLD}):")
+    print(f"  AUROC  max agg: {auroc_max:.4f}   mean agg: {auroc_mean_val:.4f}")
+    print(f"  AUPRC  max agg: {auprc_max:.4f}   mean agg: {auprc_mean_val:.4f}")
+
+    # --- Shuffled-ranking null ---
+    rng = np.random.default_rng(42)
+    n_shuffle = 1000
+    null_rhos = np.array([
+        spearman(rng.permutation(grad_scores), ddg_abs_max)
+        for _ in range(n_shuffle)
+    ])
+    null_aurocs = np.array([
+        auroc(rng.permutation(grad_scores), hot_max)
+        for _ in range(n_shuffle)
+    ])
+    null_auprcs = np.array([
+        auprc(rng.permutation(grad_scores), hot_max)
+        for _ in range(n_shuffle)
+    ])
+    print(f"\nShuffled-ranking null (n={n_shuffle}):")
+    print(f"  Spearman  mean {np.mean(null_rhos):+.4f}  p95 {np.percentile(null_rhos, 95):+.4f}")
+    print(f"  AUROC     mean {np.nanmean(null_aurocs):.4f}  p95 {np.nanpercentile(null_aurocs, 95):.4f}")
+    print(f"  AUPRC     mean {np.nanmean(null_auprcs):.4f}  p95 {np.nanpercentile(null_auprcs, 95):.4f}")
+
+    # --- Bootstrap confidence intervals ---
+    _, rho_ci_lo, rho_ci_hi = bootstrap_ci(spearman, grad_scores, ddg_abs_max)
+    _, partial_ci_lo, partial_ci_hi = bootstrap_ci(
+        partial_spearman, grad_scores, ddg_abs_max, confound_matrix,
+    )
+    _, auroc_ci_lo, auroc_ci_hi = bootstrap_ci(auroc, grad_scores, hot_max)
+    _, auprc_ci_lo, auprc_ci_hi = bootstrap_ci(auprc, grad_scores, hot_max)
+    print("\n95% Bootstrap CIs:")
+    print(f"  Spearman |ddG|: [{rho_ci_lo:+.4f}, {rho_ci_hi:+.4f}]")
+    print(f"  Partial:        [{partial_ci_lo:+.4f}, {partial_ci_hi:+.4f}]")
+    print(f"  AUROC:          [{auroc_ci_lo:.4f}, {auroc_ci_hi:.4f}]")
+    print(f"  AUPRC:          [{auprc_ci_lo:.4f}, {auprc_ci_hi:.4f}]")
+
     # --- Write JSON artifact ---
     result = {
         "complex": pdb_id,
@@ -185,6 +276,28 @@ def main() -> None:
         "spearman_signed_ddg_max_agg": rho_signed_max,
         "spearman_signed_ddg_mean_agg": rho_signed_mean,
         **prec_results,
+        "confound_correlations": confound_corrs,
+        "partial_spearman_abs_ddg_max_agg": partial_rho_abs_max,
+        "partial_spearman_abs_ddg_mean_agg": partial_rho_abs_mean,
+        "auroc_max_agg": auroc_max,
+        "auroc_mean_agg": auroc_mean_val,
+        "auprc_max_agg": auprc_max,
+        "auprc_mean_agg": auprc_mean_val,
+        "shuffled_null": {
+            "n_permutations": n_shuffle,
+            "spearman_mean": float(np.mean(null_rhos)),
+            "spearman_p95": float(np.percentile(null_rhos, 95)),
+            "auroc_mean": float(np.nanmean(null_aurocs)),
+            "auroc_p95": float(np.nanpercentile(null_aurocs, 95)),
+            "auprc_mean": float(np.nanmean(null_auprcs)),
+            "auprc_p95": float(np.nanpercentile(null_auprcs, 95)),
+        },
+        "bootstrap_ci_95": {
+            "spearman_abs_ddg_max": [rho_ci_lo, rho_ci_hi],
+            "partial_spearman_abs_ddg_max": [partial_ci_lo, partial_ci_hi],
+            "auroc_max": [auroc_ci_lo, auroc_ci_hi],
+            "auprc_max": [auprc_ci_lo, auprc_ci_hi],
+        },
         "per_position": [
             {
                 "residue_id": chain_ids[p],
@@ -193,6 +306,7 @@ def main() -> None:
                 "ddg_max": float(ddg_max[i]),
                 "ddg_mean": float(ddg_mean[i]),
                 "n_mutations": n_mutations_per_pos[i],
+                **{k: float(confounds[k][i]) for k in confounds},
             }
             for i, p in enumerate(positions)
         ],

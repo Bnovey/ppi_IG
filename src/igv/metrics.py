@@ -181,3 +181,100 @@ def summary(
         for _, row in df.iterrows():
             result[f"spearman_nmut{int(row['n_mut'])}"] = row["metric"]
     return result
+
+
+# ---------------------------------------------------------------------------
+# AUROC / AUPRC
+# ---------------------------------------------------------------------------
+
+
+def auroc(scores: np.ndarray, labels: np.ndarray) -> float:
+    """Area under the ROC curve via the Mann-Whitney U statistic.
+
+    *labels* must be binary (0 or 1).  Returns NaN if either class is empty.
+    """
+    scores = np.asarray(scores, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.float64)
+    n_pos = int(labels.sum())
+    n_neg = len(labels) - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return float("nan")
+    ranks = stats.rankdata(scores)
+    u = ranks[labels == 1].sum() - n_pos * (n_pos + 1) / 2
+    return float(u / (n_pos * n_neg))
+
+
+def auprc(scores: np.ndarray, labels: np.ndarray) -> float:
+    """Area under the precision-recall curve (average precision).
+
+    *labels* must be binary (0 or 1).  Ties are broken conservatively
+    (negatives ranked before positives at equal score).
+    Returns NaN if there are no positives.
+    """
+    scores = np.asarray(scores, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.float64)
+    n_pos = int(labels.sum())
+    if n_pos == 0:
+        return float("nan")
+    order = np.lexsort((labels, -scores))
+    sorted_labels = labels[order]
+    tp = np.cumsum(sorted_labels)
+    n = np.arange(1, len(sorted_labels) + 1, dtype=np.float64)
+    precision = tp / n
+    recall = tp / n_pos
+    d_recall = np.diff(recall, prepend=0.0)
+    return float(np.sum(precision * d_recall))
+
+
+# ---------------------------------------------------------------------------
+# Partial correlation and bootstrap
+# ---------------------------------------------------------------------------
+
+
+def partial_spearman(
+    x: np.ndarray,
+    y: np.ndarray,
+    confounds: np.ndarray,
+) -> float:
+    """Spearman correlation between *x* and *y* after regressing out *confounds*.
+
+    Confounds are removed via ordinary least squares (with intercept);
+    the Spearman correlation of the residuals is returned.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    Z = np.asarray(confounds, dtype=np.float64)
+    if Z.ndim == 1:
+        Z = Z[:, None]
+    Z_aug = np.column_stack([np.ones(len(x)), Z])
+    coef_x, _, _, _ = np.linalg.lstsq(Z_aug, x, rcond=None)
+    coef_y, _, _, _ = np.linalg.lstsq(Z_aug, y, rcond=None)
+    resid_x = x - Z_aug @ coef_x
+    resid_y = y - Z_aug @ coef_y
+    return spearman(resid_x, resid_y)
+
+
+def bootstrap_ci(
+    fn: Callable[..., float],
+    *arrays: np.ndarray,
+    n_boot: int = 2000,
+    ci: float = 0.95,
+    seed: int = 42,
+) -> tuple[float, float, float]:
+    """Bootstrap confidence interval.
+
+    Returns ``(point_estimate, lo, hi)`` where *lo* and *hi* are the
+    percentile bounds for the given confidence level.
+    """
+    arrays = tuple(np.asarray(a) for a in arrays)
+    n = len(arrays[0])
+    point = fn(*arrays)
+    rng = np.random.default_rng(seed)
+    boots = np.empty(n_boot)
+    for i in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        boots[i] = fn(*(a[idx] for a in arrays))
+    alpha = (1 - ci) / 2
+    lo = float(np.nanpercentile(boots, 100 * alpha))
+    hi = float(np.nanpercentile(boots, 100 * (1 - alpha)))
+    return (point, lo, hi)

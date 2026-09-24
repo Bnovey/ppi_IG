@@ -223,24 +223,37 @@ arXiv:2606.22181, whose failure mode is the one most likely to bite us.
 parameter tensors destroys the attribution, so the signal depends on learned
 weights. `dead_target` 0.0.
 
-**Still owed -- the confound panel.** The allergenicity paper found their
-classifiers relied on *"physicochemical and compositional sequence features
-rather than epitope-specific mechanisms."* Before believing any correlation
-between gradient norms and ddG, check the gradient is not simply re-describing:
+**The confound panel -- built, and it has already set the bar.** The
+allergenicity paper found their classifiers relied on *"physicochemical and
+compositional sequence features rather than epitope-specific mechanisms."*
+Measured on **1JTG chain B**, 28 positions, from the PDB alone with no model
+involved (`ERRORS_LOG.md` entry 19):
 
-- burial / solvent accessibility (approximate by neighbour count; no new deps)
-- distance to the binding partner
-- residue volume and hydrophobicity
-- position in chain -- residue 0 topped the 4FQI list, likely an N-terminal
-  artifact
+| Confound | Spearman vs ddG |
+|---|---|
+| **burial** (heavy atoms within 10 A) | **+0.54** |
+| **residue volume** | **+0.48** |
+| distance to binding partner | -0.32 |
+| hydrophobicity | -0.14 |
+| normalised position in chain | +0.11 |
 
-Then report the **partial correlation**: does the gradient predict ddG *after*
-controlling for those? If gradient norm tracks ddG at 0.5 but burial at 0.8, we
-have built an expensive ruler.
+**Counting nearby heavy atoms predicts binding energy at rho ~0.5.** An
+attribution scoring 0.5 against ddG tells us nothing a distance calculation
+would not. So the **partial correlation** -- does the gradient predict ddG after
+burial and residue size are regressed out? -- is the load-bearing number, not
+the raw Spearman. Report both.
 
-**Also owed:** AUROC / AUPRC alongside precision@k, a shuffled-ranking null, and
-bootstrap confidence intervals. With 49 positions the error bars matter, and
-matching arXiv:2606.22181's metrics makes the comparison direct.
+Two caveats on that bar. It is sensitive to aggregation (+0.54 max signed, +0.59
+max |ddG|, +0.47 mean), so always state which. And its bootstrap 95% CI is
+**[+0.21, +0.78]** at n=28 -- wide enough that pooling 3HFM, 1VFB, 1JRH and 2JEL
+moves from optional to close to mandatory before any claim is made. Distance to
+partner looks weak only because SKEMPI measured interface residues exclusively,
+so the variable cannot discriminate; that is range restriction, not evidence the
+interface is unimportant.
+
+`scripts/10_skempi_hotspots.py` now reports the panel, the partial correlation,
+AUROC / AUPRC alongside precision@k, a shuffled-ranking null, and bootstrap CIs.
+Matching arXiv:2606.22181's metrics makes the comparison to them direct.
 
 ---
 

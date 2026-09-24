@@ -601,18 +601,118 @@ at the mutated token, a real substitution delta is `|d| = 5.78`, against a
 whole-tensor noise scale of ~1.1-1.5 — so the signal survives, but not by the
 margin one would want, and it is contaminated for no reason.
 
-- **Root cause:** unseeded RDKit conformer generation inside boltz featurisation.
-- **Fix (not yet implemented):** seed conformer generation so mutant and
-  reference share identical `ref_pos`, leaving only the sequence difference.
-  Failing that, hold one featurisation's `ref_pos` and reuse it. Note this also
-  makes `03_attribute`'s reference (server-featurised, bare `cache_dir`) differ
-  from stage 02's (file-featurised) — the gradient is taken at a slightly
-  different point than the deltas are expanded around, and the two stages should
+- **Root cause — CORRECTED.** The original entry blamed "unseeded RDKit
+  conformer generation". That is wrong, or at best secondary. Reading the boltz
+  2.0.3 source directly:
+
+  **Primary:** `boltz/data/feature/featurizerv2.py:1467-1473` loops over
+  `ref_space_uid` groups — one per (chain, residue) — and calls
+  `center_random_augmentation` on each with the default `augmentation=True`.
+  That applies a random **rotation and translation**
+  (`boltz/model/modules/utils.py:67-101`; `randomly_rotate` at `:93` ->
+  `random_rotations` at `:60` -> `random_quaternions` at `:282`, drawing
+  `torch.randn((n, 4))`). The inference dataset seeds **numpy only** —
+  `boltz/data/module/inferencev2.py:270`, `seed = 42;
+  random = np.random.default_rng(seed)` — and never calls
+  `torch.manual_seed`. So the torch global RNG is unseeded and every residue's
+  reference conformer gets a random orientation.
+
+  A random rotation explains the 10.7 Angstrom magnitude far better than
+  conformer resampling would; the latter perturbs locally, a rotation displaces
+  the whole group.
+
+  **Secondary:** `boltz/data/parse/schema.py:219-227` calls
+  `AllChem.EmbedMolecule(mol, options)` with `ETKDGv3()`, whose `randomSeed`
+  defaults to -1. This fires only for ligands and non-standard residues —
+  canonical amino acids load pre-computed conformers from pickle via
+  `load_canonicals` / `load_molecules`. So for our protein-only complexes it is
+  not the operative path.
+
+- **The near-miss.** The obvious worry is that seeding fixes run-to-run
+  reproducibility without fixing the mutant-vs-reference delta: if RNG
+  consumption scaled with atom count, a substitution (ALA 5 heavy atoms, TRP 14)
+  would desynchronise every residue after the mutation site. Checked, and it
+  does not — each call draws exactly **7 values regardless of atom count**: 4
+  for the quaternion, 3 for the translation, because the translation is
+  `torch.randn_like(atom_coords[:, 0:1, :])` and takes only the *first* atom's
+  shape. Verified empirically across atom counts 3, 5, 7, 10, 14, 20, 50.
+  Seeding alone would therefore have been sufficient.
+
+- **Fix, implemented:** `src/igv/deterministic.py` provides a
+  `deterministic_featurisation(seed)` context manager, wired into
+  `build_complex_feats`. It patches `center_random_augmentation` to pass
+  `augmentation=False` — keeping the centring, dropping the roto-translation —
+  rather than relying on the 7-value invariant, which is undocumented and could
+  change with any boltz release. Centring depends only on a residue's own atoms,
+  so shared residues produce identical `ref_pos` by construction. Torch, numpy
+  and Python RNGs are seeded and the RDKit entry points patched as
+  defence-in-depth. Seed via `IGV_FEAT_SEED`, default 42.
+
+  The random roto-translation is training-time data augmentation. There is no
+  reason for it to run at inference at all.
+
+- **Status:** implemented, **not yet proven**. `boltz` is not installed on the
+  laptop, so the patch cannot be exercised locally and falls back to seeding
+  alone with a debug log. `scripts/verify_deterministic_feats.py` is the proof:
+  run it on the VM, where it featurises one input twice and asserts every tensor
+  is byte-identical, then featurises a reference and a point mutant and checks
+  `ref_pos` agrees while `res_type` differs at exactly one token. **It must exit
+  0 before any `ref_pos`-dependent result is believed.**
+
+- **Still open:** `03_attribute`'s reference is server-featurised (bare
+  `cache_dir`) while stage 02's is file-featurised, so the gradient is taken at a
+  slightly different point than the deltas expand around. The two stages should
   be put on one canonical featurisation.
-- **Status:** diagnosed, not fixed. This is the next work item, and it needs no
-  GPU.
 
 Incidental: this is very likely the same root cause as the ~1.6% run-to-run
 score noise recorded in `docs/MEMSCALE_RESULTS.md`, which was attributed to
 kernel nondeterminism. It is not — the forward is deterministic; the *input* was
 changing.
+
+---
+
+## 19. Burial alone predicts binding energy at rho ~0.5 — the bar before any gradient
+
+Built the confound panel before running anything on GPU, and it changes how the
+eventual result has to be read.
+
+On **1JTG chain B** — 28 measured positions, 11 of them hot spots at
+ddG >= 2.0 — computed from the PDB alone, no model involved:
+
+| Confound | Spearman vs ddG (max per position) |
+|---|---|
+| **burial** (heavy atoms within 10 A) | **+0.54** |
+| **residue volume** | **+0.48** |
+| distance to binding partner | -0.32 |
+| hydrophobicity | -0.14 |
+| normalised position in chain | +0.11 |
+
+**Counting how many heavy atoms sit near a residue predicts its contribution to
+binding energy at rho ~0.5.** No gradient, no GPU, no Boltz-2. That is the bar.
+An attribution scoring 0.5 against ddG would have told us nothing a distance
+calculation would not.
+
+This is precisely the failure mode of arXiv:2606.22181, where attribution on
+allergenicity classifiers faithfully reported that the models were leaning on
+*"physicochemical and compositional sequence features"* rather than biology. The
+attribution was honest; the signal was a shortcut. **The partial correlation —
+does the gradient predict ddG after burial and residue size are regressed out? —
+is the load-bearing number, not the raw Spearman.**
+
+- **Sensitive to aggregation.** Burial vs ddG is +0.54 taking the max signed ddG
+  per position, +0.59 taking max |ddG|, +0.47 taking the mean. Report the
+  aggregation with the number; the stage-10 script emits both max and mean for
+  this reason.
+- **The bar itself is poorly determined.** Bootstrap 95% CI on burial is
+  **[+0.21, +0.78]** at n=28. Wide enough that pooling 3HFM, 1VFB, 1JRH and 2JEL
+  moves from "nice to have" to close to mandatory before any claim is made.
+- **Distance to partner is weak for a boring reason.** SKEMPI only measured
+  interface residues, so they are all close to the partner and the variable
+  cannot discriminate. Range restriction, not absence of an effect — do not read
+  -0.32 as "the interface does not matter".
+- Random-gradient control behaves: rho = +0.04, AUROC 0.56, AUPRC 0.49, so the
+  shuffled null sits where it should.
+
+- **Status:** measured and recorded. `scripts/10_skempi_hotspots.py` reports the
+  confound panel, partial correlation, AUROC/AUPRC, a shuffled-ranking null and
+  bootstrap CIs alongside the headline number.

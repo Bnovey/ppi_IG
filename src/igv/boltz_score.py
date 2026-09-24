@@ -670,6 +670,7 @@ def build_complex_feats(
     use_msa_server: bool = True,
     msa: str | dict | None = None,
     msa_spec: str | dict | None = None,
+    feat_seed: int | None = None,
 ) -> tuple[dict, dict[tuple[str, int], int]]:
     """Featurise a multi-chain complex for Boltz-2.
 
@@ -739,6 +740,25 @@ def build_complex_feats(
         (ERRORS_LOG.md attributes 3.25 GiB to ``_msa_forward_checkpointed``), so
         a reference point measured WITH MSAs is not comparable to one measured
         without. Any artifact must record which was used.
+    feat_seed : int or None
+        Seed for deterministic featurisation.  ``None`` (the default) reads
+        ``IGV_FEAT_SEED`` from the environment, falling back to 42.  Wraps
+        the entire featurisation (``process_inputs`` + dataset collation)
+        in :func:`igv.deterministic.deterministic_featurisation`, which:
+
+        1. Patches ``center_random_augmentation`` to centre-only (no random
+           rotation/translation), eliminating the dominant source of
+           ``ref_pos`` nondeterminism.
+        2. Seeds torch, numpy, Python ``random`` to cover
+           ``random.choice(conf_ids)`` and any other RNG boltz draws from.
+        3. Patches RDKit's ``EmbedMolecule`` to inject a fixed
+           ``randomSeed`` for ligand/non-standard residue conformer
+           generation.
+
+        This makes ``ref_pos`` byte-identical across repeated featurisations
+        of the same input AND across a reference and point mutant at their
+        shared residues, eliminating the conformer-resample noise from
+        embedding deltas.
 
     Returns
     -------
@@ -751,6 +771,8 @@ def build_complex_feats(
     import yaml
     import torch
     from boltz.main import process_inputs
+
+    from igv.deterministic import deterministic_featurisation
 
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -778,10 +800,12 @@ def build_complex_feats(
     spec_path.write_text(yaml.dump(spec))
 
     proc_kwargs, cache_root = _boltz_process_inputs_kwargs(use_msa_server)
-    process_inputs(data=[spec_path], out_dir=cache_dir, **proc_kwargs)
 
-    mol_dir = proc_kwargs.get("mol_dir", cache_root / "mols")
-    feats = _featurize_processed(cache_dir, mol_dir, device)
+    with deterministic_featurisation(seed=feat_seed):
+        process_inputs(data=[spec_path], out_dir=cache_dir, **proc_kwargs)
+
+        mol_dir = proc_kwargs.get("mol_dir", cache_root / "mols")
+        feats = _featurize_processed(cache_dir, mol_dir, device)
 
     token_map = _build_token_map(chains, feats)
 
