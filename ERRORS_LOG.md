@@ -858,3 +858,82 @@ separate W->A measurements: +4.81, +4.66, +4.34, +4.25, +3.50.
   keyed on dataset too.
 - **Status:** fixed. Any new call to `build_complex_feats` needs its own cache
   dir — treat a shared one as a bug on sight.
+
+---
+
+## 25. The within-position design removes the volume confound — verified on GB1
+
+- **Symptom (not a crash):** every 1JTG result was uninterpretable because
+  residue volume predicts `|ddG|` at **+0.44** on pooled SKEMPI data (entry 22),
+  so "the gradient ranks hot spots" and "the gradient ranks big side chains"
+  make the same prediction. No amount of partial correlation at n=28 separates
+  them.
+- **Verified fix, on real saturation data** (Olson 2014 GB1/IgG-Fc, 1045 singles
+  = 55 positions x 19, every position saturated):
+
+  | Design | Volume vs binding effect |
+  |---|---|
+  | Pooled | +0.44 |
+  | Within-position | **mean +0.135, median +0.197** |
+
+  Range across positions -0.92..+0.71, with **20 of 54 positions negative** — so
+  the residual cancels on pooling rather than accumulating. Hydrophobicity
+  behaves the same way (mean +0.181, median +0.117).
+- **Why it works:** holding the position fixed holds burial, solvent exposure and
+  distance-to-partner fixed, because they are properties of the site and not of
+  the substitution. The entire confound panel is constant within a row and
+  divides out. This is an experimental-design fix, not a statistical one, which
+  is why it succeeds where regressing the confounds away could not.
+- **Status:** adopted. All saturation-arm analysis is within-position by default;
+  pooled correlations are reported only for continuity with the SKEMPI runs.
+
+---
+
+## 26. GB1 rejected as the saturation target — censored at exactly the hot spots
+
+- **Symptom:** GB1 produced the entry-25 result and is cheap (56 residues), so it
+  was the obvious primary target. Inspecting it closely killed it.
+- **What the data actually shows:** the floor is exactly `ln(0.01) = -4.60517`
+  with 87 values pinned there, and the censoring is *not* spread evenly —
+  **position 27 has std 0.000, all 19 substitutions at the floor**, and position
+  43 (Trp) has 17/19. 13 of 55 positions are flat (std < 0.3), 6 have more than
+  3 values at the floor. Within-position ranking is undefined at precisely the
+  residues that matter most.
+- **Three further defects, each independently disqualifying:**
+  - `W = f_N * W_N` by the authors' own definition, so folding and binding are
+    coupled. For a *structure* model the likeliest null story is "the gradient
+    tracks foldability", and GB1 cannot rule it out without merging in a
+    separate paper (Nisthal 2019).
+  - 1FCC is protein G **C2** (P19909), not **B1** (P06654) — the wrong
+    paralogue. 3 of 56 positions differ, 57 wild-type mismatches, 988/1045
+    mutants map cleanly, numbering offset exactly -226. No better PDB entry.
+  - `lnW` is not ddG, so nothing pools or plots with the SKEMPI results.
+- **Trap recorded for anyone who revisits it:** 1FCC chains A and B are an
+  **obligate Fc homodimer, 2.34 A apart** — not redundant copies like 1JTG's
+  C/D. Dropping B to save tokens models a half-molecule that does not exist in
+  solution. Use A+B+C = 468 tokens; drop only D.
+- **Status:** rejected in favour of Starr 2020 / 6M0J, which has real affinities
+  and a matched expression control in the same file. See ROADMAP section 10.
+
+---
+
+## 27. Boltz-2's AbBiBench score is anti-correlated with per-amino-acid structure
+
+- **Symptom:** shopping for a saturation dataset inside AbBiBench, the datasets
+  where Boltz-2 already scores well are the ones that cannot test our claim.
+- **Measured:** `2fjg` is a genuine complete saturation scan — verified 2223 rows
+  = 117 positions x 19, 2223 unique heavy sequences, all singles, consensus ==
+  PDB wild type. Boltz-2's per-dataset score there is **0.08**. Meanwhile
+  `3gbn_h1` scores **0.71** with 11 positions x 1 alternative, **zero** true
+  single mutants, and an 11% floor; `4fqi_h3` is **89% floor-censored**.
+- **Consequence:** a high AbBiBench number is evidence about dataset shape, not
+  about Boltz-2's per-amino-acid resolution. Recorded so the 0.71 is never cited
+  as encouragement for this project.
+- **Correction to an earlier characterisation of `4fqi_h1`:** computing variant
+  identity against the dataset *consensus* gives 16 singles and a modal 8
+  mutations. The consensus differs from the 4FQI structural wild type at **9 of
+  16 varying positions**, so against the structure we actually model there are
+  **0 true single mutants and a modal 10 mutations**. Always diff against the
+  PDB sequence, never the dataset consensus.
+- **Status:** closed. AbBiBench remains useful for structures and sequences, not
+  as a leaderboard.

@@ -1,4 +1,9 @@
-# Roadmap — gradient attribution on Boltz-2, measured against SKEMPI
+# Roadmap — gradient attribution on Boltz-2, measured against experiment
+
+Two validation arms. **Alanine scanning** (SKEMPI, sections 1-8) asks which
+*positions* matter and is confounded by side-chain size; **saturation**
+(Starr 2020 on 6M0J, section 10) asks how each of the 20 *amino acids*
+performs and is not. Section 9 is the evidence for moving to the second.
 
 Supersedes the target selection in `HANDOFF.md`. `PLAN.md` is the original
 proposal and must not be modified; this document records what changed and why.
@@ -218,6 +223,10 @@ A+B is 427 tokens, so passes are cheaper than the 3HFM estimates. Roughly 12
 GPU-hours core, ~18 with realistic slack for the OOMs and reruns this project
 has hit in every prior session. At $5.07/hr that is **$60-90**.
 
+The saturation arm (section 10) is on top of that. 6M0J is ~791 tokens
+against 1JTG's 427, so budget ~1.5-3 h per 32-step IG run rather than ~40
+min, and size the position set to the budget rather than running all ~200.
+
 ---
 
 ## 6. Controls we owe
@@ -356,16 +365,106 @@ matters" scores respectably without representing binding. See entry 22.
 +3.50..+4.81, putting experimental noise at ~±0.6 kcal/mol. Effective n is 28,
 which is why every CI above is so wide. Entry 23.
 
-**Saturation data is the fix.** With all 20 substitutions measured at a position,
-the comparison becomes **within-position**, so burial, exposure and
-distance-to-partner are constant and cancel entirely. That tests the
-substitution effect in isolation — the actual claim — and sidesteps the confound
-panel rather than fighting it.
+**Saturation data is the fix, and it is measured, not argued.** With all 20
+substitutions at one position, the comparison becomes *within-position*, so
+burial, exposure and distance-to-partner are constant across the row and cancel
+identically. Verified on real saturation data (GB1, below):
 
-Candidate under assessment: **GB1 binding IgG-Fc** (Olson et al., Current
-Biology 2014) — all 20 amino acids at ~55 positions, and GB1 is only 56
-residues so the complex is cheap. Caveat to verify: an mRNA-display binding
-assay couples stability to affinity, so it is not clean ddG the way SKEMPI is.
+| Design | Residue volume vs binding effect |
+|---|---|
+| Pooled (what we did on SKEMPI) | **+0.44** |
+| Within-position | **+0.135** mean, **+0.197** median |
+
+And the within-position correlation *changes sign* position to position — 20 of
+54 positions negative, range -0.92..+0.71 — so on pooling it cancels rather
+than accumulating. The confound panel is not something to regress away; it is
+something the experimental design removes. This is the single most important
+methodological result in the project so far.
+
+### GB1/IgG-Fc — assessed and rejected
+
+Olson et al. 2014 (Current Biology). Verified locally: 1045 singles = exactly
+55 positions x 19 substitutions, every position saturated. It is cheap (56
+residues) and it is what produced the within-position numbers above. Rejected
+as the primary saturation target on four counts:
+
+1. **The hot spots are censored out.** The floor is exactly `ln(0.01)`, with 87
+   values pinned there. Position 27 has **std 0.000 — all 19 substitutions at
+   the floor**; position 43 (Trp) has 17/19. 13 of 55 positions are flat
+   (std < 0.3). Within-position ranking is impossible at precisely the residues
+   alanine scanning calls hottest, which are the ones we most need to rank.
+2. **Folding and binding are coupled.** The authors define `W = f_N * W_N`, so a
+   destabilised variant reads as a non-binder. For a *structure* model like
+   Boltz-2, "the gradient tracks foldability" is an a priori likely confound,
+   which makes a stability control mandatory rather than optional. GB1 needs a
+   cross-paper merge (Nisthal 2019 PNAS folding ddG) to approximate one.
+3. **The structure is the wrong paralogue.** 1FCC is protein G **C2** domain
+   (P19909), not B1 (P06654); 3 of 56 positions differ, giving 57 wild-type
+   mismatches, and 988/1045 mutants map cleanly. No better structure exists in
+   the PDB. Numbering offset is exactly -226.
+4. **`lnW` is not ddG**, so GB1 results cannot be pooled with, or plotted on the
+   same axis as, anything from SKEMPI.
+
+Structural trap recorded in case GB1 is ever revisited: in 1FCC chains A and B
+are an **obligate Fc homodimer 2.34 A apart**, not redundant copies like 1JTG's
+C/D. Dropping B to save tokens models a half-molecule that does not exist in
+solution. Use A+B+C = 468 tokens, drop only D.
+
+### AbBiBench saturation scans — why not
+
+`2fjg` and `g6_LC` *are* complete saturation scans — `2fjg` verified at 2223
+rows = 117 positions x 19, all singles, consensus == PDB wild type. The problem
+is the other side of the ledger: Boltz-2's own per-dataset score on `2fjg` is
+**0.08**. Across AbBiBench, Boltz-2's score correlates *inversely* with how much
+per-amino-acid structure a dataset has — 0.71 on `3gbn_h1`, which has 11
+positions x 1 alternative, no true singles, and an 11% floor. The datasets
+Boltz-2 looks good on are the ones that cannot test our claim. Recorded so the
+0.71 is never cited as encouragement.
+
+## 10. The saturation arm: SARS-CoV-2 RBD / ACE2
+
+**Decision (2026-09-27): go straight to Starr et al. 2020 on 6M0J. Skip GB1
+entirely.** The within-position machinery has to be written either way, and
+writing it against the dataset that can actually carry the claim avoids
+building it twice. GB1's cheapness does not offset a censored hot-spot set, a
+wrong-paralogue structure, and a readout that cannot be put on the same axis as
+our SKEMPI results.
+
+`SPIKE_SARS2_Starr_2020_binding` — Tite-seq on the RBD, all 20 amino acids at
+essentially every position.
+
+| | GB1 | **SPIKE/6M0J** |
+|---|---|---|
+| Singles | 1045 | **~3802** (~99.6% saturation) |
+| Readout | enrichment ratio (`lnW`) | **delta log10 KD — real affinity** |
+| Convertible to ddG? | no | **yes**, ~1.36 kcal/mol per log10 |
+| Stability control | cross-paper merge needed | **same paper, same assay, same variants** |
+| Structure | wrong paralogue, 3.2 A | 6M0J, 2.45 A, single copy |
+| Tokens | 468 | ~791 |
+
+The matched **expression** readout is the decisive advantage. It is the
+folding-vs-binding decomposition GB1 needs a separate publication to
+approximate, available for the identical variants in the identical assay. Since
+the likeliest failure mode for a structure model's gradient is that it tracks
+foldability, having that control in-file converts a fatal ambiguity into a
+measurable one.
+
+Cost is the only objection: 791 tokens against 1JTG's 427, so roughly 1.5-3 h
+per 32-step IG run rather than ~40 min.
+
+### Setup facts to verify before spending GPU
+
+- Chain assignment (A = ACE2, E = RBD) and the RBD residue range.
+- Dataset Spike-site numbering maps directly onto 6M0J chain E author numbering,
+  with **zero** wild-type mismatches. The `Mutation(s)_cleaned` disaster on 1JTG
+  (41 mismatches, silently wrong residues) is the precedent: never trust a
+  numbering column, always check the wild-type letter against the structure.
+- Sign convention. Starr `bind_avg` is *negative for weaker binding*; SKEMPI ddG
+  is *positive for weaker binding*. The conversion must negate.
+- Censoring floor, and specifically whether the strongest positions are pinned
+  at it the way GB1's positions 27 and 43 are.
+- 6M0J carries a Zn ion and NAG glycans; our parser keeps only standard `ATOM`
+  residues, so confirm what is being dropped and that it is not at the interface.
 
 ### Next, in priority order
 
@@ -376,7 +475,8 @@ assay couples stability to affinity, so it is not clean ddG the way SKEMPI is.
 2. **The brute-force scan on 1JTG** (~$22, ~4 h). Mandatory — the headline claim
    is unpublishable without it, and it separates "the method fails" from
    "Boltz-2 has no binding signal here". Only one of those is fixable.
-3. **Saturation arm**, if GB1 checks out.
+3. **The saturation arm on 6M0J.** Loader and within-position analysis are
+   local and free; build and verify them alongside 1 and 2, then spend GPU.
 4. **Re-gate completeness** on absolute error, or on relative error scaled to
    the score's own noise. Do this instead of spending an hour on m=64.
 
