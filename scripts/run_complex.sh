@@ -41,6 +41,7 @@ GRAD="results/${DATASET}_${SCORE}_${METHOD}_grad.npz"
 SCAN="results/${DATASET}_${SCORE}_scan.csv"
 PRED="results/${DATASET}_${SCORE}_${METHOD}_pred.csv"
 HOTSPOTS="results/${DATASET}_hotspots.json"
+COMPARE="results/${DATASET}_compare.csv"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -104,6 +105,18 @@ run "$PY" scripts/05_predict.py \
     --grad "$GRAD" \
     --deltas "$DELTAS" \
     --out "$PRED"
+echo ""
+
+log "Stage 12: Compare attribution vs scan vs experiment"
+run "$PY" scripts/12_compare.py \
+    --pred "$PRED" \
+    --scan "$SCAN" \
+    --dataset "$DATASET" \
+    --score "$SCORE" \
+    --chain "$CHAIN" \
+    --cache-dir data/raw \
+    --interface-cutoff "$INTERFACE_CUTOFF" \
+    --out "$COMPARE"
 echo ""
 
 if [ "$DATA_SOURCE" = "skempi" ]; then

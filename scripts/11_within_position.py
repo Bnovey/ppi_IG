@@ -13,14 +13,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from igv.dms import AA_ORDER, get_complex, load_starr2020, map_sites_to_indices, singles, substitution_matrix
+from igv.dms import AA_ORDER, get_complex, interface_positions, load_starr2020, map_sites_to_indices, singles, substitution_matrix
 from igv.metrics import aggregate_within_position, spearman, within_position_spearman
 from igv.provenance import write as prov_write
 from igv.skempi import (
     HYDROPHOBICITY_KD,
     RESIDUE_VOLUME,
-    compute_distance_to_partner,
-    parse_pdb_heavy_atoms,
     read_pdb_residue_ids,
 )
 
@@ -140,14 +138,14 @@ def main() -> None:
     chain_seq = sequences[chain]
 
     # --- Compute interface positions ---
-    coords, atom_chains, atom_res_keys = parse_pdb_heavy_atoms(pdb_path)
-    dists = compute_distance_to_partner(
-        coords, atom_chains, atom_res_keys,
-        chain, cx.partner_chains, chain_ids,
+    iface_indices = interface_positions(
+        pdb_path,
+        chain=chain,
+        partner_chains=cx.partner_chains,
+        residue_ids=chain_ids,
+        cutoff=args.interface_cutoff,
     )
-    interface_rids = sorted(
-        int(rid) for rid, d in zip(chain_ids, dists) if d <= args.interface_cutoff
-    )
+    interface_rids = sorted(int(chain_ids[i]) for i in iface_indices)
     if args.interface_cutoff == 5.0:
         assert interface_rids == EXPECTED_INTERFACE_POSITIONS, (
             f"Expected {len(EXPECTED_INTERFACE_POSITIONS)} interface positions at "
