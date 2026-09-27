@@ -716,3 +716,145 @@ is the load-bearing number, not the raw Spearman.**
 - **Status:** measured and recorded. `scripts/10_skempi_hotspots.py` reports the
   confound panel, partial correlation, AUROC/AUPRC, a shuffled-ranking null and
   bootstrap CIs alongside the headline number.
+
+---
+
+# 2026-09-24 — First end-to-end numbers, on 1JTG chain B (A100-80GB, us-central1-a)
+
+Determinism proven, the pipeline produced its first real correlations, and the
+cause of the early nulls was found. ~4.7 h of A100, ~$24.
+
+## 20. `ref_pos` determinism fix VERIFIED on the VM — entry 18 is closed
+
+`scripts/verify_deterministic_feats.py` exits 0 on 1JTG:
+
+- **Part 1:** all 78 feature tensors byte-identical across two featurisations of
+  one input. `ref_pos` max_abs_diff **0.0000**, against the 10.7 A of entry 18.
+- **Part 2:** reference vs a D131A point mutant — `ref_pos` changes are
+  **confined to token 131**; all 421 other tokens byte-identical. Real atoms
+  3242 -> 3239, exactly the three heavy atoms Asp loses becoming Ala.
+
+Every embedding delta is now clean. This was the blocker for every number the
+project wants.
+
+- **Status:** entry 18 RESOLVED and verified. The 2.0 tolerance that
+  `02_embed_deltas.py` carries as a stand-in can now be tightened.
+
+### Three iterations of the *test* were wrong before the fix was confirmed
+
+Worth recording, because each looked like the fix failing:
+
+1. **Crash** — `max()` on a zero-size tensor, killing the comparison before it
+   reached `ref_pos`. Boltz emits empty tensors for `chiral_*` / `connected_*` /
+   `contact_pair_index` on a protein-only complex. Same crash `probe_msa3.py`
+   hit; the guard had not been carried over.
+2. **290 "leaked" tokens** — an element-wise `ref_pos` diff between reference and
+   mutant. A substitution changes the heavy-atom count, so every atom after the
+   mutation site shifts index while both tensors stay padded to 3264. The
+   comparison was measuring neighbours against each other. Fixed by gathering
+   each token's atoms through that featurisation's **own** `atom_to_token`.
+3. **Token 0 mismatch** — padding atoms carry an all-zero `atom_to_token` row,
+   and `argmax` on all zeros returns 0, so every pad atom was attributed to
+   token 0. The mutant has three more pad atoms. Fixed by masking on
+   `atom_pad_mask`.
+
+**Lesson:** a global `max_abs_diff` cannot answer "did anything leak". The
+original script printed one and asserted the difference was "expected ONLY at
+the mutated residue's atoms" without checking. Localise, or do not claim it.
+
+## 21. The all-zeros IG baseline was the cause of the early null results
+
+Three runs on 1JTG chain B, `complex_pde`, fp32 + `IGV_TRI_ATTN_CKPT=1`,
+427 tokens, against SKEMPI's 96 measured mutations at 28 positions:
+
+| run | Spearman | null p95 | above null | partial | AUROC | null p95 |
+|---|---|---|---|---|---|---|
+| plain_grad (zeros) | 0.306 | 0.318 | no | 0.180 | 0.685 | 0.695 |
+| IG m=32 (zeros) | 0.238 | 0.336 | no | 0.010 | 0.583 | 0.690 |
+| **IG m=32 (mean_aa)** | **0.357** | 0.313 | **YES** | 0.211 | **0.695** | 0.679 |
+
+**Why the first two failed.** `complex_pde` is a predicted distance error, lower
+being better. The zeros baseline is not a protein and scores **11.4310**; the
+real complex scores **2.6200**. The path integral was dominated by the model
+reacting to an off-manifold input, which is also the earlier alpha-profile
+observation (53% of the score change in the first 5% of the path) seen from a
+different angle.
+
+| baseline | f(baseline) | span | rel err | **abs err** |
+|---|---|---|---|---|
+| zeros | 11.4310 | -8.8110 | 17.28% | 1.5222 |
+| mean_aa | 3.2491 | -0.6290 | 8.01% | **0.0504** |
+
+- **The 5% completeness criterion is miscalibrated for a good baseline.** It is a
+  *relative* threshold. Going to `mean_aa` improved the absolute error **30x**
+  (1.52 -> 0.05) while the span shrank 14x, so the relative figure only halved
+  and still "FAILS". Do not read 8.01% as worse than it is, and consider gating
+  on absolute error, or on a relative error scaled to the score's own noise.
+- **Path integration is not a rounding error on the plain gradient.** Spearman
+  between the two per-residue norm rankings is +0.58, cosine 0.55, only **3 of
+  the top 10 residues agree**, and IG norms are 3.6x larger. So `plain_grad` is
+  not a cheap substitute for `ig` — the earlier open question is answered.
+- **Do not oversell the positive.** Its 95% CI is **[-0.002, 0.656]**, excluding
+  zero by two thousandths. The partial correlation is 0.211 with CI
+  [-0.34, +0.56], against burial's 0.436. And gradient-vs-hydrophobicity is
+  **-0.527, CI [-0.75, -0.18]** — excludes zero, while gradient-vs-ddG barely
+  does. The clearest thing this attribution tracks is still a compositional
+  property.
+- **Status:** `--baseline mean_aa` implemented and used. `zeros` retained
+  bit-identical for reproducing prior artifacts.
+
+## 22. The alanine-scan size confound is MECHANISTIC, not statistical
+
+The confound panel (entry 19) cannot simply be regressed away, and the ground
+truth shows why. 1JTG chain B's 11 hot spots are W150, K74, H41, F36, H148, Y53,
+W112, R160, F142, D49, W162 — Trp, His, Phe, Tyr, Arg, Lys, Asp. Textbook
+hot-spot composition.
+
+SKEMPI is ~90% X->Alanine. **X->A deletes a large side chain**, so ddG partly
+measures how much volume was removed. Residue volume correlating with ddG at
++0.44 is therefore not a spurious confound to control for — it is what the assay
+measures. Any method that learns "large aromatic at an interface matters" scores
+respectably without representing binding at all.
+
+- **Consequence:** an alanine scan can validate *which positions matter*. It
+  cannot validate *how each of the 20 amino acids performs*, which is the
+  project's actual claim, and it structurally favours the confound.
+- **The fix is saturation data**, where all 20 substitutions are measured at a
+  position. That permits a **within-position** comparison in which burial,
+  exposure and distance-to-partner are constant and cancel out entirely.
+
+## 23. SKEMPI's mutation count is replicates, not breadth
+
+1JTG chain B reports 96 mutations, but they are **28 distinct mutations measured
+repeatedly** from different literature sources. Position W150 carries five
+separate W->A measurements: +4.81, +4.66, +4.34, +4.25, +3.50.
+
+- **Experimental noise is ~±0.6 kcal/mol**, read straight off that spread. A
+  perfect predictor could not correlate at 1.0 against this.
+- **Effective n is 28, not 96.** Every confidence interval in entries 19 and 21
+  reflects that, and it is why they are so wide. Pooling 3HFM, 1VFB, 1JRH and
+  2JEL to ~128 positions is the cheapest available fix.
+- **Max-aggregation hides sign reversals.** Position Y50's four measurements are
+  -0.41, -2.05, -2.11, -2.26 — mutating it *improves* binding — yet it enters as
+  -0.41 under max. Same for D163. Report mean as primary where the sign is
+  consistent; `10_skempi_hotspots.py` emits both.
+
+## 24. The boltz cache trap, third occurrence — now in stage 03
+
+- **Symptom:** the first real 1JTG run died in `_build_token_map`:
+  `Found 4 contiguous asym_id runs but 2 chains were supplied: run lengths
+  [121, 324, 176, 109], chain lengths {'A': 262, 'B': 165}`, with the log line
+  "All inputs are already processed. Processing 0 inputs with 0 threads."
+- **Root cause:** `[121, 324, 176, 109]` is `4fqi_hlab` (H, A, B, L). boltz's
+  `process_inputs` skips any input whose YAML stem already exists under
+  `<cache_dir>/processed/records`, and this repo always writes the stem
+  `"input"`. `03_attribute.py` passed the bare `data/raw`, populated by the 4fqi
+  sessions, so a 1JTG request returned **4FQI's features**.
+- **Without the guard we would have computed attributions on the wrong protein
+  and labelled them 1JTG.** Stage 02 already had per-substitution dirs from
+  entry 17; stage 03 did not.
+- **Fix:** `cache_dir / "boltz_attr" / f"{dataset}_{chain}"`. `07_sanity.py` keyed
+  on chain subset only, accidentally safe while 4fqi was the sole complex; now
+  keyed on dataset too.
+- **Status:** fixed. Any new call to `build_complex_feats` needs its own cache
+  dir — treat a shared one as a bug on sight.

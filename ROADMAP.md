@@ -128,50 +128,56 @@ validation. The wild-type guard caught this, which is the whole reason it exists
 
 ## 4. Blockers
 
-### `ref_pos` nondeterminism (`ERRORS_LOG.md` entry 18) -- OPEN
+### `ref_pos` nondeterminism -- RESOLVED and VERIFIED 2026-09-24
 
-Boltz's RDKit reference-conformer generation is unseeded. Two featurisations of
-the *identical* input differ by up to **10.7 Angstrom** in `ref_pos`. Every
-embedding delta is `s_mut - s_ref`; if mutant and reference are featurised
-separately they carry independent draws. Substitution signal is |d| = 5.78
-against a noise scale of ~1.1-1.5.
+Was: boltz featurisation differed by up to **10.7 Angstrom** in `ref_pos`
+between two runs of the identical input, contaminating every `s_mut - s_ref`
+delta and the brute-force scan alike.
 
-Contaminates the per-mutation predictions **and** the brute-force scan. On the
-critical path for everything in section 5. Needs no GPU.
+Root cause was **not** the RDKit conformer generation the original entry blamed.
+It is `featurizerv2.py:1467-1473`, which applies a random rotation and
+translation per residue via `torch.randn`, while `inferencev2.py:270` seeds numpy
+only and never calls `torch.manual_seed`. `src/igv/deterministic.py` patches
+`center_random_augmentation` to `augmentation=False` -- keeping the centring,
+dropping the roto-translation, which is training-time augmentation with no place
+at inference.
 
-Also likely the true cause of the ~1.6% run-to-run score noise that
-`docs/MEMSCALE_RESULTS.md` attributes to kernel nondeterminism -- the forward is
-bit-deterministic given fixed features; the *input* was changing.
+**Verified on the VM**, not inferred: 78/78 feature tensors byte-identical across
+two runs, and reference-vs-mutant `ref_pos` changes confined to the mutated token
+with all 421 others identical. `ERRORS_LOG.md` entries 20 and 18.
 
-### Substitution enumeration is dataset-bound
+### Substitution enumeration -- RESOLVED
 
-`scripts/02_embed_deltas.py:80-85` builds only the substitutions present in the
-affinity CSV, with `assert n_deltas < 500`. A per-amino-acid grid needs all 19
-alternatives at every position of interest. Small change, but nothing produces
-the target object until it is made.
+`--positions skempi|<list>` enumerates all 19 substitutions at chosen positions;
+the `assert n_deltas < 500` is now `--max-substitutions` (default 5000). 1JTG
+chain B gives 532 substitutions at 28 positions.
 
-### Stages 02 and 03 use different featurisations
+### Stages 02 and 03 featurisation -- PARTIALLY ADDRESSED
 
-Stage 03's gradient is taken at a server-featurised reference; stage 02's deltas
-expand around a file-featurised one. Put both on one canonical featurisation.
+Both now key their boltz cache on dataset (entry 24), so neither can silently
+receive another complex's features. But stage 03 still featurises with the MSA
+server while stage 02's reference path differs, so confirm they expand around the
+same point before trusting a delta-based prediction.
+
+### The 2.0 tolerance in `02_embed_deltas.py` -- can now be tightened
+
+It was set against a measured ~1.5 noise scale that no longer exists. With
+featurisation deterministic, this should return to something strict.
 
 ---
 
 ## 5. Plan
 
-### Phase 0 -- no GPU
+### Phase 0 -- no GPU -- ALL DONE except item 7
 
-1. **Switch to `Mutation(s)_PDB`** in stage 10. Add a regression test asserting
-   zero mismatches on 1JTG, which currently fails with the wrong column.
-2. **Seed conformer generation** so repeated featurisation of one input is
-   byte-identical. Verify on the VM that `ref_pos` stops moving.
-3. **Enumerate all 19 substitutions** at requested positions; raise the 500 cap.
-4. **Chain subsetting for 1JTG** -- drop the duplicate C/D copy.
-5. **Confound controls** (section 6). Free, and the most likely way the result
-   fools us.
-6. Fix the two errors in `HANDOFF.md`; refresh the stale status in `README.md`.
-7. Characterise the remaining 16 AbBiBench datasets -- ten minutes, may surface
-   a saturation scan worth having.
+1. ~~Switch to `Mutation(s)_PDB`~~ done, with a regression test.
+2. ~~Seed conformer generation~~ done and verified on the VM (section 4).
+3. ~~Enumerate all 19 substitutions~~ done, `--positions` + `--max-substitutions`.
+4. ~~Chain subsetting for 1JTG~~ done, 427 tokens, C/D excluded.
+5. ~~Confound controls~~ done, and they set a bar the attribution has not cleared
+   (section 6).
+6. ~~Fix `HANDOFF.md` / `README.md`~~ done.
+7. Characterise the remaining 16 AbBiBench datasets -- **in progress**.
 
 ### Phase 1 -- precheck (~$1)
 
@@ -293,17 +299,86 @@ Venue: MLSB, 5 pages excluding references, welcomes work in progress.
 
 ## 8. Status
 
-Committed through `fcdc8fb`. 351 tests, ruff 17 (13 Python + 4 notebook).
+Committed through `b3d3763`. 410 tests, ruff 11.
 
-**Done:** memory solved (`IGV_TRI_ATTN_CKPT=1 IGV_AUTOCAST=bf16`, 55.2 GiB at
-L=730, 104.2 s per backward); `random_weights` passing; completeness passing at
-L=554 with m=32; SKEMPI loader, ddG conversion, complex registry, RCSB fetch,
-residue-id mapping with wild-type guard; structure-only attribution path so a
-complex needs no AbBiBench CSV.
+### Measured on 1JTG chain B, 2026-09-24 (427 tokens, fp32, ~$24 of A100)
 
-**Not done:** no number has ever come out of this pipeline. Completeness has
-never passed at L=730 (fails 3.64), and `m_sweep`, `random_weights` and
-`frozen_vs_full` have never run there at all -- they hold `None` because they
-OOM'd before the memory fix.
+| run | Spearman | null p95 | above null | partial | AUROC |
+|---|---|---|---|---|---|
+| plain_grad (zeros) | 0.306 | 0.318 | no | 0.180 | 0.685 |
+| IG m=32 (zeros) | 0.238 | 0.336 | no | 0.010 | 0.583 |
+| **IG m=32 (mean_aa)** | **0.357** | 0.313 | **YES** | 0.211 | **0.695** |
+
+**The baseline was the cause of the early nulls.** `complex_pde` is a predicted
+distance error; the all-zeros baseline is not a protein and scores 11.4310 where
+the real complex scores 2.6200, so the integral was dominated by off-manifold
+behaviour. `--baseline mean_aa` drops f(baseline) to 3.2491 and cuts the
+integral's **absolute** error 30x (1.5222 -> 0.0504). See `ERRORS_LOG.md`
+entry 21.
+
+**Do not oversell the positive.** CI [-0.002, 0.656], excluding zero by two
+thousandths. Partial correlation 0.211 (CI [-0.34, +0.56]) against burial's
+0.436. Gradient-vs-hydrophobicity is -0.527 with CI [-0.75, -0.18], which
+excludes zero while gradient-vs-ddG barely does.
+
+**Determinism is proven, not inferred.** `verify_deterministic_feats.py` exits 0
+on the VM: 78/78 tensors byte-identical across two runs, and reference-vs-mutant
+`ref_pos` changes confined to the mutated token with all 421 others identical.
+Entry 18 is closed (entry 20).
+
+**Also settled:** path integration is not a rounding error on the plain
+gradient — Spearman +0.58 between the two per-residue rankings, only 3 of the
+top 10 residues shared, IG norms 3.6x larger. `plain_grad` is not a cheap
+substitute for `ig`.
+
+**Still not done:** the brute-force scan has never run, so "shortcut vs slow
+way" — the headline claim — has no number. Completeness fails the 5% *relative*
+gate at 8.01%, though see entry 21 on why that gate is miscalibrated for a tight
+baseline.
 
 VM `igv-gpu` is TERMINATED; the 500 GB pd-ssd is retained at ~$2.83/day.
+
+---
+
+## 9. The data problem, and where it points
+
+**Alanine scanning cannot validate the project's actual claim.** SKEMPI is ~90%
+X->Alanine, so it tests *which positions matter*, not *how each of the 20 amino
+acids performs*. Worse, the confound is mechanistic rather than statistical:
+1JTG chain B's 11 hot spots are W, K, H, F, H, Y, W, R, F, D, W — all large
+aromatic or charged residues — and X->A *deletes a large side chain*. Residue
+volume correlating with ddG at +0.44 is therefore what the assay measures, not
+noise to regress away. Any method that learns "large aromatic at an interface
+matters" scores respectably without representing binding. See entry 22.
+
+**SKEMPI's counts are replicates, not breadth.** 1JTG chain B's 96 mutations are
+28 distinct mutations measured repeatedly; W150's five W->A values span
++3.50..+4.81, putting experimental noise at ~±0.6 kcal/mol. Effective n is 28,
+which is why every CI above is so wide. Entry 23.
+
+**Saturation data is the fix.** With all 20 substitutions measured at a position,
+the comparison becomes **within-position**, so burial, exposure and
+distance-to-partner are constant and cancel entirely. That tests the
+substitution effect in isolation — the actual claim — and sidesteps the confound
+panel rather than fighting it.
+
+Candidate under assessment: **GB1 binding IgG-Fc** (Olson et al., Current
+Biology 2014) — all 20 amino acids at ~55 positions, and GB1 is only 56
+residues so the complex is cheap. Caveat to verify: an mRNA-display binding
+assay couples stability to affinity, so it is not clean ddG the way SKEMPI is.
+
+### Next, in priority order
+
+1. **Pool 3HFM, 1VFB, 1JRH, 2JEL** (~$12, ~2.5 h). All registered and verified.
+   Takes n from 28 to ~128 and directly tests whether 0.357 survives
+   replication. Do this **before** the scan: if the effect does not reproduce,
+   0.357 was n=28 noise and we learn it cheaply.
+2. **The brute-force scan on 1JTG** (~$22, ~4 h). Mandatory — the headline claim
+   is unpublishable without it, and it separates "the method fails" from
+   "Boltz-2 has no binding signal here". Only one of those is fixable.
+3. **Saturation arm**, if GB1 checks out.
+4. **Re-gate completeness** on absolute error, or on relative error scaled to
+   the score's own noise. Do this instead of spending an hour on m=64.
+
+Not yet justified: a different attribution method. Item 2 is what establishes
+whether the method is at fault.
