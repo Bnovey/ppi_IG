@@ -452,19 +452,84 @@ measurable one.
 Cost is the only objection: 791 tokens against 1JTG's 427, so roughly 1.5-3 h
 per 32-step IG run rather than ~40 min.
 
-### Setup facts to verify before spending GPU
+### Setup facts — VERIFIED 2026-09-27, independently of the loader
 
-- Chain assignment (A = ACE2, E = RBD) and the RBD residue range.
-- Dataset Spike-site numbering maps directly onto 6M0J chain E author numbering,
-  with **zero** wild-type mismatches. The `Mutation(s)_cleaned` disaster on 1JTG
-  (41 mismatches, silently wrong residues) is the precedent: never trust a
-  numbering column, always check the wild-type letter against the structure.
-- Sign convention. Starr `bind_avg` is *negative for weaker binding*; SKEMPI ddG
-  is *positive for weaker binding*. The conversion must negate.
-- Censoring floor, and specifically whether the strongest positions are pinned
-  at it the way GB1's positions 27 and 43 are.
-- 6M0J carries a Zn ion and NAG glycans; our parser keeps only standard `ATOM`
-  residues, so confirm what is being dropped and that it is not at the interface.
+- Dataset: 4221 rows, of which **3802 singles** over 201 sites (331-531). 198 of
+  201 sites carry all 19 substitutions; the other three carry 15, 14 and 11.
+- The `raw.githubusercontent.com` path returns a **Git LFS pointer, not the CSV**.
+  Use the `media.githubusercontent.com/media/...` URL.
+- 6M0J chains: **A = ACE2, 597 residues; E = RBD, 194 residues**, author numbering
+  333-526 and contiguous. Total **791 tokens**. No other protein chains. HETATM
+  entities our parser drops: Zn, Cl, NAG, HOH.
+- **Zero wild-type mismatches** across all 194 mapped sites. Contrast 1JTG, where
+  the wrong numbering column gave 41 silent mismatches (entry 20).
+- Chain E stops at 526, so sites 331, 332 and 527-531 have no structure.
+  **133 singles are unusable; n = 3669 over 194 positions.**
+- Sign convention confirmed in code: `binding_ddg(-1.0) = +1.36` kcal/mol, i.e.
+  weaker binding maps to positive ddG, matching SKEMPI.
+- **Censoring is not a problem.** `bind_avg` has one row at its minimum and 146
+  within 0.1 of it, spread over 40 positions; only site 497 has as many as 10 of
+  19 near the floor. Nothing resembling GB1's position 27 (19/19 pinned).
+  `expr_avg` has exactly one row within 0.1 of its minimum.
+
+### The within-position design, measured on this dataset
+
+| Confound, within-position | mean | median | negative |
+|---|---|---|---|
+| Residue volume vs binding | **-0.034** | -0.045 | 109/201 |
+| Hydrophobicity vs binding | **-0.006** | -0.084 | 108/201 |
+
+Pooled on this dataset, volume vs binding is **+0.027** and volume vs |binding|
+is **-0.020**. So the +0.44 measured on SKEMPI is not a property of proteins; it
+is a property of the *alanine-scan design*, which confirms entry 22 by
+construction rather than by argument.
+
+### Folding vs binding: the confound is real, and it is confined to where it does not matter
+
+This is the reason to use this dataset, and the global number is misleading.
+Pooled, binding and expression correlate at **+0.64** (r2 0.40), and
+within-position the median is **+0.75** — a structure model whose gradient
+tracks foldability would score well on binding for the wrong reason. But split
+by distance to ACE2:
+
+| | n positions | bind~expr median | bind std | expr std |
+|---|---|---|---|---|
+| **Interface (<=5 A)** | 21 | **+0.38** | **0.695** | 0.275 |
+| Non-interface | 173 | +0.752 | 0.338 | 0.481 |
+
+Pooled over interface mutants only, binding and expression correlate at
+**+0.074**, and residualising binding on expression keeps **100%** of the
+binding variance (1.224 -> 1.221). At the interface the two readouts are
+effectively orthogonal: binding varies most and expression varies least, while
+away from the interface the reverse holds. The folding confound is therefore
+not something to fight — it lives almost entirely outside the region the claim
+is about, and the expression column lets us demonstrate that rather than assume
+it.
+
+**Consequence: the primary analysis is interface positions only, within
+position, with expression reported as a control.** Also note 80 of 194 positions
+have binding std < 0.3 and carry no rankable signal; the interface median is
+0.695.
+
+### Position sets, and why only brute force pays for them
+
+| Cutoff to ACE2 | Positions | Mutants |
+|---|---|---|
+| <= 4 A | 17 | 323 |
+| **<= 5 A** | **21** | **399** |
+| <= 6 A | 30 | 570 |
+| <= 8 A | 46 | 874 |
+| <= 10 A | 60 | 1140 |
+
+All 17 literature ACE2 contact residues fall inside the 5 A set, including the
+variant-of-concern positions **K417, E484, N501**, which is independent evidence
+the cutoff is picking out the real interface rather than an arbitrary shell.
+
+One IG run yields attributions for **every** position at once, so the position
+count is free on the gradient side — 791 tokens is the whole cost. Only the
+brute-force arm scales with positions, at 19 forward passes each: **399 mutant
+predictions for the 5 A set**. Start there; widen to 8 A only if 21 positions
+proves too few to separate the methods.
 
 ### Next, in priority order
 
@@ -475,8 +540,11 @@ per 32-step IG run rather than ~40 min.
 2. **The brute-force scan on 1JTG** (~$22, ~4 h). Mandatory — the headline claim
    is unpublishable without it, and it separates "the method fails" from
    "Boltz-2 has no binding signal here". Only one of those is fixable.
-3. **The saturation arm on 6M0J.** Loader and within-position analysis are
-   local and free; build and verify them alongside 1 and 2, then spend GPU.
+3. **The saturation arm on 6M0J.** Dataset and structure are verified (above);
+   `src/igv/dms.py` loads them. Remaining local work: wire the 21 interface
+   positions into stages 02/03 and add the within-position scoring to
+   `06_metrics.py`. Then one IG run at 791 tokens gives all 194 positions x 20,
+   and the brute-force comparison is 399 forward passes.
 4. **Re-gate completeness** on absolute error, or on relative error scaled to
    the score's own noise. Do this instead of spending an hour on m=64.
 

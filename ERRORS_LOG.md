@@ -937,3 +937,40 @@ separate W->A measurements: +4.81, +4.66, +4.34, +4.25, +3.50.
   PDB sequence, never the dataset consensus.
 - **Status:** closed. AbBiBench remains useful for structures and sequences, not
   as a leaderboard.
+
+---
+
+## 28. The folding confound on 6M0J is real but lives outside the interface
+
+- **Why this was the open question:** for a *structure* model like Boltz-2 the
+  most likely null story is that the gradient tracks foldability, not binding.
+  GB1 could not rule it out (entry 26). Starr 2020 reports a matched
+  **expression** readout for the same variants in the same assay, so it can.
+- **The global number says the confound is fatal.** Pooled over 3669 usable
+  singles, binding and expression correlate at **+0.64** (r2 0.40); the
+  within-position median is **+0.75**, with only 8 of 201 positions negative.
+  Taken alone this would mean predicting stability gets you binding for free.
+- **Split by distance to ACE2, the picture inverts:**
+
+  | | n positions | bind~expr median | bind std | expr std |
+  |---|---|---|---|---|
+  | Interface (<=5 A) | 21 | **+0.38** | **0.695** | 0.275 |
+  | Non-interface | 173 | +0.752 | 0.338 | 0.481 |
+
+  Pooled over interface mutants only, the correlation is **+0.074**, and
+  residualising binding on expression keeps **100%** of the binding variance
+  (std 1.224 -> 1.221). At the interface binding varies most and expression
+  varies least; away from it the reverse. The entanglement is entirely a
+  non-interface phenomenon — destabilise the fold and both readouts die
+  together, which says nothing about recognition.
+- **Consequence:** the primary analysis is **interface positions only, within
+  position**, with expression reported as a control rather than regressed out.
+  Reporting the pooled +0.64 as if it applied to the claim would be wrong in
+  the pessimistic direction, and quoting an interface result without the
+  non-interface contrast would be wrong in the optimistic direction. Report
+  both.
+- **Independent check that the cutoff is not arbitrary:** all 17 literature
+  ACE2 contact residues fall inside the 5 A set, including the
+  variant-of-concern positions K417, E484 and N501.
+- **Status:** resolved in favour of the dataset. This is the control GB1 lacked,
+  and it came out well.
