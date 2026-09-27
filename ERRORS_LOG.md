@@ -974,3 +974,35 @@ separate W->A measurements: +4.81, +4.66, +4.34, +4.25, +3.50.
   variant-of-concern positions K417, E484 and N501.
 - **Status:** resolved in favour of the dataset. This is the control GB1 lacked,
   and it came out well.
+
+---
+
+## 29. The brute-force scan wrote a file nothing read
+
+- **Symptom (not a crash):** `scripts/04_scan.py` is the most expensive GPU
+  stage in the pipeline and writes `results/{dataset}_{score}_scan.csv`. No
+  script in the repo read it. On the SKEMPI arm `05_predict.py`'s prediction CSV
+  was orphaned too, because `10_skempi_hotspots.py` consumes the gradient `.npz`
+  directly. ROADMAP Phase 4 ("compare") had no implementation.
+- **Consequence had it not been caught:** the 1JTG brute-force scan -- the job
+  the roadmap calls mandatory for the headline claim -- would have run for hours
+  and left its result on disk, uncompared. The project's central question, can
+  attribution replace a scan, has no answer without that join.
+- **Why the first check missed it:** the pipeline was validated by walking the
+  stage list and confirming *every input is produced by an earlier stage*. That
+  was true and was never the question. The check that catches this is the
+  reverse -- **is every output consumed** -- and it is now recorded as an
+  output/consumer table in the verification for `run_complex.sh`.
+- **Two adjacent defects found in the same pass, both fatal to a GPU run:**
+  - `run_complex.sh` ended on `06_metrics.py`, which requires columns
+    `pred`/`binding_score`/`n_mut` while `05_predict.py` writes
+    `position`/`mut_aa`/`score_delta` on these paths. It would have aborted
+    *after* stages 02-04 had already spent the GPU time.
+  - `04_scan.py` had no SKEMPI branch at all, so `--dataset 1JTG` fell through
+    to the AbBiBench path and 404'd. The 404 was lucky: a name that exists in
+    AbBiBench would have downloaded a different protein and scanned it
+    silently -- the same shape as entry 24.
+- **Status:** fixed. `scripts/12_compare.py` consumes both CSVs; stage 12 is
+  wired into both arms of `run_complex.sh`. **Rule: when adding a pipeline
+  stage, check both directions of the file graph.** A produced-but-unread file
+  is invisible to every test that only runs a stage in isolation.

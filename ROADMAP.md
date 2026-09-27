@@ -200,15 +200,34 @@ exactly that array (`src/igv/attrib.py:270-277`, `:393-404`). If the quadrature
 under-resolves, every prediction is wrong. m=32 passed at L=554 (0.0442);
 1JTG A+B is 427 tokens, so it should hold comfortably.
 
-### Phase 3 -- brute force (~$22)
+### Phase 3 -- brute force (~$13)
 
-Scan **all 19 substitutions at the 49 measured positions = 931 mutants**. The
+Scan **all 19 substitutions at the 28 measured positions = 532 mutants**. The
 "shortcut vs slow way" comparison needs no lab data, only the model, so scan as
 widely as affordable. A full saturation scan of chain B (165 x 19 = 3,135) is
 the eventual ideal at roughly another 20 GPU-hours -- hold it until Phase 1
 shows something.
 
-### Phase 4 -- compare
+Corrected 2026-09-27: this section previously said 49 positions and 931
+mutants. `skempi_positions("1JTG", "B")` returns **28**, so the real figure is
+532 and the phase is ~43% cheaper than first estimated. Measured, not
+re-estimated -- `python scripts/04_scan.py --dataset 1JTG --chain B --positions
+skempi --dry-run` prints it.
+
+### Phase 4 -- compare -- IMPLEMENTED 2026-09-27
+
+`scripts/12_compare.py`. Until today this phase had no implementation and
+stage 04's scan CSV was written and read by nothing, so the most expensive GPU
+stage in the pipeline produced an artifact that was never compared to anything.
+See entry 29.
+
+It reports the triple that is the actual argument -- attribution vs experiment,
+scan vs experiment, attribution vs scan -- plus the within-position split on a
+DMS dataset and the forward-versus-backward pass counts, which is the practical
+case for replacement. Score orientation is derived from the score name, since
+`complex_pde` is lower-is-better and the other five are not; verified by feeding
+a scan that agrees perfectly with experiment under each score's own semantics
+and confirming both report positive.
 
 All on the same mutations: shortcut vs slow way; shortcut vs lab; model vs lab;
 and IG vs the single-pass precheck. That last one is a finding either way -- if
