@@ -2,6 +2,13 @@
 
 Run the IG (Boltz-2 gradient attribution) pipeline on GCP GPU instances.
 
+> **Always pass `--project=agrosbio`.** The local `gcloud` default config points
+> at a different project (`g-prs-478707`) which has the Compute Engine API
+> disabled, so a command missing `--project` fails with a confusing
+> `PERMISSION_DENIED` and then *offers to enable Compute Engine on that other
+> project*. Do not accept that prompt. Every command below passes `--project`
+> explicitly; keep it that way.
+
 ## Quick reference
 
 | Step | Command |

@@ -40,10 +40,14 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from igv.data import build_library, read_pdb_chains  # noqa: E402
+from igv.dms import resolve_pdb_complex  # noqa: E402
 from igv.gpu import require_vram  # noqa: E402
 from igv.provenance import write as prov_write  # noqa: E402
+from igv.skempi import skempi_positions  # noqa: E402
 
 log = logging.getLogger("scan")
+
+AMINO_ACIDS = sorted("ACDEFGHIKLMNPQRSTVWY")
 
 # 4fqi_h1 and 4fqi_h3 share one deposited complex.
 _STRUCTURE_FOR = {"4fqi_h1": "4fqi_hlab", "4fqi_h3": "4fqi_hlab"}
@@ -97,7 +101,7 @@ def _fmt_subs(subs: tuple[tuple[int, str], ...]) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--dataset", required=True)
-    p.add_argument("--chain", default="H", choices=["H", "L"])
+    p.add_argument("--chain", default="H")
     p.add_argument("--score", default="complex_pde")
     p.add_argument("--n-sample", type=int, default=300)
     p.add_argument("--seed", type=int, default=0)
@@ -110,6 +114,23 @@ def main() -> None:
         default=os.path.expanduser(os.environ.get("BOLTZ_CACHE", "~/.boltz")),
     )
     p.add_argument("--no-msa-server", action="store_true")
+    p.add_argument(
+        "--positions",
+        default=None,
+        help=(
+            "Positions to scan (full 19-aa grid). "
+            "'skempi' = SKEMPI-measured positions; "
+            "'dms_interface' = DMS interface positions (see --interface-cutoff); "
+            "or comma-separated 0-based indices. "
+            "Required for SKEMPI/DMS datasets."
+        ),
+    )
+    p.add_argument(
+        "--interface-cutoff",
+        type=float,
+        default=5.0,
+        help="Heavy-atom distance cutoff (A) for dms_interface positions (default 5.0)",
+    )
     p.add_argument("--dry-run", action="store_true", help="Plan the sample, no GPU")
     args = p.parse_args()
 
@@ -121,29 +142,144 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     cache_dir = Path(args.cache_dir)
 
-    lib = build_library(args.dataset, cache_dir, chain=args.chain)
-    seq_col = "heavy_chain_seq" if args.chain == "H" else "light_chain_seq"
-    n_mut = lib.frame["n_mut"].to_numpy()
+    # --- Resolve dataset source ---
+    registry_error: KeyError | None = None
+    try:
+        resolved = resolve_pdb_complex(
+            args.dataset, args.chain, cache_dir, structure_override=args.structure,
+        )
+    except KeyError as exc:
+        resolved = None
+        registry_error = exc
 
-    idx = stratified_sample(n_mut, args.n_sample, args.seed)
-    log.info("Sampled %d of %d rows (seed=%d)", len(idx), len(lib.frame), args.seed)
-    dist = pd.Series(n_mut[idx]).value_counts().sort_index()
-    log.info("Achieved n_mut distribution: %s", dist.to_dict())
+    is_dms = resolved is not None and resolved.data_source == "dms"
+    is_skempi = resolved is not None and resolved.data_source == "skempi"
 
-    # Resume: a scan is the most expensive stage and gets interrupted.
-    done: set[int] = set()
-    if out.exists():
-        prev = pd.read_csv(out)
-        done = set(prev["row_index"].astype(int))
-        log.info("Resuming: %d rows already scored in %s", len(done), out)
-    todo = [i for i in idx if i not in done]
-    if not todo:
-        log.info("Nothing to do; all %d sampled rows already scored.", len(idx))
-        return
+    if is_dms:
+        # DMS path: exhaustive scan of measured interface mutants.
+        from igv.dms import (
+            enumerate_mutants,
+            get_complex as dms_get_complex,
+            interface_positions,
+            load_starr2020,
+            map_sites_to_indices,
+            singles,
+        )
+        from igv.skempi import read_pdb_residue_ids
 
-    if args.dry_run:
-        log.info("--dry-run: would score %d mutants with score=%s", len(todo), args.score)
-        return
+        dms_cx = dms_get_complex(args.dataset)
+        pdb = resolved.pdb_path
+        reference_seq = resolved.reference_seq
+        struct_name = resolved.struct_name
+        struct_chains = resolved.chains
+
+        residue_ids, _seqs = read_pdb_residue_ids(pdb)
+        positions = interface_positions(
+            pdb,
+            chain=args.chain,
+            partner_chains=dms_cx.partner_chains,
+            residue_ids=residue_ids[args.chain],
+            cutoff=args.interface_cutoff,
+        )
+
+        df = load_starr2020(cache_dir)
+        df = singles(df)
+        mapped, _ = map_sites_to_indices(df, residue_ids[args.chain], reference_seq)
+        mutant_pairs = enumerate_mutants(
+            df, positions, sequence=reference_seq, site_to_idx=mapped,
+        )
+        log.info(
+            "DMS exhaustive scan: %d interface positions, %d mutant pairs",
+            len(positions), len(mutant_pairs),
+        )
+
+        if args.dry_run:
+            log.info(
+                "--dry-run: would score %d mutants with score=%s",
+                len(mutant_pairs), args.score,
+            )
+            return
+
+    elif is_skempi:
+        # SKEMPI path: all 19 substitutions at positions selected by --positions.
+        if args.positions is None:
+            raise SystemExit(
+                "SKEMPI complexes require --positions to specify which positions "
+                "to scan (e.g. --positions skempi for SKEMPI-measured positions)."
+            )
+
+        pdb = resolved.pdb_path
+        reference_seq = resolved.reference_seq
+        struct_name = resolved.struct_name
+        struct_chains = resolved.chains
+
+        if args.positions == "skempi":
+            positions = skempi_positions(args.dataset, args.chain, cache_dir)
+        elif args.positions == "dms_interface":
+            raise SystemExit(
+                "dms_interface positions are not applicable to SKEMPI complexes. "
+                "Use --positions skempi or explicit indices."
+            )
+        else:
+            positions = sorted(int(x) for x in args.positions.split(","))
+
+        mutant_pairs: list[tuple[int, str]] = []
+        for pos in positions:
+            if pos < 0 or pos >= len(reference_seq):
+                raise ValueError(
+                    f"Position {pos} out of range for chain {args.chain} "
+                    f"(length {len(reference_seq)})"
+                )
+            ref_aa = reference_seq[pos]
+            for aa in AMINO_ACIDS:
+                if aa != ref_aa:
+                    mutant_pairs.append((pos, aa))
+
+        log.info(
+            "SKEMPI brute-force scan: %d positions, %d mutant pairs",
+            len(positions), len(mutant_pairs),
+        )
+
+        if args.dry_run:
+            log.info(
+                "--dry-run: would score %d mutants with score=%s",
+                len(mutant_pairs), args.score,
+            )
+            return
+
+    else:
+        # --- AbBiBench path (existing logic) ---
+        try:
+            lib = build_library(args.dataset, cache_dir, chain=args.chain)
+        except Exception:
+            if registry_error is not None:
+                raise SystemExit(
+                    f"Dataset {args.dataset!r} not found in any registry. "
+                    f"{registry_error}"
+                ) from registry_error
+            raise
+        seq_col = "heavy_chain_seq" if args.chain == "H" else "light_chain_seq"
+        n_mut = lib.frame["n_mut"].to_numpy()
+
+        idx = stratified_sample(n_mut, args.n_sample, args.seed)
+        log.info("Sampled %d of %d rows (seed=%d)", len(idx), len(lib.frame), args.seed)
+        dist = pd.Series(n_mut[idx]).value_counts().sort_index()
+        log.info("Achieved n_mut distribution: %s", dist.to_dict())
+
+        # Resume: a scan is the most expensive stage and gets interrupted.
+        done: set[int] = set()
+        if out.exists():
+            prev = pd.read_csv(out)
+            done = set(prev["row_index"].astype(int))
+            log.info("Resuming: %d rows already scored in %s", len(done), out)
+        todo = [i for i in idx if i not in done]
+        if not todo:
+            log.info("Nothing to do; all %d sampled rows already scored.", len(idx))
+            return
+
+        if args.dry_run:
+            log.info("--dry-run: would score %d mutants with score=%s", len(todo), args.score)
+            return
 
     # Same 78 GiB gate as before, and still AFTER the --dry-run return above so the
     # no-GPU dry run keeps working. require_vram() logs the usable GiB itself, which
@@ -164,106 +300,266 @@ def main() -> None:
     if args.score not in SCORES:
         raise SystemExit(f"--score must be one of {sorted(SCORES)}")
 
-    stem = args.structure or _STRUCTURE_FOR.get(args.dataset)
-    if stem is None:
-        raise SystemExit(
-            f"No structure known for {args.dataset}; pass --structure explicitly."
-        )
-    pdb = cache_dir / f"{stem}.pdb"
-    if not pdb.exists():
-        raise SystemExit(f"Missing {pdb}. Run scripts/00_fetch_data.py first.")
+    if is_dms:
+        model, _boltz_version = load_model(args.checkpoint_dir, args.device)
 
-    struct_chains = read_pdb_chains(pdb)
-    log.info("Structure %s chains: %s", stem, {c: len(s) for c, s in struct_chains.items()})
+        def chains_for(seq: str) -> dict[str, str]:
+            d = dict(struct_chains)
+            d[args.chain] = seq
+            return d
 
-    model, _boltz_version = load_model(args.checkpoint_dir, args.device)
-
-    def chains_for(seq: str) -> dict[str, str]:
-        d = dict(struct_chains)
-        d[args.chain] = seq
-        return d
-
-    # Fixed geometry: featurise the wild type once and keep its coordinates for
-    # every mutant, so scan and gradient share identical structure.
-    ref_feats, _ = build_complex_feats(
-        chains_for(lib.reference_seq),
-        pdb,
-        cache_dir / "boltz_ref",
-        args.device,
-        use_msa_server=not args.no_msa_server,
-    )
-    x_pred = ref_feats["coords"].detach()
-    log.info("Geometry FIXED from %s; shared with stage 03. x_pred %s", stem, tuple(x_pred.shape))
-
-    write_header = not out.exists()
-    t0 = time.time()
-    for n, row_i in enumerate(todo, 1):
-        row = lib.frame.iloc[row_i]
-        seq = row[seq_col]
-        feats, _ = build_complex_feats(
-            chains_for(seq),
+        ref_feats, _ = build_complex_feats(
+            chains_for(reference_seq),
             pdb,
-            cache_dir / f"boltz_scan/{row_i}",
+            cache_dir / "boltz_ref",
             args.device,
             use_msa_server=not args.no_msa_server,
         )
-        with torch.no_grad():
-            s_inputs = embedder_only(model, feats)
-            scalar = confidence_forward(
-                model, s_inputs, feats, x_pred, args.score, gradient_checkpointing=False
+        x_pred = ref_feats["coords"].detach()
+        log.info("Geometry FIXED from %s; x_pred %s", struct_name, tuple(x_pred.shape))
+
+        write_header = not out.exists()
+        t0 = time.time()
+        for n, (pos, aa) in enumerate(mutant_pairs, 1):
+            mut_seq = reference_seq[:pos] + aa + reference_seq[pos + 1:]
+            feats, _ = build_complex_feats(
+                chains_for(mut_seq),
+                pdb,
+                cache_dir / f"boltz_scan/{pos}_{aa}",
+                args.device,
+                use_msa_server=not args.no_msa_server,
             )
-            model_score = float(scalar)
+            with torch.no_grad():
+                s_inputs = embedder_only(model, feats)
+                scalar = confidence_forward(
+                    model, s_inputs, feats, x_pred, args.score,
+                    gradient_checkpointing=False,
+                )
+                model_score = float(scalar)
 
-        pd.DataFrame(
-            [
-                {
-                    "row_index": int(row_i),
-                    "sequence": seq,
-                    "substitutions": _fmt_subs(lib.substitutions[row_i]),
-                    "n_mut": int(row["n_mut"]),
-                    "binding_score": float(row["binding_score"]),
-                    "model_score": model_score,
-                }
-            ],
-            columns=_COLUMNS,
-        ).to_csv(out, mode="a", header=write_header, index=False)
-        write_header = False
+            pd.DataFrame(
+                [
+                    {
+                        "row_index": n - 1,
+                        "sequence": mut_seq,
+                        "substitutions": f"{pos}{aa}",
+                        "n_mut": 1,
+                        "binding_score": float("nan"),
+                        "model_score": model_score,
+                    }
+                ],
+                columns=_COLUMNS,
+            ).to_csv(out, mode="a", header=write_header, index=False)
+            write_header = False
 
-        free_cuda_memory()
-        rate = (time.time() - t0) / n
-        log.info(
-            "[%d/%d] row=%d n_mut=%d score=%.6f (%.1fs/mutant, eta %.0f min)",
-            n, len(todo), row_i, int(row["n_mut"]), model_score,
-            rate, rate * (len(todo) - n) / 60,
+            free_cuda_memory()
+            rate = (time.time() - t0) / n
+            log.info(
+                "[%d/%d] pos=%d aa=%s score=%.6f (%.1fs/mutant, eta %.0f min)",
+                n, len(mutant_pairs), pos, aa, model_score,
+                rate, rate * (len(mutant_pairs) - n) / 60,
+            )
+
+        prov_write(
+            out,
+            stage="04_scan",
+            inputs={"dataset": args.dataset, "structure": str(pdb)},
+            params={
+                "n_sample": len(mutant_pairs),
+                "seed": args.seed,
+                "chain": args.chain,
+                "sampling": "dms_interface_exhaustive",
+            },
+            arm={
+                "score": args.score,
+                "method": "scan",
+                "trunk": "forward_only",
+                "geometry": "fixed_from_featurisation",
+                "dataset": args.dataset,
+                "chain": args.chain,
+                **numerics_arm(),
+            },
+            notes="DMS exhaustive interface scan.",
         )
+        log.info("Wrote %s (%d rows, %.1f min)", out, len(mutant_pairs), (time.time() - t0) / 60)
+    elif is_skempi:
+        model, _boltz_version = load_model(args.checkpoint_dir, args.device)
 
-    prov_write(
-        out,
-        stage="04_scan",
-        inputs={"dataset": args.dataset, "structure": str(pdb)},
-        params={
-            "n_sample": args.n_sample,
-            "seed": args.seed,
-            "chain": args.chain,
-            "sampling": "stratified_by_n_mut",
-        },
-        arm={
-            "score": args.score,
-            "method": "scan",
-            "trunk": "forward_only",
-            # WAS "geometry": "fixed_wt" -- unsupported. Measured 0.0 for
-            # coords.abs().max() on igv-gpu 2026-09-04: a sequence-only YAML
-            # puts every atom at the origin, so the geometry is fixed but is
-            # not the wild-type structure. Stage 03 records the measured value;
-            # this label no longer asserts what was never checked.
-            "geometry": "fixed_from_featurisation",
-            "dataset": args.dataset,
-            "chain": args.chain,
-            **numerics_arm(),
-        },
-        notes="Brute-force ground truth for T1/T2. Fixed WT geometry shared with stage 03.",
-    )
-    log.info("Wrote %s (%d new rows, %.1f min)", out, len(todo), (time.time() - t0) / 60)
+        def chains_for(seq: str) -> dict[str, str]:
+            d = dict(struct_chains)
+            d[args.chain] = seq
+            return d
+
+        ref_feats, _ = build_complex_feats(
+            chains_for(reference_seq),
+            pdb,
+            cache_dir / "boltz_ref",
+            args.device,
+            use_msa_server=not args.no_msa_server,
+        )
+        x_pred = ref_feats["coords"].detach()
+        log.info("Geometry FIXED from %s; x_pred %s", struct_name, tuple(x_pred.shape))
+
+        write_header = not out.exists()
+        t0 = time.time()
+        for n, (pos, aa) in enumerate(mutant_pairs, 1):
+            mut_seq = reference_seq[:pos] + aa + reference_seq[pos + 1:]
+            feats, _ = build_complex_feats(
+                chains_for(mut_seq),
+                pdb,
+                cache_dir / f"boltz_scan/{pos}_{aa}",
+                args.device,
+                use_msa_server=not args.no_msa_server,
+            )
+            with torch.no_grad():
+                s_inputs = embedder_only(model, feats)
+                scalar = confidence_forward(
+                    model, s_inputs, feats, x_pred, args.score,
+                    gradient_checkpointing=False,
+                )
+                model_score = float(scalar)
+
+            pd.DataFrame(
+                [
+                    {
+                        "row_index": n - 1,
+                        "sequence": mut_seq,
+                        "substitutions": f"{pos}{aa}",
+                        "n_mut": 1,
+                        "binding_score": float("nan"),
+                        "model_score": model_score,
+                    }
+                ],
+                columns=_COLUMNS,
+            ).to_csv(out, mode="a", header=write_header, index=False)
+            write_header = False
+
+            free_cuda_memory()
+            rate = (time.time() - t0) / n
+            log.info(
+                "[%d/%d] pos=%d aa=%s score=%.6f (%.1fs/mutant, eta %.0f min)",
+                n, len(mutant_pairs), pos, aa, model_score,
+                rate, rate * (len(mutant_pairs) - n) / 60,
+            )
+
+        prov_write(
+            out,
+            stage="04_scan",
+            inputs={"dataset": args.dataset, "structure": str(pdb)},
+            params={
+                "n_sample": len(mutant_pairs),
+                "seed": args.seed,
+                "chain": args.chain,
+                "sampling": "skempi_brute_force",
+            },
+            arm={
+                "score": args.score,
+                "method": "scan",
+                "trunk": "forward_only",
+                "geometry": "fixed_from_featurisation",
+                "dataset": args.dataset,
+                "chain": args.chain,
+                **numerics_arm(),
+            },
+            notes="SKEMPI brute-force scan: all 19 substitutions at measured positions.",
+        )
+        log.info("Wrote %s (%d rows, %.1f min)", out, len(mutant_pairs), (time.time() - t0) / 60)
+    else:
+        stem = args.structure or _STRUCTURE_FOR.get(args.dataset)
+        if stem is None:
+            raise SystemExit(
+                f"No structure known for {args.dataset}; pass --structure explicitly."
+            )
+        pdb = cache_dir / f"{stem}.pdb"
+        if not pdb.exists():
+            raise SystemExit(f"Missing {pdb}. Run scripts/00_fetch_data.py first.")
+
+        struct_chains = read_pdb_chains(pdb)
+        log.info("Structure %s chains: %s", stem, {c: len(s) for c, s in struct_chains.items()})
+
+        model, _boltz_version = load_model(args.checkpoint_dir, args.device)
+
+        def chains_for(seq: str) -> dict[str, str]:
+            d = dict(struct_chains)
+            d[args.chain] = seq
+            return d
+
+        # Fixed geometry: featurise the wild type once and keep its coordinates for
+        # every mutant, so scan and gradient share identical structure.
+        ref_feats, _ = build_complex_feats(
+            chains_for(lib.reference_seq),
+            pdb,
+            cache_dir / "boltz_ref",
+            args.device,
+            use_msa_server=not args.no_msa_server,
+        )
+        x_pred = ref_feats["coords"].detach()
+        log.info("Geometry FIXED from %s; shared with stage 03. x_pred %s", stem, tuple(x_pred.shape))
+
+        write_header = not out.exists()
+        t0 = time.time()
+        for n, row_i in enumerate(todo, 1):
+            row = lib.frame.iloc[row_i]
+            seq = row[seq_col]
+            feats, _ = build_complex_feats(
+                chains_for(seq),
+                pdb,
+                cache_dir / f"boltz_scan/{row_i}",
+                args.device,
+                use_msa_server=not args.no_msa_server,
+            )
+            with torch.no_grad():
+                s_inputs = embedder_only(model, feats)
+                scalar = confidence_forward(
+                    model, s_inputs, feats, x_pred, args.score, gradient_checkpointing=False
+                )
+                model_score = float(scalar)
+
+            pd.DataFrame(
+                [
+                    {
+                        "row_index": int(row_i),
+                        "sequence": seq,
+                        "substitutions": _fmt_subs(lib.substitutions[row_i]),
+                        "n_mut": int(row["n_mut"]),
+                        "binding_score": float(row["binding_score"]),
+                        "model_score": model_score,
+                    }
+                ],
+                columns=_COLUMNS,
+            ).to_csv(out, mode="a", header=write_header, index=False)
+            write_header = False
+
+            free_cuda_memory()
+            rate = (time.time() - t0) / n
+            log.info(
+                "[%d/%d] row=%d n_mut=%d score=%.6f (%.1fs/mutant, eta %.0f min)",
+                n, len(todo), row_i, int(row["n_mut"]), model_score,
+                rate, rate * (len(todo) - n) / 60,
+            )
+
+        prov_write(
+            out,
+            stage="04_scan",
+            inputs={"dataset": args.dataset, "structure": str(pdb)},
+            params={
+                "n_sample": args.n_sample,
+                "seed": args.seed,
+                "chain": args.chain,
+                "sampling": "stratified_by_n_mut",
+            },
+            arm={
+                "score": args.score,
+                "method": "scan",
+                "trunk": "forward_only",
+                "geometry": "fixed_from_featurisation",
+                "dataset": args.dataset,
+                "chain": args.chain,
+                **numerics_arm(),
+            },
+            notes="Brute-force ground truth for T1/T2. Fixed WT geometry shared with stage 03.",
+        )
+        log.info("Wrote %s (%d new rows, %.1f min)", out, len(todo), (time.time() - t0) / 60)
 
 
 if __name__ == "__main__":

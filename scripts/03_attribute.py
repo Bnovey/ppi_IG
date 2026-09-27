@@ -32,10 +32,10 @@ from igv.attrib import (
     integrated_gradient,
     plain_gradient,
 )
-from igv.data import build_library, download, download_rcsb, read_pdb_chains
+from igv.data import build_library, download, read_pdb_chains
+from igv.dms import resolve_pdb_complex
 from igv.gpu import require_vram
 from igv.provenance import write as prov_write
-from igv.skempi import get_complex
 
 log = logging.getLogger(__name__)
 
@@ -165,28 +165,21 @@ def main() -> None:
     require_vram(min_gib=78)
 
     # --- 1. Load library and structure ---
-    skempi = None
     try:
-        skempi = get_complex(dataset)
+        resolved = resolve_pdb_complex(
+            dataset, chain, cache_dir, structure_override=args.structure,
+        )
     except KeyError:
-        pass
+        resolved = None
 
-    if skempi is not None:
-        data_source = "skempi"
-        log.info("SKEMPI complex %s (chain=%s)", skempi.pdb_id, chain)
-        pdb_path = download_rcsb(skempi.pdb_id, cache_dir)
-        pdb_chains = read_pdb_chains(pdb_path)
-        subset = set(skempi.all_chains)
-        if chain not in subset:
-            raise ValueError(
-                f"Chain {chain!r} not in registered subset "
-                f"{sorted(subset)} for complex {skempi.pdb_id}. "
-                f"PDB chains: {list(pdb_chains.keys())}"
-            )
-        reference_seq = pdb_chains[chain]
-        struct_name = args.structure or skempi.pdb_id.lower()
-        chains = {c: s for c, s in pdb_chains.items() if c in subset}
-        n_tokens = sum(len(s) for s in chains.values())
+    if resolved is not None:
+        data_source = resolved.data_source
+        log.info("%s complex %s (chain=%s)", data_source.upper(), resolved.struct_name, chain)
+        pdb_path = resolved.pdb_path
+        reference_seq = resolved.reference_seq
+        struct_name = resolved.struct_name
+        chains = resolved.chains
+        n_tokens = resolved.n_tokens
         log.info("Chain subset: %s  L=%d", sorted(chains), n_tokens)
     else:
         data_source = "abbibench"

@@ -27,11 +27,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from igv.data import build_library, download_rcsb, read_pdb_chains, resolve_chain_subset  # noqa: E402
+from igv.data import build_library, read_pdb_chains, resolve_chain_subset  # noqa: E402
 from igv.gpu import require_vram  # noqa: E402
 from igv.metrics import spearman  # noqa: E402
 from igv.provenance import assert_provenance, write as prov_write  # noqa: E402
-from igv.skempi import get_complex  # noqa: E402
+from igv.dms import resolve_pdb_complex  # noqa: E402
 
 log = logging.getLogger("sanity")
 
@@ -390,16 +390,23 @@ def main() -> None:
 
     cache_dir = Path(args.cache_dir)
 
-    skempi = None
+    resolved = None
     try:
-        skempi = get_complex(args.dataset)
+        resolved = resolve_pdb_complex(
+            args.dataset, args.chain, cache_dir,
+            structure_override=args.structure,
+        )
     except KeyError:
         pass
+    except ValueError:
+        raise SystemExit(
+            f"Chain {args.chain!r} not found in registered chains for "
+            f"{args.dataset}. Check --chain."
+        ) from None
 
-    if skempi is not None:
-        data_source = "skempi"
-        pdb = download_rcsb(skempi.pdb_id, cache_dir)
-        stem = args.structure or skempi.pdb_id.lower()
+    if resolved is not None:
+        data_source = resolved.data_source
+        pdb = resolved.pdb_path
     else:
         data_source = "abbibench"
         stem = args.structure or _STRUCTURE_FOR.get(args.dataset)
@@ -408,8 +415,8 @@ def main() -> None:
         pdb = cache_dir / f"{stem}.pdb"
 
     chain_subset_arg = args.chain_subset
-    if chain_subset_arg is None and skempi is not None:
-        chain_subset_arg = ",".join(skempi.all_chains)
+    if chain_subset_arg is None and resolved is not None:
+        chain_subset_arg = ",".join(resolved.chains.keys())
 
     subset_label = "all"
     n_tokens = None
@@ -460,8 +467,9 @@ def main() -> None:
         raise SystemExit(f"--score must be one of {sorted(SCORES)}")
 
     lib = None
-    if skempi is not None:
-        log.info("SKEMPI complex %s — no mutant library", skempi.pdb_id)
+    if resolved is not None:
+        log.info("%s complex %s — no mutant library",
+                 resolved.data_source.upper(), resolved.struct_name.upper())
     else:
         lib = build_library(args.dataset, cache_dir, chain=args.chain)
 
@@ -554,7 +562,7 @@ def main() -> None:
         if lib is None:
             r = _result(
                 "signal_control", True, None,
-                "SKIPPED: no mutant library (SKEMPI structure-only path). "
+                f"SKIPPED: no mutant library ({data_source.upper()} structure-only path). "
                 "signal_control requires measured binding scores from AbBiBench.",
             )
             r["skipped"] = True

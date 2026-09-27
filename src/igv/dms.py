@@ -73,6 +73,86 @@ def get_complex(key: str) -> DmsComplex:
 
 
 # ---------------------------------------------------------------------------
+# Shared PDB complex resolution (DMS and SKEMPI)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ResolvedComplex:
+    """Uniform result of resolving a DMS or SKEMPI dataset to its PDB."""
+
+    data_source: str
+    pdb_path: Path
+    reference_seq: str
+    struct_name: str
+    chains: dict[str, str]
+    n_tokens: int
+
+
+def resolve_pdb_complex(
+    dataset: str,
+    chain: str,
+    cache_dir: Path,
+    *,
+    structure_override: str | None = None,
+) -> ResolvedComplex:
+    """Resolve *dataset* via the DMS or SKEMPI registry and return PDB metadata.
+
+    Tries DMS first, then SKEMPI.  Raises ``KeyError`` if neither has
+    the dataset.
+    """
+    from igv.data import download_rcsb, read_pdb_chains
+    from igv.skempi import get_complex as skempi_get_complex
+
+    dms_cx: DmsComplex | None = DMS_COMPLEXES.get(dataset)
+    if dms_cx is not None:
+        pdb_path = download_rcsb(dms_cx.pdb_id, cache_dir)
+        pdb_chains = read_pdb_chains(pdb_path)
+        subset = set(dms_cx.all_chains)
+        if chain not in subset:
+            raise ValueError(
+                f"Chain {chain!r} not in registered subset "
+                f"{sorted(subset)} for DMS complex {dms_cx.pdb_id}. "
+                f"PDB chains: {list(pdb_chains.keys())}"
+            )
+        chains = {c: s for c, s in pdb_chains.items() if c in subset}
+        return ResolvedComplex(
+            data_source="dms",
+            pdb_path=pdb_path,
+            reference_seq=pdb_chains[chain],
+            struct_name=structure_override or dms_cx.pdb_id.lower(),
+            chains=chains,
+            n_tokens=sum(len(s) for s in chains.values()),
+        )
+
+    try:
+        skempi_cx = skempi_get_complex(dataset)
+    except KeyError:
+        raise KeyError(
+            f"Dataset {dataset!r} not found in DMS registry "
+            f"({sorted(DMS_COMPLEXES)}) or SKEMPI registry."
+        ) from None
+
+    pdb_path = download_rcsb(skempi_cx.pdb_id, cache_dir)
+    pdb_chains = read_pdb_chains(pdb_path)
+    subset = set(skempi_cx.all_chains)
+    if chain not in subset:
+        raise ValueError(
+            f"Chain {chain!r} not in registered subset "
+            f"{sorted(subset)} for complex {skempi_cx.pdb_id}. "
+            f"PDB chains: {list(pdb_chains.keys())}"
+        )
+    chains = {c: s for c, s in pdb_chains.items() if c in subset}
+    return ResolvedComplex(
+        data_source="skempi",
+        pdb_path=pdb_path,
+        reference_seq=pdb_chains[chain],
+        struct_name=structure_override or skempi_cx.pdb_id.lower(),
+        chains=chains,
+        n_tokens=sum(len(s) for s in chains.values()),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Download / load
 # ---------------------------------------------------------------------------
 
@@ -246,3 +326,60 @@ def within_position_correlation(
         result[i] = spearman(r_vals, p_vals)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Interface geometry
+# ---------------------------------------------------------------------------
+
+def interface_positions(
+    pdb_path: Path,
+    *,
+    chain: str,
+    partner_chains: tuple[str, ...],
+    residue_ids: list[str],
+    cutoff: float = 5.0,
+) -> list[int]:
+    """0-based indices into *chain*'s sequence within *cutoff* A of any partner atom."""
+    from igv.skempi import compute_distance_to_partner, parse_pdb_heavy_atoms
+
+    coords, atom_chains, atom_res_keys = parse_pdb_heavy_atoms(pdb_path)
+    distances = compute_distance_to_partner(
+        coords, atom_chains, atom_res_keys,
+        chain, partner_chains, residue_ids,
+    )
+    return [i for i, d in enumerate(distances) if d <= cutoff]
+
+
+# ---------------------------------------------------------------------------
+# Mutant enumeration
+# ---------------------------------------------------------------------------
+
+def enumerate_mutants(
+    df: pd.DataFrame,
+    positions: list[int],
+    *,
+    sequence: str,
+    site_to_idx: dict[int, int],
+) -> list[tuple[int, str]]:
+    """(0-based position, mutant AA) pairs measured at *positions*, excluding synonymous.
+
+    *site_to_idx* maps ``site_SARS2`` author numbers to 0-based indices
+    (as returned by :func:`map_sites_to_indices`).
+    """
+    idx_to_sites: dict[int, list[int]] = {}
+    for site, idx in site_to_idx.items():
+        idx_to_sites.setdefault(idx, []).append(site)
+
+    pos_set = set(positions)
+    pairs: set[tuple[int, str]] = set()
+    for _, row in df.iterrows():
+        site = int(row["site_SARS2"])
+        idx = site_to_idx.get(site)
+        if idx is None or idx not in pos_set:
+            continue
+        mut_aa = row["mutant"]
+        if mut_aa != sequence[idx]:
+            pairs.add((idx, mut_aa))
+
+    return sorted(pairs)

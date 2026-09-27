@@ -14,8 +14,11 @@ from igv.dms import (
     STARR2020_URL,
     binding_ddg,
     download_starr2020,
+    enumerate_mutants,
     get_complex,
+    interface_positions,
     map_sites_to_indices,
+    resolve_pdb_complex,
     singles,
     substitution_matrix,
     within_position_correlation,
@@ -554,3 +557,306 @@ def test_starr2020_url_is_string():
 def test_dms_complexes_registry_not_empty():
     assert len(DMS_COMPLEXES) >= 1
     assert "spike_rbd" in DMS_COMPLEXES
+
+
+# ---------------------------------------------------------------------------
+# interface_positions
+# ---------------------------------------------------------------------------
+
+# Synthetic two-chain PDB with controlled geometry.
+#
+# Chain E:
+#   Residue "1": CA at (1, 0, 0)           -> dist to chain A = 1.0  (near)
+#   Residue "2": CA at (50, 0, 0)          -> dist to chain A = 50.0 (far)
+#   Residue "3": CA at (20, 0, 0),
+#                OG at ( 2, 0, 0)          -> min dist = 2.0 via side-chain (near)
+# Chain A:
+#   Residue "1": CA at ( 0, 0, 0)
+#
+# residue_ids = ["1", "2", "3"] (for chain E)
+# With cutoff=5.0:  interface = [0, 2]
+# With cutoff=1.5:  interface = [0]   (superset monotonicity holds)
+
+def _pdb_atom_line(serial, name, chain, resseq, x, y, z, element="C"):
+    """Build one PDB ATOM record with correct column layout."""
+    return (
+        f"ATOM  {serial:5d} {name:4s} ALA {chain}{resseq:4d}    "
+        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {element:>2s}\n"
+    )
+
+
+_INTERFACE_PDB = (
+    _pdb_atom_line(1, " CA ", "E", 1,  1.0, 0.0, 0.0)
+    + _pdb_atom_line(2, " CA ", "E", 2, 50.0, 0.0, 0.0)
+    + _pdb_atom_line(3, " CA ", "E", 3, 20.0, 0.0, 0.0)
+    + _pdb_atom_line(4, " OG ", "E", 3,  2.0, 0.0, 0.0, "O")
+    + _pdb_atom_line(5, " CA ", "A", 1,  0.0, 0.0, 0.0)
+    + "END\n"
+)
+
+# Minimal PDB with chain E and A for resolve_pdb_complex (DMS path).
+_DMS_PDB = (
+    "ATOM      1  CA  ALA E   1       1.000   0.000   0.000  1.00  0.00           C\n"
+    "ATOM      2  CA  GLY A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+    "END\n"
+)
+
+# Minimal PDB with chains A and B for resolve_pdb_complex (SKEMPI path).
+_SKEMPI_PDB = (
+    "ATOM      1  CA  ALA A   1       1.000   0.000   0.000  1.00  0.00           C\n"
+    "ATOM      2  CA  GLY B   1       0.000   0.000   0.000  1.00  0.00           C\n"
+    "END\n"
+)
+
+
+@pytest.fixture
+def interface_pdb(tmp_path):
+    p = tmp_path / "interface.pdb"
+    p.write_text(_INTERFACE_PDB)
+    return p
+
+
+def test_interface_positions_near_residues_returned(interface_pdb):
+    """Residues within cutoff of any partner atom must appear in the result."""
+    result = interface_positions(
+        interface_pdb,
+        chain="E",
+        partner_chains=("A",),
+        residue_ids=["1", "2", "3"],
+        cutoff=5.0,
+    )
+    assert 0 in result  # residue "1" (index 0) at distance 1.0
+    assert 2 in result  # residue "3" (index 2) at distance 2.0 via side-chain OG
+
+
+def test_interface_positions_far_residue_excluded(interface_pdb):
+    """Residues beyond the cutoff must not appear in the result."""
+    result = interface_positions(
+        interface_pdb,
+        chain="E",
+        partner_chains=("A",),
+        residue_ids=["1", "2", "3"],
+        cutoff=5.0,
+    )
+    assert 1 not in result  # residue "2" (index 1) at distance 50.0
+
+
+def test_interface_positions_exact_result_at_5a(interface_pdb):
+    """Result must be exactly [0, 2] at cutoff=5.0 Å."""
+    result = interface_positions(
+        interface_pdb,
+        chain="E",
+        partner_chains=("A",),
+        residue_ids=["1", "2", "3"],
+        cutoff=5.0,
+    )
+    assert result == [0, 2]
+
+
+def test_interface_positions_larger_cutoff_is_superset(interface_pdb):
+    """A larger cutoff must return a superset of any smaller cutoff result."""
+    small = set(
+        interface_positions(
+            interface_pdb,
+            chain="E",
+            partner_chains=("A",),
+            residue_ids=["1", "2", "3"],
+            cutoff=1.5,
+        )
+    )
+    large = set(
+        interface_positions(
+            interface_pdb,
+            chain="E",
+            partner_chains=("A",),
+            residue_ids=["1", "2", "3"],
+            cutoff=5.0,
+        )
+    )
+    assert small.issubset(large)
+    assert len(large) >= len(small)
+
+
+def test_interface_positions_side_chain_atom_counts(interface_pdb):
+    """A residue near via a side-chain atom (not just CA) must be included.
+
+    Residue 3 (index 2): CA is at 20 Å, OG is at 2 Å from chain A.
+    The function is heavy-atom based, so OG should bring it within cutoff=5.0.
+    """
+    result = interface_positions(
+        interface_pdb,
+        chain="E",
+        partner_chains=("A",),
+        residue_ids=["1", "2", "3"],
+        cutoff=5.0,
+    )
+    assert 2 in result
+
+
+def test_interface_positions_empty_partner_chain(interface_pdb):
+    """Empty partner_chains must return no interface positions."""
+    result = interface_positions(
+        interface_pdb,
+        chain="E",
+        partner_chains=(),
+        residue_ids=["1", "2", "3"],
+        cutoff=5.0,
+    )
+    assert result == []
+
+
+def test_interface_positions_cutoff_zero_returns_empty(interface_pdb):
+    """A cutoff of 0 must return no positions (no atom is at exactly distance 0)."""
+    result = interface_positions(
+        interface_pdb,
+        chain="E",
+        partner_chains=("A",),
+        residue_ids=["1", "2", "3"],
+        cutoff=0.0,
+    )
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# enumerate_mutants
+# ---------------------------------------------------------------------------
+
+def _make_enum_df():
+    """Synthetic DMS frame for enumerate_mutants tests.
+
+    sequence = "KNV"
+    site_to_idx = {417: 0, 501: 1, 600: 2}
+    positions = [0, 2]
+
+    Expected non-synonymous pairs at positions [0, 2]:
+      (0, "A") from site 417, mutant "A" (K -> A is non-synonymous)
+      (2, "A") from site 600, mutant "A" (V -> A is non-synonymous)
+    """
+    return pd.DataFrame({
+        "site_SARS2": [417, 417, 501, 600, 999],
+        "mutant":     ["A",  "K",  "Y",  "A",  "T"],
+    })
+
+
+_ENUM_SEQUENCE = "KNV"
+_ENUM_SITE_TO_IDX = {417: 0, 501: 1, 600: 2}
+
+
+def test_enumerate_mutants_synonymous_rows_excluded():
+    """Rows where the mutant equals the wildtype at that position must be excluded."""
+    df = _make_enum_df()
+    # site 417 -> idx 0 -> sequence[0] = "K"; mutant "K" is synonymous
+    result = enumerate_mutants(
+        df, [0, 1, 2], sequence=_ENUM_SEQUENCE, site_to_idx=_ENUM_SITE_TO_IDX
+    )
+    assert (0, "K") not in result
+
+
+def test_enumerate_mutants_positions_not_in_list_excluded():
+    """Pairs at positions not in the requested list must be excluded."""
+    df = _make_enum_df()
+    # position 1 (site 501) is NOT in [0, 2]; N->Y should be excluded
+    result = enumerate_mutants(
+        df, [0, 2], sequence=_ENUM_SEQUENCE, site_to_idx=_ENUM_SITE_TO_IDX
+    )
+    assert (1, "Y") not in result
+
+
+def test_enumerate_mutants_absent_site_skipped():
+    """Sites absent from site_to_idx must be silently skipped, not raise."""
+    df = pd.DataFrame({"site_SARS2": [999], "mutant": ["A"]})
+    # site 999 is not in site_to_idx, so it should be skipped without crashing
+    result = enumerate_mutants(
+        df, [0, 1], sequence="KN", site_to_idx={417: 0, 501: 1}
+    )
+    assert result == []
+
+
+def test_enumerate_mutants_deterministic_ordering():
+    """Result must be sorted regardless of DataFrame row order."""
+    df_forward = pd.DataFrame({
+        "site_SARS2": [417, 600],
+        "mutant":     ["A",  "A"],
+    })
+    df_reversed = pd.DataFrame({
+        "site_SARS2": [600, 417],
+        "mutant":     ["A",  "A"],
+    })
+    r_fwd = enumerate_mutants(
+        df_forward, [0, 2], sequence=_ENUM_SEQUENCE, site_to_idx=_ENUM_SITE_TO_IDX
+    )
+    r_rev = enumerate_mutants(
+        df_reversed, [0, 2], sequence=_ENUM_SEQUENCE, site_to_idx=_ENUM_SITE_TO_IDX
+    )
+    assert r_fwd == r_rev
+    assert r_fwd == [(0, "A"), (2, "A")]
+
+
+def test_enumerate_mutants_exact_result():
+    """Full expected list is precisely [(0, 'A'), (2, 'A')] for the standard frame."""
+    df = _make_enum_df()
+    result = enumerate_mutants(
+        df, [0, 2], sequence=_ENUM_SEQUENCE, site_to_idx=_ENUM_SITE_TO_IDX
+    )
+    assert result == [(0, "A"), (2, "A")]
+
+
+def test_enumerate_mutants_empty_positions():
+    """An empty positions list must return an empty list."""
+    df = _make_enum_df()
+    result = enumerate_mutants(
+        df, [], sequence=_ENUM_SEQUENCE, site_to_idx=_ENUM_SITE_TO_IDX
+    )
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# resolve_pdb_complex
+# ---------------------------------------------------------------------------
+
+def test_resolve_pdb_complex_dms_data_source(tmp_path, monkeypatch):
+    """A registered DMS name must return data_source == 'dms'."""
+    pdb_file = tmp_path / "6m0j.pdb"
+    pdb_file.write_text(_DMS_PDB)
+    monkeypatch.setattr("igv.data.download_rcsb", lambda pdb_id, cache_dir: pdb_file)
+    result = resolve_pdb_complex("spike_rbd", "E", tmp_path)
+    assert result.data_source == "dms"
+
+
+def test_resolve_pdb_complex_dms_pdb_path_returned(tmp_path, monkeypatch):
+    """Resolved complex must carry the path returned by download_rcsb."""
+    pdb_file = tmp_path / "6m0j.pdb"
+    pdb_file.write_text(_DMS_PDB)
+    monkeypatch.setattr("igv.data.download_rcsb", lambda pdb_id, cache_dir: pdb_file)
+    result = resolve_pdb_complex("spike_rbd", "E", tmp_path)
+    assert result.pdb_path == pdb_file
+
+
+def test_resolve_pdb_complex_skempi_data_source(tmp_path, monkeypatch):
+    """A registered SKEMPI name must return data_source == 'skempi'."""
+    pdb_file = tmp_path / "1jtg.pdb"
+    pdb_file.write_text(_SKEMPI_PDB)
+    monkeypatch.setattr("igv.data.download_rcsb", lambda pdb_id, cache_dir: pdb_file)
+    result = resolve_pdb_complex("1JTG", "A", tmp_path)
+    assert result.data_source == "skempi"
+
+
+def test_resolve_pdb_complex_unknown_raises_key_error(tmp_path):
+    """A dataset in neither registry must raise KeyError."""
+    with pytest.raises(KeyError):
+        resolve_pdb_complex("completely_unknown_dataset_xyz", "A", tmp_path)
+
+
+def test_resolve_pdb_complex_unknown_error_mentions_both_registries(tmp_path):
+    """The KeyError message must name both the DMS and SKEMPI registries."""
+    with pytest.raises(KeyError, match="(?s)DMS.*SKEMPI|SKEMPI.*DMS"):
+        resolve_pdb_complex("completely_unknown_dataset_xyz", "A", tmp_path)
+
+
+def test_resolve_pdb_complex_chain_not_in_subset_raises(tmp_path, monkeypatch):
+    """A chain not in the registered subset must raise ValueError, not succeed silently."""
+    pdb_file = tmp_path / "6m0j.pdb"
+    pdb_file.write_text(_DMS_PDB)
+    monkeypatch.setattr("igv.data.download_rcsb", lambda pdb_id, cache_dir: pdb_file)
+    with pytest.raises(ValueError, match="not in registered subset"):
+        resolve_pdb_complex("spike_rbd", "X", tmp_path)  # "X" not in {"E", "A"}

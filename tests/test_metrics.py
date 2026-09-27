@@ -12,6 +12,7 @@ import pytest
 from scipy import stats
 
 from igv.metrics import (
+    aggregate_within_position,
     auprc,
     auroc,
     bootstrap_ci,
@@ -21,6 +22,7 @@ from igv.metrics import (
     spearman,
     stratify_by_n_mut,
     summary,
+    within_position_spearman,
 )
 
 
@@ -295,6 +297,184 @@ class TestBootstrapCi:
         y = rng.standard_normal(10)
         _, lo, hi = bootstrap_ci(spearman, x, y, n_boot=1000)
         assert hi - lo > 0.3
+
+
+# ---------------------------------------------------------------------------
+# within_position_spearman
+# ---------------------------------------------------------------------------
+
+
+class TestWithinPositionSpearman:
+    """Tests for within_position_spearman(pred, true, *, min_n=5)."""
+
+    def _make_matrices(self):
+        """Build (4, 20) pred and true matrices with controlled rows.
+
+        Row 0: both increasing -> Spearman = +1.0
+        Row 1: pred increasing, true decreasing -> Spearman = -1.0
+        Row 2: true is constant -> zero variance -> NaN
+        Row 3: only 4 usable pairs (below min_n=5) -> NaN
+        """
+        pred = np.full((4, 20), np.nan)
+        true = np.full((4, 20), np.nan)
+        # Row 0: perfect positive
+        for j in range(6):
+            pred[0, j] = float(j + 1)
+            true[0, j] = float(j + 1)
+        # Row 1: perfect negative
+        for j in range(6):
+            pred[1, j] = float(j + 1)
+            true[1, j] = float(6 - j)
+        # Row 2: constant true (zero variance)
+        for j in range(6):
+            pred[2, j] = float(j + 1)
+            true[2, j] = 5.0
+        # Row 3: only 4 pairs (< min_n=5)
+        for j in range(4):
+            pred[3, j] = float(j)
+            true[3, j] = float(j)
+        return pred, true
+
+    def test_monotone_row_gives_positive_one(self):
+        """A perfectly monotone row must yield +1.0."""
+        pred, true = self._make_matrices()
+        result = within_position_spearman(pred, true)
+        assert result[0] == pytest.approx(1.0, abs=1e-9)
+
+    def test_reversed_row_gives_negative_one(self):
+        """A perfectly reversed row must yield -1.0."""
+        pred, true = self._make_matrices()
+        result = within_position_spearman(pred, true)
+        assert result[1] == pytest.approx(-1.0, abs=1e-9)
+
+    def test_constant_true_row_is_nan(self):
+        """Zero variance in true must produce NaN."""
+        pred, true = self._make_matrices()
+        result = within_position_spearman(pred, true)
+        assert np.isnan(result[2])
+
+    def test_fewer_than_min_n_pairs_is_nan(self):
+        """A row with only 4 finite paired values must produce NaN (min_n=5)."""
+        pred, true = self._make_matrices()
+        result = within_position_spearman(pred, true)
+        assert np.isnan(result[3])
+
+    def test_output_length_equals_row_count(self):
+        """Output must have length == n_positions, including NaN rows, to stay aligned."""
+        pred, true = self._make_matrices()
+        result = within_position_spearman(pred, true)
+        assert len(result) == pred.shape[0]
+        assert len(result) == 4
+
+    def test_nan_in_pred_and_true_intersected_not_per_array_dropped(self):
+        """NaNs in pred and true must be intersected, not dropped independently.
+
+        Construct a row where:
+          true[0]  = NaN, true[j]  = j  for j >= 1
+          pred[1]  = NaN, pred[0]  = 99, pred[j] = j*2 for j >= 2
+
+        Correct intersection is indices {2, ..., 19}.  At these indices both
+        pred and true are monotonically increasing together, so Spearman = +1.0.
+
+        Per-array dropna would compare [99, 4, 6, ...] with [1, 2, 3, ...],
+        yielding a much lower (and incorrect) value.
+        """
+        pred_row = np.full(20, np.nan)
+        true_row = np.full(20, np.nan)
+        # true: NaN at 0, increasing from index 1
+        for j in range(1, 20):
+            true_row[j] = float(j)
+        # pred: NaN at 1, large value at 0, increasing from index 2
+        pred_row[0] = 99.0
+        for j in range(2, 20):
+            pred_row[j] = float(j) * 2
+
+        pred = pred_row[np.newaxis, :]
+        true = true_row[np.newaxis, :]
+
+        result = within_position_spearman(pred, true)
+        assert result[0] == pytest.approx(1.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# aggregate_within_position
+# ---------------------------------------------------------------------------
+
+
+class TestAggregateWithinPosition:
+    """Tests for aggregate_within_position(rhos)."""
+
+    def test_all_nan_does_not_crash(self):
+        """All-NaN input must not raise."""
+        rhos = np.full(10, np.nan)
+        result = aggregate_within_position(rhos)
+        assert isinstance(result, dict)
+
+    def test_all_nan_n_usable_is_zero(self):
+        """All-NaN input must report n_usable == 0."""
+        rhos = np.full(10, np.nan)
+        result = aggregate_within_position(rhos)
+        assert result["n_usable"] == 0
+
+    def test_all_nan_statistics_are_nan(self):
+        """mean, median, min, max must all be NaN when there is nothing usable."""
+        rhos = np.full(5, np.nan)
+        result = aggregate_within_position(rhos)
+        assert np.isnan(result["mean"])
+        assert np.isnan(result["median"])
+        assert np.isnan(result["min"])
+        assert np.isnan(result["max"])
+
+    def test_nan_rows_excluded_from_n_usable(self):
+        """NaN entries must not count toward n_usable."""
+        rhos = np.array([0.5, np.nan, 0.3, np.nan, 0.1])
+        result = aggregate_within_position(rhos)
+        assert result["n_usable"] == 3
+
+    def test_nan_rows_excluded_from_statistics(self):
+        """Mean must equal the mean of finite values only."""
+        rhos = np.array([0.4, np.nan, 0.6])
+        result = aggregate_within_position(rhos)
+        assert result["mean"] == pytest.approx(0.5)
+
+    def test_ci_brackets_mean(self):
+        """Bootstrap CI must satisfy ci_lo <= mean <= ci_hi."""
+        rhos = np.array([0.1, 0.5, 0.3, -0.1, 0.7, 0.2, 0.4, 0.6, 0.8, 0.0])
+        result = aggregate_within_position(rhos)
+        assert result["ci_lo"] <= result["mean"] <= result["ci_hi"]
+
+    def test_ci_ordering(self):
+        """ci_lo must be <= ci_hi."""
+        rhos = np.array([0.1, 0.5, 0.3, -0.1, 0.7, 0.2, 0.4, 0.6, 0.8, 0.0])
+        result = aggregate_within_position(rhos)
+        assert result["ci_lo"] <= result["ci_hi"]
+
+    def test_n_negative_counts_correctly(self):
+        """n_negative must count entries strictly below zero (NaN excluded)."""
+        rhos = np.array([0.5, -0.3, 0.1, -0.7, np.nan])
+        result = aggregate_within_position(rhos)
+        assert result["n_negative"] == 2
+
+    def test_single_usable_value_mean_equals_value(self):
+        """With one usable rho, mean must equal that value."""
+        rhos = np.array([np.nan, 0.42, np.nan])
+        result = aggregate_within_position(rhos)
+        assert result["n_usable"] == 1
+        assert result["mean"] == pytest.approx(0.42)
+
+    def test_single_usable_value_min_max_equal(self):
+        """With one usable rho, min and max must both equal that value."""
+        rhos = np.array([np.nan, 0.42, np.nan])
+        result = aggregate_within_position(rhos)
+        assert result["min"] == pytest.approx(0.42)
+        assert result["max"] == pytest.approx(0.42)
+
+    def test_result_has_expected_keys(self):
+        """Output dict must contain all documented keys."""
+        rhos = np.array([0.3, 0.5, -0.1])
+        result = aggregate_within_position(rhos)
+        for key in ("mean", "median", "n_usable", "n_negative", "min", "max", "ci_lo", "ci_hi"):
+            assert key in result
 
 
 if __name__ == "__main__":

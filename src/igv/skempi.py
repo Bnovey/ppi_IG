@@ -94,6 +94,29 @@ def get_complex(key: str) -> SkempiComplex:
         ) from None
 
 
+def skempi_positions(dataset: str, chain: str, cache_dir: Path) -> list[int]:
+    """Return 0-based positions where SKEMPI has single-point mutations for *chain*."""
+    from igv.data import download_rcsb
+
+    skempi_cx = get_complex(dataset)
+    pdb_path = download_rcsb(skempi_cx.pdb_id, cache_dir)
+    residue_ids, _seqs = read_pdb_residue_ids(pdb_path)
+
+    df = load_skempi(cache_dir)
+    df = filter_complex(df, skempi_cx.pdb_id)
+    df = single_point(df)
+
+    id_to_idx = {rid: i for i, rid in enumerate(residue_ids[chain])}
+    positions: set[int] = set()
+    for raw in df[SKEMPI_MUTATION_COL]:
+        muts = parse_mutations(raw)
+        for m in muts:
+            if m.chain == chain and m.resnum in id_to_idx:
+                positions.add(id_to_idx[m.resnum])
+
+    return sorted(positions)
+
+
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------

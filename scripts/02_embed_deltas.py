@@ -12,9 +12,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from igv.data import build_library, download, download_rcsb, read_pdb_chains
+from igv.dms import resolve_pdb_complex
 from igv.gpu import require_vram
 from igv.provenance import write as prov_write
-from igv.skempi import get_complex
+from igv.skempi import skempi_positions
 
 log = logging.getLogger(__name__)
 
@@ -26,40 +27,38 @@ STRUCTURE_FOR_DATASET = {
 AMINO_ACIDS = sorted("ACDEFGHIKLMNPQRSTVWY")
 
 
-def _skempi_positions(dataset: str, chain: str, cache_dir: Path) -> list[int]:
-    """Return 0-based positions where SKEMPI has single-point mutations for *chain*."""
-    from igv.skempi import (
-        SKEMPI_MUTATION_COL,
-        filter_complex,
-        load_skempi,
-        parse_mutations,
-        read_pdb_residue_ids,
-        single_point,
+def _dms_positions(
+    dataset: str, chain: str, cache_dir: Path, *, cutoff: float = 5.0,
+) -> list[int]:
+    """Return 0-based interface positions for a DMS complex."""
+    from igv.dms import get_complex as dms_get_complex, interface_positions
+    from igv.skempi import read_pdb_residue_ids
+
+    dms_cx = dms_get_complex(dataset)
+    pdb_path = download_rcsb(dms_cx.pdb_id, cache_dir)
+    residue_ids, _seqs = read_pdb_residue_ids(pdb_path)
+    return interface_positions(
+        pdb_path,
+        chain=chain,
+        partner_chains=dms_cx.partner_chains,
+        residue_ids=residue_ids[chain],
+        cutoff=cutoff,
     )
 
-    skempi_cx = get_complex(dataset)
-    pdb_path = download_rcsb(skempi_cx.pdb_id, cache_dir)
-    residue_ids, _seqs = read_pdb_residue_ids(pdb_path)
 
-    df = load_skempi(cache_dir)
-    df = filter_complex(df, skempi_cx.pdb_id)
-    df = single_point(df)
-
-    id_to_idx = {rid: i for i, rid in enumerate(residue_ids[chain])}
-    positions: set[int] = set()
-    for raw in df[SKEMPI_MUTATION_COL]:
-        muts = parse_mutations(raw)
-        for m in muts:
-            if m.chain == chain and m.resnum in id_to_idx:
-                positions.add(id_to_idx[m.resnum])
-
-    return sorted(positions)
-
-
-def _parse_positions(spec: str, dataset: str, chain: str, cache_dir: Path) -> list[int]:
+def _parse_positions(
+    spec: str,
+    dataset: str,
+    chain: str,
+    cache_dir: Path,
+    *,
+    interface_cutoff: float = 5.0,
+) -> list[int]:
     """Parse a position specification string into a sorted list of 0-based indices."""
     if spec == "skempi":
-        return _skempi_positions(dataset, chain, cache_dir)
+        return skempi_positions(dataset, chain, cache_dir)
+    if spec == "dms_interface":
+        return _dms_positions(dataset, chain, cache_dir, cutoff=interface_cutoff)
     return sorted(int(x) for x in spec.split(","))
 
 
@@ -90,9 +89,16 @@ def main() -> None:
         help=(
             "Positions to scan (full 19-aa grid). "
             "'skempi' = SKEMPI-measured positions; "
+            "'dms_interface' = DMS interface positions (see --interface-cutoff); "
             "or comma-separated 0-based indices. "
             "Default (None): use AbBiBench library substitutions."
         ),
+    )
+    parser.add_argument(
+        "--interface-cutoff",
+        type=float,
+        default=5.0,
+        help="Heavy-atom distance cutoff (A) for dms_interface positions (default 5.0)",
     )
     parser.add_argument(
         "--max-substitutions",
@@ -111,28 +117,21 @@ def main() -> None:
     chain = args.chain
 
     # 1. Load structure and reference sequence
-    skempi = None
     try:
-        skempi = get_complex(args.dataset)
+        resolved = resolve_pdb_complex(
+            args.dataset, chain, cache_dir, structure_override=args.structure,
+        )
     except KeyError:
-        pass
+        resolved = None
 
-    if skempi is not None:
-        data_source = "skempi"
-        log.info("SKEMPI complex %s (chain=%s)", skempi.pdb_id, chain)
-        pdb_path = download_rcsb(skempi.pdb_id, cache_dir)
-        pdb_chains = read_pdb_chains(pdb_path)
-        subset = set(skempi.all_chains)
-        if chain not in subset:
-            raise ValueError(
-                f"Chain {chain!r} not in registered subset "
-                f"{sorted(subset)} for complex {skempi.pdb_id}. "
-                f"PDB chains: {list(pdb_chains.keys())}"
-            )
-        reference_seq = pdb_chains[chain]
-        struct_name = args.structure or skempi.pdb_id.lower()
-        chains: dict[str, str] = {c: s for c, s in pdb_chains.items() if c in subset}
-        n_tokens = sum(len(s) for s in chains.values())
+    if resolved is not None:
+        data_source = resolved.data_source
+        log.info("%s complex %s (chain=%s)", data_source.upper(), resolved.struct_name, chain)
+        pdb_path = resolved.pdb_path
+        reference_seq = resolved.reference_seq
+        struct_name = resolved.struct_name
+        chains: dict[str, str] = resolved.chains
+        n_tokens = resolved.n_tokens
         log.info("Chain subset: %s  L=%d", sorted(chains), n_tokens)
     else:
         data_source = "abbibench"
@@ -162,7 +161,10 @@ def main() -> None:
     substitutions: list[tuple[int, str]] = []
 
     if args.positions is not None:
-        positions = _parse_positions(args.positions, args.dataset, chain, cache_dir)
+        positions = _parse_positions(
+            args.positions, args.dataset, chain, cache_dir,
+            interface_cutoff=args.interface_cutoff,
+        )
         log.info("Full-grid scan at %d positions", len(positions))
         for pos in positions:
             if pos < 0 or pos >= len(reference_seq):
@@ -175,11 +177,11 @@ def main() -> None:
                 if aa != ref_aa:
                     substitutions.append((pos, aa))
     else:
-        if skempi is not None:
+        if resolved is not None:
             raise SystemExit(
-                "SKEMPI complexes have no AbBiBench library. "
-                "Use --positions (e.g. --positions skempi) to specify "
-                "which positions to scan."
+                f"{data_source.upper()} complexes have no AbBiBench library. "
+                "Use --positions (e.g. --positions skempi or --positions dms_interface) "
+                "to specify which positions to scan."
             )
         for pos in lib.variable_positions:
             ref_aa = lib.reference_seq[pos]
