@@ -327,7 +327,13 @@ Venue: MLSB, 5 pages excluding references, welcomes work in progress.
 
 ## 8. Status
 
-Committed through `b3d3763`. 410 tests, ruff 11.
+Committed through `4962fbc`. **549 tests, ruff 11.** Working tree clean on
+`main`. VM `igv-gpu` TERMINATED, 500 GB pd-ssd retained at ~$2.83/day.
+
+**No GPU result is newer than 2026-09-24.** The 2026-09-27 session was entirely
+local: it built the saturation arm, fixed four pipeline defects, and never ran
+a model. The table below is unchanged and is still the only measured science in
+the project.
 
 ### Measured on 1JTG chain B, 2026-09-24 (427 tokens, fp32, ~$24 of A100)
 
