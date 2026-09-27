@@ -511,6 +511,25 @@ position, with expression reported as a control.** Also note 80 of 194 positions
 have binding std < 0.3 and carry no rankable signal; the interface median is
 0.695.
 
+### Two calibration numbers, measured through stage 11 on 2026-09-27
+
+**The volume confound is only *mostly* cancelled on the 21 positions we will
+actually analyse.** The headline -0.034 is the mean over all 194 positions. On
+the interface subset alone it is **+0.092 mean, +0.245 median**, CI
+[-0.082, +0.266]. The CI includes zero and n is 21, so this is not a finding —
+but it is not the -0.034 either, and the interface number is the one that
+belongs next to any interface result. Report it.
+
+**A *perfect* binding predictor scores +0.355 against expression.** Feeding
+stage 11 the observed `bind_avg` as its own prediction gives
+`pred_vs_bind = +1.000` by construction and `pred_vs_expr = **+0.355**`, because
+binding and expression are themselves correlated at +0.38 within interface
+positions. So a gradient correlating ~0.35 with expression is **not** evidence
+of a folding confound — it is exactly what a pure binding predictor does here.
+The diagnostic is the *gap*: `pred_vs_bind` clearly above `pred_vs_expr` is the
+good case; the two roughly equal is the bad case. Without this reference value
+a perfectly clean result could be read as contaminated.
+
 ### Position sets, and why only brute force pays for them
 
 | Cutoff to ACE2 | Positions | Mutants |

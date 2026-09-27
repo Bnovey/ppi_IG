@@ -278,3 +278,78 @@ def bootstrap_ci(
     lo = float(np.nanpercentile(boots, 100 * alpha))
     hi = float(np.nanpercentile(boots, 100 * (1 - alpha)))
     return (point, lo, hi)
+
+
+# ---------------------------------------------------------------------------
+# Within-position metrics
+# ---------------------------------------------------------------------------
+
+
+def within_position_spearman(
+    pred: np.ndarray,
+    true: np.ndarray,
+    *,
+    min_n: int = 5,
+) -> np.ndarray:
+    """Per-position Spearman correlation between two ``(n_positions, 20)`` matrices.
+
+    For each row, computes the Spearman correlation across the substitutions
+    where **both** matrices are non-NaN.  Returns ``np.nan`` for a row with
+    fewer than *min_n* usable pairs or with zero variance on either side.
+
+    The returned array has length ``n_positions`` -- NaN rows are kept in place
+    so the result stays aligned with position labels.
+    """
+    pred = np.asarray(pred, dtype=np.float64)
+    true = np.asarray(true, dtype=np.float64)
+    n_pos = pred.shape[0]
+    result = np.full(n_pos, np.nan)
+
+    for i in range(n_pos):
+        mask = np.isfinite(pred[i]) & np.isfinite(true[i])
+        if mask.sum() < min_n:
+            continue
+        p = pred[i, mask]
+        t = true[i, mask]
+        if np.std(p) == 0 or np.std(t) == 0:
+            continue
+        result[i] = spearman(p, t)
+
+    return result
+
+
+def aggregate_within_position(rhos: np.ndarray) -> dict:
+    """Summary statistics for an array of per-position Spearman correlations.
+
+    Resamples **positions** (the independent unit) for the bootstrap CI on
+    the mean, via :func:`bootstrap_ci`.
+    """
+    rhos = np.asarray(rhos, dtype=np.float64)
+    usable = rhos[np.isfinite(rhos)]
+    n_usable = len(usable)
+
+    if n_usable == 0:
+        return {
+            "mean": float("nan"),
+            "median": float("nan"),
+            "n_usable": 0,
+            "n_negative": 0,
+            "min": float("nan"),
+            "max": float("nan"),
+            "ci_lo": float("nan"),
+            "ci_hi": float("nan"),
+        }
+
+    mean_val = float(np.mean(usable))
+    _, ci_lo, ci_hi = bootstrap_ci(lambda a: float(np.mean(a)), usable)
+
+    return {
+        "mean": mean_val,
+        "median": float(np.median(usable)),
+        "n_usable": n_usable,
+        "n_negative": int((usable < 0).sum()),
+        "min": float(np.min(usable)),
+        "max": float(np.max(usable)),
+        "ci_lo": ci_lo,
+        "ci_hi": ci_hi,
+    }
