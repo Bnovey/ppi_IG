@@ -13,7 +13,17 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from igv.metrics import auroc, auprc, bootstrap_ci, partial_spearman, precision_at_k, spearman
+from igv.metrics import (
+    auroc,
+    auprc,
+    bootstrap_ci,
+    hotspot_precision_at_k,
+    hotspot_precision_chance,
+    partial_spearman,
+    precision_at_k,
+    spearman,
+    topk_overlap_chance,
+)
 from igv.provenance import write as prov_write
 from igv.skempi import (
     SKEMPI_MUTATION_COL,
@@ -148,7 +158,7 @@ def main() -> None:
     print(f"Spearman (norm vs  ΔΔG,  max agg):  {rho_signed_max:.4f}")
     print(f"Spearman (norm vs  ΔΔG,  mean agg): {rho_signed_mean:.4f}")
 
-    # precision@k for hot-spot recovery (ΔΔG >= 2.0)
+    # Binary hot-spot labels (ΔΔG >= 2.0 kcal/mol)
     hot_max = (ddg_max >= HOTSPOT_THRESHOLD).astype(float)
     hot_mean = (ddg_mean >= HOTSPOT_THRESHOLD).astype(float)
 
@@ -157,12 +167,29 @@ def main() -> None:
         k_eff = min(k, n_residues)
         if k_eff == 0:
             continue
-        p_max = precision_at_k(grad_scores, ddg_max, k_eff)
-        p_mean = precision_at_k(grad_scores, ddg_mean, k_eff)
-        prec_results[f"precision_at_{k}_max"] = p_max
-        prec_results[f"precision_at_{k}_mean"] = p_mean
-        print(f"Precision@{k} (max agg):  {p_max:.4f}")
-        print(f"Precision@{k} (mean agg): {p_mean:.4f}")
+
+        # Rank overlap: fraction of top-k by pred also in top-k by true (continuous)
+        overlap_max = precision_at_k(grad_scores, ddg_max, k_eff)
+        overlap_mean = precision_at_k(grad_scores, ddg_mean, k_eff)
+        overlap_chance = topk_overlap_chance(k_eff, n_residues)
+        prec_results[f"topk_overlap_at_{k}_max"] = overlap_max
+        prec_results[f"topk_overlap_at_{k}_mean"] = overlap_mean
+        prec_results[f"topk_overlap_at_{k}_chance"] = overlap_chance
+
+        # Hot-spot precision: fraction of top-k by pred that are true hot spots
+        hp_max = hotspot_precision_at_k(grad_scores, hot_max, k_eff)
+        hp_mean = hotspot_precision_at_k(grad_scores, hot_mean, k_eff)
+        hp_chance_max = hotspot_precision_chance(int(hot_max.sum()), n_residues)
+        hp_chance_mean = hotspot_precision_chance(int(hot_mean.sum()), n_residues)
+        prec_results[f"hotspot_precision_at_{k}_max"] = hp_max
+        prec_results[f"hotspot_precision_at_{k}_mean"] = hp_mean
+        prec_results[f"hotspot_precision_at_{k}_chance_max"] = hp_chance_max
+        prec_results[f"hotspot_precision_at_{k}_chance_mean"] = hp_chance_mean
+
+        print(f"Top-k overlap @{k} (max agg):  {overlap_max:.4f}  chance={overlap_chance:.4f}")
+        print(f"Top-k overlap @{k} (mean agg): {overlap_mean:.4f}  chance={overlap_chance:.4f}")
+        print(f"Hotspot prec  @{k} (max agg):  {hp_max:.4f}  chance={hp_chance_max:.4f}")
+        print(f"Hotspot prec  @{k} (mean agg): {hp_mean:.4f}  chance={hp_chance_mean:.4f}")
 
     n_hotspots_max = int(hot_max.sum())
     n_hotspots_mean = int(hot_mean.sum())

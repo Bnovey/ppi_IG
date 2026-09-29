@@ -281,6 +281,114 @@ def bootstrap_ci(
 
 
 # ---------------------------------------------------------------------------
+# Hot-spot precision and rank-overlap helpers
+# ---------------------------------------------------------------------------
+
+
+def hotspot_precision_at_k(
+    pred: np.ndarray,
+    labels: np.ndarray,
+    k: int,
+) -> float:
+    """Fraction of the top-k by ``pred`` that are true positives per ``labels``.
+
+    Unlike :func:`precision_at_k` (which measures rank overlap between two
+    continuous scores), this measures recovery of a binary ground truth.
+
+    Parameters
+    ----------
+    pred : array-like
+        Predicted scores (higher = more important).
+    labels : array-like
+        Binary labels (1 = positive / hot spot, 0 = negative).
+    k : int
+        Number of top predictions to examine.
+
+    Returns
+    -------
+    float
+        Precision in [0, 1].
+    """
+    pred = np.asarray(pred, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.float64)
+    if k <= 0:
+        raise ValueError(f"k must be positive, got {k}")
+    k = min(k, len(pred))
+    top_k_idx = np.argsort(pred)[::-1][:k]
+    return float(labels[top_k_idx].sum() / k)
+
+
+def topk_overlap_chance(k: int, n: int) -> float:
+    """Expected top-k rank overlap under a random permutation: k**2 / n.
+
+    Parameters
+    ----------
+    k : int
+        Number of top entries compared.
+    n : int
+        Total number of entries.
+
+    Returns
+    -------
+    float
+        Chance-level overlap in [0, 1].  Returns 1.0 when k >= n.
+    """
+    if n <= 0:
+        raise ValueError(f"n must be positive, got {n}")
+    if k <= 0:
+        raise ValueError(f"k must be positive, got {k}")
+    k = min(k, n)
+    return min(float(k ** 2 / n), 1.0)
+
+
+def hotspot_precision_chance(n_positives: int, n: int) -> float:
+    """Expected hot-spot precision@k under a random ranking: n_positives / n.
+
+    Parameters
+    ----------
+    n_positives : int
+        Number of true positives (hot spots) in the dataset.
+    n : int
+        Total number of entries.
+
+    Returns
+    -------
+    float
+        Chance-level precision (prevalence).
+    """
+    if n <= 0:
+        raise ValueError(f"n must be positive, got {n}")
+    return float(n_positives / n)
+
+
+def step_convergence_spearman(
+    attrib_lo: np.ndarray,
+    attrib_hi: np.ndarray,
+) -> float:
+    """Spearman rank correlation between per-position attribution norms at two step counts.
+
+    A convergence diagnostic that does not depend on the completeness span:
+    if the ranking is stable across step counts, the integral has converged
+    in the sense that matters for downstream interpretation.
+
+    Parameters
+    ----------
+    attrib_lo : array-like
+        Per-position attribution magnitudes from a lower step count (e.g. m=16).
+    attrib_hi : array-like
+        Per-position attribution magnitudes from a higher step count (e.g. m=32).
+
+    Returns
+    -------
+    float
+        Spearman correlation in [-1, 1], or NaN if undefined.
+    """
+    attrib_lo = np.asarray(attrib_lo, dtype=np.float64)
+    attrib_hi = np.asarray(attrib_hi, dtype=np.float64)
+    return spearman(attrib_lo, attrib_hi)
+
+
+# ---------------------------------------------------------------------------
 # Within-position metrics
 # ---------------------------------------------------------------------------
 

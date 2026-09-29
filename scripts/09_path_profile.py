@@ -133,6 +133,7 @@ _GRADCHECK_COLUMNS = [
     "ratio", "relerr", "fd_kind", "fd_lo", "fd_hi",
     "F_fd_lo", "F_fd_hi", "fd_delta", "fd_snr_warning",
 ]
+_META_COLUMNS = ["baseline", "F_baseline", "F_input"]
 
 
 def estimate_wall_time(
@@ -153,10 +154,19 @@ def estimate_wall_time(
 # ---------------------------------------------------------------------------
 
 
+def _chain_id(value: str) -> str:
+    """Argparse type: a single alphanumeric PDB chain identifier."""
+    if len(value) != 1 or not value.isalnum():
+        raise argparse.ArgumentTypeError(
+            f"chain ID must be a single alphanumeric character, got {value!r}"
+        )
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--dataset", required=True)
-    p.add_argument("--chain", default="H", choices=["H", "L"])
+    p.add_argument("--chain", default="H", type=_chain_id)
     p.add_argument("--score", default="complex_pde")
     p.add_argument("--structure", default=None)
     p.add_argument("--cache-dir", default="data/raw")
@@ -193,6 +203,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", default="results/path_profile_{dataset}_{score}.csv",
     )
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument(
+        "--baseline", default="zeros", choices=["zeros", "mean_aa"],
+        help="IG baseline: zeros (all-zeros embedding) or mean_aa (mean over "
+             "20 canonical homopolymer embeddings). Default: zeros.",
+    )
     return p
 
 
@@ -243,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  gradcheck:      {n_gradcheck} alpha(s) at {grad_alphas}")
         print(f"  fd_step (h):    {args.fd_step}")
         print(f"  skip_fd:        {args.skip_fd}")
+        print(f"  baseline:       {args.baseline}")
         if n_tokens is not None:
             print(f"  chain subset:   {subset_label}  L={n_tokens}")
         for label, fwd_s, bwd_s in [("bf16", 27.5, 27.5), ("fp32", 49.0, 49.0)]:
@@ -267,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     from igv.boltz_score import (
         SCORES,
         build_complex_feats,
+        compute_homopolymer_embeddings,
         confidence_forward,
         embedder_only,
         load_model,
@@ -305,14 +322,32 @@ def main(argv: list[str] | None = None) -> int:
         )
     log.info("Featurising L=%d over chains %s", n_tokens, list(ref_chains))
 
-    ref_feats, _ = build_complex_feats(
+    ref_feats, token_map = build_complex_feats(
         ref_chains, pdb,
         cache_dir / f"boltz_ref{cache_suffix}",
         args.device, use_msa_server=not args.no_msa_server,
     )
     x_pred = ref_feats["coords"].detach()
     s_inputs = embedder_only(model, ref_feats)
-    baseline = torch.zeros_like(s_inputs)
+
+    if args.baseline == "mean_aa":
+        import numpy as np
+
+        from igv.attrib import build_mean_aa_baseline
+
+        log.info("Computing mean-AA baseline (20 homopolymer embeddings)")
+        token_indices_arr = np.array(
+            [token_map[(args.chain, i)] for i in range(len(lib.reference_seq))],
+            dtype=np.int64,
+        )
+        per_aa_embs = compute_homopolymer_embeddings(
+            model, ref_chains, args.chain, pdb, cache_dir,
+            args.device, use_msa_server=not args.no_msa_server,
+        )
+        baseline = build_mean_aa_baseline(s_inputs, token_indices_arr, per_aa_embs)
+        log.info("mean_aa baseline built, shape %s", list(baseline.shape))
+    else:
+        baseline = torch.zeros_like(s_inputs)
 
     x = s_inputs
     b = baseline
@@ -344,10 +379,25 @@ def main(argv: list[str] | None = None) -> int:
         val.backward()
         return float((interp.grad * d).sum())
 
+    # --- F(baseline) and F(input) ---
+    f_baseline = F_at(0.0)
+    f_input = F_at(1.0)
+    log.info(
+        "F(baseline) [%s] = %.6f, F(input) = %.6f",
+        args.baseline, f_baseline, f_input,
+    )
+    _row_meta = {
+        "baseline": args.baseline,
+        "F_baseline": f_baseline,
+        "F_input": f_input,
+    }
+
     # --- CSV setup ---
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     csvfile = open(out_csv, "w", newline="")
-    all_columns = list(dict.fromkeys(_PROFILE_COLUMNS + _GRADCHECK_COLUMNS))
+    all_columns = list(dict.fromkeys(
+        _PROFILE_COLUMNS + _GRADCHECK_COLUMNS + _META_COLUMNS
+    ))
     writer = csv.DictWriter(csvfile, fieldnames=all_columns)
     writer.writeheader()
 
@@ -355,11 +405,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- Profile: F(alpha) on a grid ---
     profile_alphas = alpha_grid(args.profile_steps)
-    profile_values = {}
+    profile_values = {0.0: f_baseline, 1.0: f_input}
     for i, alpha in enumerate(profile_alphas):
-        f_val = F_at(alpha)
-        profile_values[alpha] = f_val
-        row = {"kind": "profile", "alpha": alpha, "F_alpha": f_val}
+        if alpha in profile_values:
+            f_val = profile_values[alpha]
+        else:
+            f_val = F_at(alpha)
+            profile_values[alpha] = f_val
+        row = {"kind": "profile", "alpha": alpha, "F_alpha": f_val, **_row_meta}
         writer.writerow(row)
         csvfile.flush()
         log.info("[profile %d/%d] alpha=%.4f F=%.6f", i + 1, len(profile_alphas), alpha, f_val)
@@ -386,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
                 "F_fd_hi": None,
                 "fd_delta": None,
                 "fd_snr_warning": None,
+                **_row_meta,
             }
             gc_rows.append(row)
             writer.writerow(row)
@@ -427,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
                 "F_fd_hi": f_hi,
                 "fd_delta": fd_delta,
                 "fd_snr_warning": snr_warning,
+                **_row_meta,
             }
             gc_rows.append(row)
             writer.writerow(row)
@@ -441,8 +496,8 @@ def main(argv: list[str] | None = None) -> int:
     wall = time.time() - t0
 
     # --- JSON summary ---
-    f_0 = profile_values.get(0.0) if 0.0 in profile_values else F_at(0.0)
-    f_1 = profile_values.get(1.0) if 1.0 in profile_values else F_at(1.0)
+    f_0 = profile_values.get(0.0, f_baseline)
+    f_1 = profile_values.get(1.0, f_input)
 
     ratios = [r["ratio"] for r in gc_rows if math.isfinite(r["ratio"])]
     trap = trapezoid_estimate(
@@ -451,6 +506,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     summary = {
+        "baseline": args.baseline,
+        "F_baseline": f_baseline,
+        "F_input": f_input,
         "F_0": f_0,
         "F_1": f_1,
         "F_1_minus_F_0": f_1 - f_0,
@@ -480,12 +538,14 @@ def main(argv: list[str] | None = None) -> int:
             "profile_steps": args.profile_steps,
             "grad_alphas": grad_alphas,
             "fd_step": args.fd_step,
+            "baseline": args.baseline,
             "chain_subset": list(struct_chains) if subset_label != "all" else None,
         },
         arm={
             "score": args.score,
             "dataset": args.dataset,
             "chain": args.chain,
+            "baseline": args.baseline,
             "method": "path_profile",
             "chain_subset": list(struct_chains) if subset_label != "all" else None,
             "n_tokens": n_tokens,

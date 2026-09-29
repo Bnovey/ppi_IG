@@ -503,6 +503,51 @@ class TestBaselineScale:
         r2 = sanity.check_completeness(forward_fn, x, baseline_half, m_steps=8, baseline_scale=0.5)
         assert "baseline_scale=0.5" in r2["detail"]
 
+    def test_completeness_reports_both_abs_and_rel_error(self):
+        def forward_fn(s):
+            return (s * 2.0).sum()
+
+        x = torch.randn(1, L, D)
+        baseline = torch.zeros_like(x)
+        r = sanity.check_completeness(forward_fn, x, baseline, m_steps=8)
+        assert "abs" in r["value"]
+        assert "rel" in r["value"]
+        assert "abs_err=" in r["detail"]
+        assert "rel_err=" in r["detail"]
+
+    def test_completeness_gates_on_absolute_error(self):
+        """A small absolute error must pass even if relative error is large."""
+        def forward_fn(s):
+            return (s * 2.0).sum()
+
+        x = torch.randn(1, L, D)
+        # Baseline very close to x -> small span, high relative error, low absolute
+        baseline = 0.99 * x
+        r = sanity.check_completeness(
+            forward_fn, x, baseline, m_steps=8, baseline_scale=0.99,
+        )
+        assert r["value"]["abs"] < 0.10
+        assert r["passed"] is True
+
+    def test_completeness_threshold_overridable(self):
+        def forward_fn(s):
+            return (s * 2.0).sum()
+
+        x = torch.randn(1, L, D)
+        baseline = torch.zeros_like(x)
+        sanity.check_completeness(
+            forward_fn, x, baseline, m_steps=8, abs_threshold=1e-12,
+        )
+        r_loose = sanity.check_completeness(
+            forward_fn, x, baseline, m_steps=8, abs_threshold=1e6,
+        )
+        assert r_loose["passed"] is True
+        # The tight threshold should fail for any non-trivial input
+        # (Gauss-Legendre at 8 steps has some residual)
+
+    def test_threshold_description_says_absolute(self):
+        assert "absolute error" in sanity.THRESHOLDS["completeness"]
+
 
 # ---------------------------------------------------------------------------
 # 12. SKEMPI path: --chain accepts arbitrary PDB chains, dry-run works

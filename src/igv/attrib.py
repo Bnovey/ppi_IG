@@ -493,3 +493,284 @@ def completeness_error(result: AttribResult, f_x: float, f_baseline: float) -> f
     if abs(diff) == 0.0:
         return 0.0 if abs(ig_sum) == 0.0 else float("inf")
     return abs(ig_sum - diff) / abs(diff)
+
+
+# ---------------------------------------------------------------------------
+# Simplex-projected attribution (Majdandzic et al., Genome Biology 2023)
+# ---------------------------------------------------------------------------
+
+
+# Production path for obtaining the res_type gradient
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ``feats["res_type"]`` is a one-hot tensor of shape ``(1, L, num_tokens)``
+# (see ``boltz_score.py:1054-1056``).  It IS the categorical simplex
+# parameterization that Majdandzic et al. differentiate with respect to.
+# To get the exact (not approximate) simplex gradient:
+#
+#   1. ``feats["res_type"] = feats["res_type"].detach().requires_grad_(True)``
+#   2. Run ``model.input_embedder(feats)`` and the rest of the forward graph
+#      through to a scalar score.
+#   3. ``score.backward()`` -- the gradient lands on ``feats["res_type"]``
+#      directly, giving shape ``(1, L, num_tokens)``.
+#   4. Squeeze the batch dimension and pass the ``(L, num_tokens)`` gradient
+#      to :func:`simplex_score_from_onehot`, together with ``aa_token_indices``
+#      derived from ``boltz.data.const.tokens`` (the 20 canonical amino-acid
+#      entries, which are indices 2-21 in boltz 2.2.1).
+#
+# This path is exact because the chain rule flows through the actual
+# embedder -- no linearity assumption is needed.  It is not implemented
+# here because boltz is not installed in this environment and the forward
+# graph cannot be constructed or tested without it.
+
+
+def simplex_score_from_onehot(
+    grad_onehot: np.ndarray,
+    aa_token_indices: np.ndarray,
+    wt_indices: np.ndarray,
+) -> "SimplexResult":
+    """Simplex-corrected attribution from a gradient w.r.t. the one-hot res_type.
+
+    This is the preferred entry point.  When the gradient is computed
+    w.r.t. ``feats["res_type"]`` (the one-hot token input to the
+    embedder), no linearity assumption is needed and the result is exact.
+
+    Parameters
+    ----------
+    grad_onehot : np.ndarray, shape (L, num_tokens)
+        Gradient of the scalar objective w.r.t. the one-hot residue-type
+        tensor, e.g. ``feats["res_type"].grad[0]`` after a backward pass
+        through the full model.
+    aa_token_indices : np.ndarray, shape (20,)
+        Column indices into the ``num_tokens`` axis that correspond to
+        the 20 canonical amino acids in the order of
+        :data:`CANONICAL_AMINO_ACIDS`.  Derive from
+        ``boltz.data.const.tokens``; do not hardcode offsets.
+    wt_indices : np.ndarray, shape (L,)
+        Index into :data:`CANONICAL_AMINO_ACIDS` (i.e. 0..19) for the
+        observed (wild-type) residue at each position.
+
+    Returns
+    -------
+    SimplexResult
+        ``.scores`` is the (L,) signed per-position vector.
+        ``.corrected_map`` is the full (L, 20) corrected gradient,
+        a gradient-based approximation of saturation mutagenesis.
+
+    Raises
+    ------
+    ValueError
+        If shapes are incompatible or indices are out of range.
+    """
+    grad_onehot = np.asarray(grad_onehot, dtype=np.float64)
+    aa_token_indices = np.asarray(aa_token_indices, dtype=np.intp)
+
+    if grad_onehot.ndim != 2:
+        raise ValueError(
+            f"grad_onehot must be 2-D (L, num_tokens), got shape "
+            f"{grad_onehot.shape}"
+        )
+    if aa_token_indices.ndim != 1:
+        raise ValueError(
+            f"aa_token_indices must be 1-D (20,), got shape "
+            f"{aa_token_indices.shape}"
+        )
+    if aa_token_indices.shape[0] != len(CANONICAL_AMINO_ACIDS):
+        raise ValueError(
+            f"aa_token_indices must have {len(CANONICAL_AMINO_ACIDS)} entries "
+            f"(one per canonical amino acid), got {aa_token_indices.shape[0]}"
+        )
+    num_tokens = grad_onehot.shape[1]
+    if np.any(aa_token_indices < 0) or np.any(aa_token_indices >= num_tokens):
+        raise ValueError(
+            f"aa_token_indices entries must be in [0, {num_tokens}); "
+            f"got min={int(aa_token_indices.min())}, "
+            f"max={int(aa_token_indices.max())}"
+        )
+
+    g_aa = grad_onehot[:, aa_token_indices]  # (L, 20)
+    g_corrected = simplex_correct(g_aa)
+    scores = per_position_score(g_corrected, wt_indices)
+    return SimplexResult(scores=scores, corrected_map=g_corrected)
+
+
+def simplex_project(
+    grad: np.ndarray,
+    aa_embeddings: np.ndarray,
+) -> np.ndarray:
+    """Project an embedding-space gradient onto the amino-acid simplex.
+
+    .. note:: **Approximate fallback.**  This contracts a gradient taken
+       in embedding space with an external (20, D) amino-acid embedding
+       matrix, which is only exact when the embedder is linear in a
+       per-residue token lookup.  The Boltz-2 ``input_embedder``
+       consumes the full feats dict (including MSA/profile features), so
+       this assumption does not hold in general.  Prefer
+       :func:`simplex_score_from_onehot`, which uses the gradient w.r.t.
+       the one-hot ``res_type`` directly and requires no linearity
+       assumption.
+
+    Computes ``G[l, a] = sum_d grad[l, d] * E[a, d]``, i.e.
+    ``G = grad @ E.T``.
+
+    Parameters
+    ----------
+    grad : np.ndarray, shape (L, D)
+        Gradient of the scalar objective w.r.t. the per-position
+        embedding, e.g. from :class:`AttribResult`.
+    aa_embeddings : np.ndarray, shape (20, D)
+        Row *a* is the embedding for the *a*-th canonical amino acid
+        in the order of :data:`CANONICAL_AMINO_ACIDS`.
+
+    Returns
+    -------
+    np.ndarray, shape (L, 20)
+        Gradient w.r.t. the amino-acid mixing weights at each position.
+
+    Raises
+    ------
+    ValueError
+        If input shapes are incompatible.
+    """
+    grad = np.asarray(grad, dtype=np.float64)
+    aa_embeddings = np.asarray(aa_embeddings, dtype=np.float64)
+
+    if grad.ndim != 2:
+        raise ValueError(
+            f"grad must be 2-D (L, D), got shape {grad.shape}"
+        )
+    if aa_embeddings.ndim != 2:
+        raise ValueError(
+            f"aa_embeddings must be 2-D (20, D), got shape {aa_embeddings.shape}"
+        )
+    if aa_embeddings.shape[0] != len(CANONICAL_AMINO_ACIDS):
+        raise ValueError(
+            f"aa_embeddings must have {len(CANONICAL_AMINO_ACIDS)} rows "
+            f"(one per canonical amino acid), got {aa_embeddings.shape[0]}"
+        )
+    if grad.shape[1] != aa_embeddings.shape[1]:
+        raise ValueError(
+            f"Dimension mismatch: grad has D={grad.shape[1]}, "
+            f"aa_embeddings has D={aa_embeddings.shape[1]}"
+        )
+    return grad @ aa_embeddings.T
+
+
+def simplex_correct(g: np.ndarray) -> np.ndarray:
+    """Mean-subtract across the alphabet axis at each position.
+
+    For each position *l*, subtracts the mean over the 20 amino acids:
+    ``g_corrected[l, a] = g[l, a] - mean_a'(g[l, a'])``.
+
+    Parameters
+    ----------
+    g : np.ndarray, shape (L, 20)
+        Simplex-projected gradient from :func:`simplex_project`.
+
+    Returns
+    -------
+    np.ndarray, shape (L, 20)
+        Corrected gradient whose rows sum to zero.
+
+    Raises
+    ------
+    ValueError
+        If the second axis is not 20.
+    """
+    g = np.asarray(g, dtype=np.float64)
+    if g.ndim != 2 or g.shape[1] != len(CANONICAL_AMINO_ACIDS):
+        raise ValueError(
+            f"Expected shape (L, {len(CANONICAL_AMINO_ACIDS)}), got {g.shape}"
+        )
+    return g - g.mean(axis=1, keepdims=True)
+
+
+def per_position_score(
+    g_corrected: np.ndarray,
+    wt_indices: np.ndarray,
+) -> np.ndarray:
+    """Read off the wild-type amino acid score at each position.
+
+    Parameters
+    ----------
+    g_corrected : np.ndarray, shape (L, 20)
+        Corrected simplex gradient from :func:`simplex_correct`.
+    wt_indices : np.ndarray, shape (L,)
+        Index into :data:`CANONICAL_AMINO_ACIDS` for the observed
+        (wild-type) residue at each position.
+
+    Returns
+    -------
+    np.ndarray, shape (L,)
+        Signed per-position attribution scores.
+
+    Raises
+    ------
+    ValueError
+        If shapes are incompatible or indices are out of range.
+    """
+    g_corrected = np.asarray(g_corrected, dtype=np.float64)
+    wt_indices = np.asarray(wt_indices, dtype=np.intp)
+
+    if g_corrected.ndim != 2 or g_corrected.shape[1] != len(CANONICAL_AMINO_ACIDS):
+        raise ValueError(
+            f"g_corrected must have shape (L, {len(CANONICAL_AMINO_ACIDS)}), "
+            f"got {g_corrected.shape}"
+        )
+    L = g_corrected.shape[0]
+    if wt_indices.shape != (L,):
+        raise ValueError(
+            f"wt_indices must have shape ({L},), got {wt_indices.shape}"
+        )
+    if np.any(wt_indices < 0) or np.any(wt_indices >= len(CANONICAL_AMINO_ACIDS)):
+        raise ValueError(
+            f"wt_indices entries must be in [0, {len(CANONICAL_AMINO_ACIDS)}); "
+            f"got min={int(wt_indices.min())}, max={int(wt_indices.max())}"
+        )
+    return g_corrected[np.arange(L), wt_indices]
+
+
+@dataclass
+class SimplexResult:
+    """Container for simplex-projected attribution outputs."""
+
+    scores: np.ndarray
+    corrected_map: np.ndarray
+
+
+def simplex_score(
+    grad: np.ndarray,
+    aa_embeddings: np.ndarray,
+    wt_indices: np.ndarray,
+) -> SimplexResult:
+    """Approximate simplex-corrected scores from an embedding-space gradient.
+
+    Convenience wrapper that chains :func:`simplex_project` ->
+    :func:`simplex_correct` -> :func:`per_position_score`.
+
+    .. note:: **Approximate.**  Uses :func:`simplex_project`, which
+       assumes linearity of the embedder.  Prefer
+       :func:`simplex_score_from_onehot` when the gradient w.r.t. the
+       one-hot ``res_type`` is available.
+
+    Parameters
+    ----------
+    grad : np.ndarray, shape (L, D)
+        Gradient of the scalar objective w.r.t. the per-position
+        embedding.
+    aa_embeddings : np.ndarray, shape (20, D)
+        Row *a* is the embedding for ``CANONICAL_AMINO_ACIDS[a]``.
+    wt_indices : np.ndarray, shape (L,)
+        Index into :data:`CANONICAL_AMINO_ACIDS` for the observed
+        (wild-type) residue at each position.
+
+    Returns
+    -------
+    SimplexResult
+        ``.scores`` is the (L,) signed per-position vector.
+        ``.corrected_map`` is the full (L, 20) corrected gradient,
+        a gradient-based approximation of saturation mutagenesis.
+    """
+    g = simplex_project(grad, aa_embeddings)
+    g_corrected = simplex_correct(g)
+    scores = per_position_score(g_corrected, wt_indices)
+    return SimplexResult(scores=scores, corrected_map=g_corrected)

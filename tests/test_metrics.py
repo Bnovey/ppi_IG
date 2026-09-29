@@ -16,12 +16,16 @@ from igv.metrics import (
     auprc,
     auroc,
     bootstrap_ci,
+    hotspot_precision_at_k,
+    hotspot_precision_chance,
     partial_spearman,
     precision_at_k,
     precision_at_k_fold,
     spearman,
+    step_convergence_spearman,
     stratify_by_n_mut,
     summary,
+    topk_overlap_chance,
     within_position_spearman,
 )
 
@@ -475,6 +479,127 @@ class TestAggregateWithinPosition:
         result = aggregate_within_position(rhos)
         for key in ("mean", "median", "n_usable", "n_negative", "min", "max", "ci_lo", "ci_hi"):
             assert key in result
+
+
+# ---------------------------------------------------------------------------
+# hotspot_precision_at_k
+# ---------------------------------------------------------------------------
+
+
+class TestHotspotPrecisionAtK:
+    def test_perfect_recovery(self):
+        pred = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
+        labels = np.array([1.0, 1.0, 0.0, 0.0, 0.0])
+        assert hotspot_precision_at_k(pred, labels, k=2) == pytest.approx(1.0)
+
+    def test_no_recovery(self):
+        pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        labels = np.array([1.0, 1.0, 0.0, 0.0, 0.0])
+        assert hotspot_precision_at_k(pred, labels, k=2) == pytest.approx(0.0)
+
+    def test_partial_recovery(self):
+        pred = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
+        labels = np.array([1.0, 0.0, 1.0, 0.0, 0.0])
+        # top-2 by pred: indices 0, 1 -> labels 1, 0 -> 1/2
+        assert hotspot_precision_at_k(pred, labels, k=2) == pytest.approx(0.5)
+
+    def test_k_greater_than_n(self):
+        pred = np.array([3.0, 2.0, 1.0])
+        labels = np.array([1.0, 0.0, 1.0])
+        # k clamped to 3, 2 positives out of 3
+        assert hotspot_precision_at_k(pred, labels, k=10) == pytest.approx(2.0 / 3.0)
+
+    def test_zero_hot_spots(self):
+        pred = np.array([5.0, 4.0, 3.0])
+        labels = np.array([0.0, 0.0, 0.0])
+        assert hotspot_precision_at_k(pred, labels, k=2) == pytest.approx(0.0)
+
+    def test_all_hot_spots(self):
+        pred = np.array([5.0, 4.0, 3.0])
+        labels = np.array([1.0, 1.0, 1.0])
+        assert hotspot_precision_at_k(pred, labels, k=2) == pytest.approx(1.0)
+
+    def test_invalid_k(self):
+        with pytest.raises(ValueError, match="k must be positive"):
+            hotspot_precision_at_k(np.array([1.0]), np.array([1.0]), k=0)
+
+
+# ---------------------------------------------------------------------------
+# topk_overlap_chance
+# ---------------------------------------------------------------------------
+
+
+class TestTopkOverlapChance:
+    def test_basic_arithmetic(self):
+        assert topk_overlap_chance(5, 28) == pytest.approx(25.0 / 28.0)
+
+    def test_k10_n28_capped(self):
+        # k^2/n = 100/28 > 1.0, capped to 1.0
+        assert topk_overlap_chance(10, 28) == pytest.approx(1.0)
+
+    def test_k_equals_n(self):
+        assert topk_overlap_chance(10, 10) == pytest.approx(1.0)
+
+    def test_k_greater_than_n(self):
+        assert topk_overlap_chance(20, 10) == pytest.approx(1.0)
+
+    def test_capped_at_one(self):
+        assert topk_overlap_chance(20, 28) <= 1.0
+
+    def test_invalid_n(self):
+        with pytest.raises(ValueError, match="n must be positive"):
+            topk_overlap_chance(5, 0)
+
+    def test_invalid_k(self):
+        with pytest.raises(ValueError, match="k must be positive"):
+            topk_overlap_chance(0, 10)
+
+
+# ---------------------------------------------------------------------------
+# hotspot_precision_chance
+# ---------------------------------------------------------------------------
+
+
+class TestHotspotPrecisionChance:
+    def test_prevalence(self):
+        assert hotspot_precision_chance(7, 28) == pytest.approx(0.25)
+
+    def test_zero_positives(self):
+        assert hotspot_precision_chance(0, 28) == pytest.approx(0.0)
+
+    def test_all_positives(self):
+        assert hotspot_precision_chance(10, 10) == pytest.approx(1.0)
+
+    def test_invalid_n(self):
+        with pytest.raises(ValueError, match="n must be positive"):
+            hotspot_precision_chance(0, 0)
+
+
+# ---------------------------------------------------------------------------
+# step_convergence_spearman
+# ---------------------------------------------------------------------------
+
+
+class TestStepConvergenceSpearman:
+    def test_identical_rankings(self):
+        a = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        assert step_convergence_spearman(a, a) == pytest.approx(1.0)
+
+    def test_reversed_rankings(self):
+        a = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        b = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
+        assert step_convergence_spearman(a, b) == pytest.approx(-1.0)
+
+    def test_returns_nan_on_constant(self):
+        a = np.array([1.0, 2.0, 3.0])
+        b = np.array([5.0, 5.0, 5.0])
+        assert np.isnan(step_convergence_spearman(a, b))
+
+    def test_noisy_but_correlated(self):
+        rng = np.random.default_rng(42)
+        a = rng.standard_normal(50)
+        b = a + rng.standard_normal(50) * 0.1
+        assert step_convergence_spearman(a, b) > 0.9
 
 
 if __name__ == "__main__":

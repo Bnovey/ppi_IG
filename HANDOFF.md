@@ -46,13 +46,18 @@ not describe that as replicated; it has not been.
   ~0.35 there is not contamination; the diagnostic is the *gap* between
   prediction-vs-binding and prediction-vs-expression.
 
-### The one thing blocking a GPU run
+### Sync to GitHub — resolved 2026-09-28
 
-**The VM's checkout is 9 commits behind local `main`** (it sits at `b3d3763`).
-Syncing needs a decision that has not been made: `git push origin main`
-(publishes to `github.com:Bnovey/ppi_IG.git`, and backs the work up off the
-laptop) versus `gcloud compute scp` straight to the box (nothing leaves, but the
-only copies are the laptop and the VM). **Do not assume the push is wanted.**
+`git push origin main` was chosen and done. `origin/main` is now `2b2c01f`, in
+sync with local, so the work finally has a copy off the laptop.
+
+Worth recording: GitHub had been **27 commits behind**, further back than the
+VM. The old remote head was `fb0fc1e`, so the VM's `b3d3763` was itself ahead of
+the remote. Anyone reasoning about "how far behind is X" should check against
+both, not assume the remote is current.
+
+**The VM is still at `b3d3763`, 10 commits behind, and still TERMINATED.** It
+needs a `git pull` in its checkout before any GPU run.
 
 ---
 

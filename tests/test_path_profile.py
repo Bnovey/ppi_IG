@@ -362,3 +362,116 @@ class TestSkipFd:
 
     def test_gradcheck_columns_has_fd_kind(self):
         assert "fd_kind" in pp._GRADCHECK_COLUMNS
+
+
+# ---------------------------------------------------------------------------
+# 11. --baseline selection
+# ---------------------------------------------------------------------------
+
+
+class TestBaselineSelection:
+    def test_parser_baseline_default(self):
+        args = pp.build_parser().parse_args(["--dataset", "4fqi_h1"])
+        assert args.baseline == "zeros"
+
+    def test_parser_baseline_zeros(self):
+        args = pp.build_parser().parse_args(["--dataset", "4fqi_h1", "--baseline", "zeros"])
+        assert args.baseline == "zeros"
+
+    def test_parser_baseline_mean_aa(self):
+        args = pp.build_parser().parse_args(["--dataset", "4fqi_h1", "--baseline", "mean_aa"])
+        assert args.baseline == "mean_aa"
+
+    def test_parser_baseline_invalid(self):
+        with pytest.raises(SystemExit):
+            pp.build_parser().parse_args(["--dataset", "4fqi_h1", "--baseline", "random"])
+
+    def test_dry_run_reports_baseline_default(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(Path(__file__).resolve().parents[1])
+        out = tmp_path / "pp_{dataset}_{score}.csv"
+        pp.main([
+            "--dataset", "4fqi_h1",
+            "--chain-subset", "H,L,A",
+            "--dry-run",
+            "--out", str(out),
+        ])
+        captured = capsys.readouterr().out
+        assert "baseline:       zeros" in captured
+
+    def test_dry_run_reports_baseline_mean_aa(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(Path(__file__).resolve().parents[1])
+        out = tmp_path / "pp_{dataset}_{score}.csv"
+        pp.main([
+            "--dataset", "4fqi_h1",
+            "--chain-subset", "H,L,A",
+            "--baseline", "mean_aa",
+            "--dry-run",
+            "--out", str(out),
+        ])
+        captured = capsys.readouterr().out
+        assert "baseline:       mean_aa" in captured
+
+
+# ---------------------------------------------------------------------------
+# 12. Chain ID validation
+# ---------------------------------------------------------------------------
+
+
+class TestChainIdValidation:
+    def test_valid_uppercase_letters(self):
+        for ch in ["H", "L", "A", "B", "Z"]:
+            args = pp.build_parser().parse_args(["--dataset", "x", "--chain", ch])
+            assert args.chain == ch
+
+    def test_valid_digit(self):
+        args = pp.build_parser().parse_args(["--dataset", "x", "--chain", "1"])
+        assert args.chain == "1"
+
+    def test_valid_lowercase(self):
+        args = pp.build_parser().parse_args(["--dataset", "x", "--chain", "b"])
+        assert args.chain == "b"
+
+    def test_invalid_multi_char(self):
+        with pytest.raises(SystemExit):
+            pp.build_parser().parse_args(["--dataset", "x", "--chain", "HL"])
+
+    def test_invalid_special_char(self):
+        with pytest.raises(SystemExit):
+            pp.build_parser().parse_args(["--dataset", "x", "--chain", "!"])
+
+    def test_invalid_empty(self):
+        with pytest.raises(SystemExit):
+            pp.build_parser().parse_args(["--dataset", "x", "--chain", ""])
+
+
+# ---------------------------------------------------------------------------
+# 13. Meta columns (baseline, F_baseline, F_input)
+# ---------------------------------------------------------------------------
+
+
+class TestMetaColumns:
+    def test_meta_columns_defined(self):
+        assert pp._META_COLUMNS == ["baseline", "F_baseline", "F_input"]
+
+    def test_meta_columns_appended_after_existing(self):
+        all_cols = list(dict.fromkeys(
+            pp._PROFILE_COLUMNS + pp._GRADCHECK_COLUMNS + pp._META_COLUMNS
+        ))
+        for c in pp._PROFILE_COLUMNS:
+            assert c in all_cols
+        for c in pp._GRADCHECK_COLUMNS:
+            assert c in all_cols
+        for c in pp._META_COLUMNS:
+            assert c in all_cols
+        assert all_cols[-3:] == ["baseline", "F_baseline", "F_input"]
+
+    def test_existing_column_order_preserved(self):
+        all_cols = list(dict.fromkeys(
+            pp._PROFILE_COLUMNS + pp._GRADCHECK_COLUMNS + pp._META_COLUMNS
+        ))
+        expected_prefix = [
+            "kind", "alpha", "F_alpha", "D_analytic", "D_fd",
+            "ratio", "relerr", "fd_kind", "fd_lo", "fd_hi",
+            "F_fd_lo", "F_fd_hi", "fd_delta", "fd_snr_warning",
+        ]
+        assert all_cols[:len(expected_prefix)] == expected_prefix

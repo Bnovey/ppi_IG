@@ -38,8 +38,12 @@ log = logging.getLogger("sanity")
 _STRUCTURE_FOR = {"4fqi_h1": "4fqi_hlab", "4fqi_h3": "4fqi_hlab"}
 
 
+# See ERRORS_LOG.md lines 783-792: relative error penalises good baselines
+# whose span collapses, so we gate on absolute error instead.
+COMPLETENESS_ABS_THRESHOLD = 0.10
+
 THRESHOLDS = {
-    "completeness": "relative error < 0.05",
+    "completeness": f"absolute error < {COMPLETENESS_ABS_THRESHOLD}",
     "m_sweep": "consecutive Spearman > 0.95 by m=32",
     "random_weights": "|Spearman vs trained| < 0.3",
     "dead_target": "max|attribution| < 1e-8",
@@ -75,8 +79,16 @@ def _result(name, passed, value, detail):
 # checks
 # --------------------------------------------------------------------------
 
-def check_completeness(forward_fn, s_inputs, baseline, m_steps=16, baseline_scale=0.0):
-    """Do the attributions sum to f(x) - f(baseline)?"""
+def check_completeness(
+    forward_fn, s_inputs, baseline, m_steps=16, baseline_scale=0.0,
+    abs_threshold=COMPLETENESS_ABS_THRESHOLD,
+):
+    """Do the attributions sum to f(x) - f(baseline)?
+
+    Gates on absolute error (see ERRORS_LOG.md lines 783-792): a good baseline
+    shrinks the span, inflating relative error even when the integral is 30x
+    more accurate in absolute terms.
+    """
     import torch
     from igv.attrib import completeness_error, integrated_gradient
 
@@ -84,10 +96,14 @@ def check_completeness(forward_fn, s_inputs, baseline, m_steps=16, baseline_scal
     with torch.no_grad():
         f_x = float(forward_fn(s_inputs))
         f_b = float(forward_fn(baseline))
-    err = completeness_error(res, f_x, f_b)
+    ig_sum = float(res.ig.sum())
+    rel_err = float(completeness_error(res, f_x, f_b))
+    abs_err = abs(ig_sum - (f_x - f_b))
     return _result(
-        "completeness", err < 0.05, float(err),
-        f"m_steps={m_steps} baseline_scale={baseline_scale} f(x)={f_x:.6f} f(baseline)={f_b:.6f} sum(ig)={float(res.ig.sum()):.6f}",
+        "completeness", abs_err < abs_threshold, {"abs": abs_err, "rel": rel_err},
+        f"m_steps={m_steps} baseline_scale={baseline_scale} "
+        f"f(x)={f_x:.6f} f(baseline)={f_b:.6f} sum(ig)={ig_sum:.6f} "
+        f"abs_err={abs_err:.6f} rel_err={rel_err:.6f}",
     )
 
 
@@ -367,6 +383,13 @@ def main() -> None:
         "--baseline-scale", type=float, default=0.0,
         help="Baseline = scale * x. 0.0 = zeros (default). Must be in [0, 1).",
     )
+    p.add_argument(
+        "--completeness-threshold", type=float, default=COMPLETENESS_ABS_THRESHOLD,
+        help=(
+            f"Absolute-error gate for the completeness check "
+            f"(default {COMPLETENESS_ABS_THRESHOLD})."
+        ),
+    )
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
@@ -572,7 +595,11 @@ def main() -> None:
         )
 
     runners = {
-        "completeness": lambda: check_completeness(forward_fn, s_inputs, baseline, m_steps=args.m_steps, baseline_scale=args.baseline_scale),
+        "completeness": lambda: check_completeness(
+            forward_fn, s_inputs, baseline, m_steps=args.m_steps,
+            baseline_scale=args.baseline_scale,
+            abs_threshold=args.completeness_threshold,
+        ),
         "m_sweep": lambda: check_m_sweep(forward_fn, s_inputs, baseline),
         "random_weights": lambda: check_random_weights(
             make_forward_fn, model, s_inputs, baseline),
