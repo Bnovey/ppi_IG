@@ -1006,3 +1006,93 @@ separate W->A measurements: +4.81, +4.66, +4.34, +4.25, +3.50.
   wired into both arms of `run_complex.sh`. **Rule: when adding a pipeline
   stage, check both directions of the file graph.** A produced-but-unread file
   is invisible to every test that only runs a stage in isolation.
+
+---
+
+# 2026-09-29 — Local session: the reduction, and two metrics that were lying
+
+No GPU. The VM was not started. Everything below was measured from
+`results/1JTG_complex_pde_ig_meanaa_grad.npz` and
+`results/1JTG_hotspots_ig_meanaa.json`, both already on disk from 2026-09-24.
+
+## 30. `precision@k` never measured hot-spot recovery
+
+- **Symptom (not a crash):** `scripts/10_skempi_hotspots.py:151` carried the
+  comment "precision@k for hot-spot recovery (ΔΔG >= 2.0)" and lines 152-153
+  computed the binary labels `hot_max` / `hot_mean` directly beneath it. Lines
+  160-161 then passed the **continuous** `ddg_max` / `ddg_mean` to
+  `precision_at_k`, not the labels. `src/igv/metrics.py:86` defines that
+  function as "fraction of the top-k by pred that are also in the top-k by
+  true" -- plain rank overlap. The 2.0 kcal/mol threshold played no part in the
+  number. The labels were used correctly for AUROC/AUPRC at lines 223-226, which
+  is why the defect survived: two metrics beside each other, one right, one not.
+- **Consequence:** with n=28 residues the chance floor for top-k overlap is
+  k^2/n -- **0.179 at k=5, 0.357 at k=10, 0.714 at k=20**. The recorded
+  `precision_at_20 = 0.80` reads as strong and is barely above chance. Worse,
+  `ig_meanaa` scored **0.00 at k=5**, the one cell in the table clearly *below*
+  chance, and that was invisible without the floor to compare against.
+- **Arithmetic tell, available without reading any code:** 0.8 at k=20 implies
+  16 hot spots among the top 20, but `n_hotspots_max_agg` is 11. A precision
+  cannot exceed prevalence times k. The recorded numbers were internally
+  impossible under their stated meaning.
+- **Status:** fixed. `hotspot_precision_at_k` added to `src/igv/metrics.py` and
+  used with the binary labels; the rank-overlap metric is retained under the
+  honest name `topk_overlap_at_{k}_*` so existing result files stay readable;
+  **every k now emits its own chance baseline** (`k^2/n` for overlap,
+  prevalence for hot-spot precision). **Rule: a metric that cannot be compared
+  to its chance floor is not a metric.** Emit the floor beside the number.
+
+## 31. The per-position score was an L2 norm, and that manufactures flatness
+
+- **Symptom (not a crash):** `scripts/10_skempi_hotspots.py:69` reduces the
+  (L, 384) gradient to one scalar per residue with
+  `np.linalg.norm(grad_chain, axis=1)`. Measured on the 1JTG chain B artifact:
+  all 165 positions non-zero, min norm 0.124, max 2.779, **median 0.206 against
+  mean 0.236**, and the top 10 positions hold only **16.8% of total norm**
+  against 6.1% for a uniform distribution -- 2.7x enrichment where 11 known hot
+  spots should produce far more.
+- **Cause:** an L2 norm over 384 dimensions is strictly non-negative and
+  discards sign, and by concentration of measure the norms of high-dimensional
+  vectors cluster tightly around a typical value. The reduction produces a flat
+  profile whatever the model does. `PLAN.md` flagged this before the first GPU
+  run -- "one unsigned number per position ... you cannot compare that to a
+  ddG" -- and it was still in the code four weeks later.
+- **The deeper defect:** amino acid identity is categorical and lives on a
+  20-simplex, but the gradient was taken in unconstrained 384-d embedding space
+  where the model has no training data. Majdandzic, Rajesh & Koo (*Genome
+  Biology* 2023, 24:109) show this injects a gradient component orthogonal to
+  the simplex, and that subtracting the per-position mean across the alphabet
+  corrects it. **This also explains entry 21 retrospectively:** zeros is the
+  maximally off-simplex point, `mean_aa` is approximately the simplex centroid,
+  so the baseline result we found empirically is what the theory predicts.
+- **Why completeness could not have caught it:** IG satisfies completeness for
+  *any* baseline and any monotone path. The axiom constrains nothing about
+  baseline choice, so the project's main numerical diagnostic was structurally
+  blind to the project's main bug. See also the re-gating in entry 32.
+- **Status:** `simplex_score_from_onehot` added to `src/igv/attrib.py`.
+  `feats["res_type"]` is already a one-hot `(1, L, num_tokens)`
+  (`src/igv/boltz_score.py:1054`), so it **is** the simplex parameterisation --
+  no embedding matrix is needed and none is assumed; the canonical column
+  indices are passed in. Output is the full **(L, 20) corrected map**, a
+  gradient-based approximation of saturation mutagenesis, rather than one
+  scalar per residue. **Not yet wired end to end:** producing the gradient
+  w.r.t. `res_type` needs `requires_grad_(True)` on it and a backward pass
+  through `model.input_embedder`, which requires boltz installed. Until that is
+  done on the VM, stage 10 still uses the L2 norm.
+
+## 32. The completeness gate punished the better baseline
+
+- **Symptom:** `scripts/07_sanity.py:89` gated on relative error < 0.05.
+  Measured (entry 21, ERRORS_LOG 783-792): the `zeros` baseline gives absolute
+  error **1.5222**, `mean_aa` gives **0.0504** -- a 30x improvement -- yet
+  `mean_aa` scored 8.01% relative against zeros' 17.28% and still "FAILED".
+- **Cause:** relative error divides by the span `f(x) - f(baseline)`. A good
+  baseline sits close to the input, so the span collapses (-8.81 to -0.63 here)
+  and inflates the ratio. **The better the baseline, the worse it scores.**
+- **Consequence:** a red gate on the headline run that blocked nothing and
+  meant nothing, competing for attention with real blockers.
+- **Status:** fixed. Gates on absolute error against a named
+  `COMPLETENESS_ABS_THRESHOLD = 0.10`, reports both errors, overridable by
+  `--completeness-threshold`. `step_convergence_spearman` added to
+  `src/igv/metrics.py` as a span-independent alternative: whether the *ranking*
+  has converged between two step counts is what we actually care about.

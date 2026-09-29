@@ -589,8 +589,133 @@ proves too few to separate the methods.
    positions into stages 02/03 and add the within-position scoring to
    `06_metrics.py`. Then one IG run at 791 tokens gives all 194 positions x 20,
    and the brute-force comparison is 399 forward passes.
-4. **Re-gate completeness** on absolute error, or on relative error scaled to
-   the score's own noise. Do this instead of spending an hour on m=64.
+4. **Re-gate completeness** on absolute error -- **DONE 2026-09-29**, see
+   `ERRORS_LOG.md` entry 32. Gates on `COMPLETENESS_ABS_THRESHOLD = 0.10`; the
+   8.01% relative "failure" was the gate punishing the better baseline, and it
+   blocked nothing.
 
 Not yet justified: a different attribution method. Item 2 is what establishes
 whether the method is at fault.
+
+**Superseded in part by section 11**, which revises this list against the
+literature and against a re-analysis of the saved 1JTG artifact.
+
+---
+
+## 11. What the field already knows, and what our own data says
+
+Surveyed 2026-09-29, no GPU. Two things came out of it: the bar is better
+defined than we thought, and our own saved artifact says something we had not
+looked for.
+
+### The baselines we are actually measured against
+
+**RSALOR** -- Tsishyn, Hermans, Rooman & Pucci, *Bioinformatics* 41(6):btaf322
+(2025), "Residue conservation and solvent accessibility are (almost) all you
+need". `(1 - RSA) x LOR`, two features, **zero trainable parameters**. Average
+Spearman **0.473** across 217 ProteinGym DMS datasets, matching or beating 27
+deep predictors including ESM-2, SaProt, EVE and GEMME. **RSA alone scores
+0.356.** Our confound panel (`src/igv/skempi.py:519`) has burial, distance,
+hydrophobicity, volume and normalised position -- but **no conservation term**,
+so we currently hold only half of the baseline the field will hold us to.
+
+**SKEMPI per-interface Spearman**, the protocol that matters. Pooled numbers run
+~0.3 higher because between-complex variance dominates, so any comparison must
+state its protocol:
+
+| Method | Per-interface rho |
+|---|---|
+| FoldX | 0.37 (name-split) / 0.48 (cluster-bootstrapped) |
+| Flex ddG | 0.42 |
+| Best learned, leakage-controlled (ProSST+ProtBFF) | 0.48 |
+| Best learned, name-split (BA-DDG) | 0.51 |
+| B-factor baseline | 0.169 |
+| ESM-1v | **-0.012** |
+
+Two further floors: a trivial predictor returning the mean ddG **for the
+mutation type alone**, no structure at all, reaches Pearson **0.46**; and the
+experimental noise ceiling is Pearson **~0.89**, so published 0.91s are overfit
+by construction. Sequence-only pLMs are at zero per-structure -- that is the
+company we are *not* in, and worth saying explicitly.
+
+### The negative result closest to ours
+
+Yao, Song, Baerenfaller & Zhakparov, arXiv:2606.22181 -- already cited in
+section 6 as the failure mode most likely to bite us, and it is. Six attribution
+signals including IG against IEDB epitopes: **no model-derived attribution
+exceeded its random baseline**; IG scored AUROC **0.476 against random 0.501**.
+But IG *passed* their faithfulness test -- masking top-IG residues moved the
+prediction, p<0.001. **Model faithfulness and biological faithfulness fully
+dissociate.** Our `random_weights` control (entry 15) tests the first; SKEMPI
+tests the second. Report them separately and name them as such.
+
+Also relevant: King et al., arXiv:2512.06592 (MLSB 2025) fine-tuned Boltz-2 for
+protein-protein affinity and found it "underperforms relative to sequence-based
+alternatives in both small- and larger-scale data regimes". Combined with the
+affinity head having been trained predominantly on protein-ligand data, whether
+it carries PPI energetic signal at all is a prior question we should state up
+front rather than have a reviewer raise it.
+
+### What the niche looks like
+
+Three independent searches found **no published work applying gradient
+attribution to a co-folding model's affinity head** -- not Boltz-2, not
+AlphaFold3, not Chai-1. ExplainableFold (KDD 2023) is the nearest neighbour and
+is counterfactual, on structure rather than affinity. PairSAE (arXiv:2606.27440)
+is on Boltz-2 but uses sparse autoencoders and no gradients. The genomics
+community solved the discrete-input attribution problem years ago -- shuffled
+references, the simplex correction, ISM validation -- and none of it has been
+carried into structure prediction. **Carrying it over carefully is itself the
+contribution.**
+
+### Measured on our own artifact, 2026-09-29
+
+From `results/1JTG_hotspots_ig_meanaa.json`, n=28 positions, all against
+**|ddG|** unless stated. Recorded because two earlier readings of these numbers
+were wrong in opposite directions.
+
+- **Burial does not significantly beat IG.** Burial 0.436, IG 0.357. Paired
+  bootstrap of the difference over 20,000 resamples: **+0.199, CI95
+  [-0.193, +0.600], P(burial > IG) = 0.84.** The burial figure of +0.54 quoted
+  in section 8 is against *signed* ddG; against |ddG| it is 0.436. Compare
+  like with like.
+- **They are not measuring the same thing.** Spearman(IG, burial) = **+0.315**.
+- **Their partial correlations are near-identical:** IG controlling for burial
+  **+0.245**; burial controlling for IG **+0.256**. Neither is redundant.
+- **Combined they reach +0.508** (rank sum), which sits at FoldX's
+  cluster-bootstrapped per-interface 0.48 and the best leakage-controlled
+  learned model's 0.477. Gain from adding IG to burial: **+0.071, CI95
+  [-0.182, +0.304]**, not significant at n=28.
+
+**This reframes the question.** It was "can the attribution beat a ruler", and
+the answer looked like no. The better question is "does the attribution carry
+energetic information that geometry does not", and the partial correlations say
+plausibly yes. It also matches the strongest result in the structure-model
+literature: ProtBFF's win comes from *injecting* burial and interface features
+into a learned model, not from either alone -- its ablation shows interface and
+burial are the two largest single contributors.
+
+**Every number in this subsection has a CI spanning zero or nearly so.** This is
+a hypothesis worth testing, not a result. The test is n, not method.
+
+### Revised priorities
+
+1. **Pool 3HFM, 1VFB, 1JRH, 2JEL** (~$12, ~2.5 h). Unchanged as item 1, and
+   now better motivated: it tests the complementarity finding above as well as
+   whether 0.357 replicates.
+2. **Add a conservation term to the confound panel.** CPU only, one MSA fetch,
+   no A100. Without it we cannot state how we do against RSALOR, which is the
+   comparison the field will make first.
+3. **Wire the simplex path** (entry 31) on the VM -- it needs boltz installed to
+   backpropagate to `res_type`. Until then stage 10 still uses the L2 norm and
+   the fix is not live.
+4. **The brute-force scan on 1JTG** (~$22, ~4 h) -- unchanged, still the only
+   thing that answers the headline claim.
+5. **The alpha-profile diagnostic** (`--baseline` now exists, entry 32): plot
+   `F(x' + a(x - x'))` for both baselines and report `F(baseline)`. Turns "we
+   tried two baselines and one worked" into a mechanistic explanation. Cheap,
+   but it does need GPU -- the only saved profile data is 4fqi at L=554.
+
+Still not justified: a different attribution method. Items 1 and 4 establish
+whether the method is at fault, and the reduction fix in entry 31 has not yet
+been measured.
