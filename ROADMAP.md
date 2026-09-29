@@ -1053,3 +1053,138 @@ index. ICLR/ICML 2026 submissions still under embargo would not surface. And
 Europe PMC search is title/abstract-weighted, so this done as an unadvertised
 side analysis inside a broader affinity paper would be missed. Confidence is
 high for the specific claim above, moderate-high for any looser phrasing.
+
+---
+
+## 13. Execution plan for Phase 5
+
+Written 2026-09-29. Five stages, three decision gates, and an explicit early
+exit at each. Total exposure if it runs to completion is roughly **$60-75 of
+A100**; total exposure if it dies at the first gate is **about $2**. The
+ordering is chosen so the cheapest disconfirming evidence arrives first.
+
+### Which complexes can replicate this -- not the ones we planned
+
+The Phase 1 pooling set (3HFM, 1VFB, 1JRH, 2JEL) was chosen for **single**
+mutants. Phase 5 needs **doubles with both singles measured**, and that is a
+different set. Computed from `data/raw/skempi_v2.csv`, complexes with at least
+8 complete cycles:
+
+| Complex | cycles | distinct pairs | positions | abs(c) > 0.5 | std |
+|---|---|---|---|---|---|
+| **1JTG_A_B** | 82 | **76** | 31 | 53 | 1.84 |
+| 3S9D_A_B | 59 | 58 | 19 | **6** | **0.49** |
+| **1BRS_A_D** | 45 | **37** | 13 | 25 | 1.35 |
+| 4G0N_A_B | 32 | 32 | 22 | 18 | 0.73 |
+| 1LFD_A_B | 33 | 26 | 22 | 22 | 0.94 |
+| 1AO7_ABC_DE | 38 | 24 | 33 | 16 | 0.81 |
+| 1DAN_HL_UT | 14 | 14 | 19 | 9 | 0.93 |
+| 1VFB_AB_C | 14 | 14 | 18 | 5 | 1.05 |
+| 1DQJ_AB_C | 13 | 13 | 15 | 9 | 1.68 |
+| 1DVF_AB_CD | 13 | 13 | 15 | 11 | 1.00 |
+| 3HFM_HL_Y | 16 | 11 | 11 | 14 | **2.12** |
+| **Total** | | **375** | | | |
+
+**Read the `abs(c) > 0.5` column, not the cycle count.** 3S9D has the second
+most cycles and almost no coupling -- 6 of 59 above 0.5 kcal/mol, std 0.49. It
+is a near-additive system and would dilute the signal while looking like a
+large sample. Do not use it early.
+
+**1BRS is barnase-barstar**, the system on which double-mutant cycles were
+established as a method (Schreiber & Fersht). 37 strongly-coupled pairs on the
+canonical coupling system is the single most persuasive replication available,
+and it should be the first complex after 1JTG.
+
+Ceiling if everything runs: **375 distinct pairs**, against n=28 today.
+
+---
+
+### Stage 0 -- local, free, no GPU
+
+Can all be done now. None of it needs the VM.
+
+0a. **Resolve the uncommitted 2026-09-29 09:49 changeset** (README, docs,
+    .gitignore, several scripts, and a staged `probe_params.py` rename). Not
+    ours; it blocks a clean VM sync. Owner decision.
+0b. **Implement `confidence_head_forward`** at `src/igv/boltz_score.py:1780`
+    per section 12, plus a `pair_layer_ig` wrapper in `src/igv/attrib.py`
+    mirroring how `integrated_gradient` wraps `confidence_forward`. Unit-test
+    the plumbing that does not need boltz: shape validation, interpolation
+    grid, the dot-product contraction over 128 channels, symmetrisation.
+0c. **Implement `src/igv/coupling.py`** -- SKEMPI double-mutant-cycle
+    extraction: parse `Mutation(s)_cleaned`, compute ddG from
+    `Affinity_*_parsed` at RT = 0.001987 * 298.15, match doubles to their two
+    singles, emit coupling with position keys and a cross-chain flag. Plus
+    `scripts/13_coupling.py` to join a pair-attribution `.npz` to those cycles
+    and run the four controls. All CPU. **Write this before any GPU run** so
+    the analysis is not improvised against a fresh artifact.
+0d. **Add a conservation term to the confound panel** (section 11 item 2).
+    Independent of Phase 5 but cheap, and needed for any RSALOR comparison.
+
+### Stage 1 -- sync and de-risk (~$2, ~30 min)
+
+1a. Start the VM, `git pull`. It is 17+ commits behind at `b3d3763`.
+1b. Run the **real, non-mocked** z-gradient completeness test at L ~ 100,
+    m=5, per section 12. Must call the actual confidence head.
+
+> **GATE A.** `z.grad` non-None, not uniformly zero, shape (1, L, L, 128), all
+> finite, completeness relative error under ~20%. **If this fails, stop.** The
+> seam is wrong and nothing downstream is worth buying. Cost to learn this:
+> about $2.
+
+### Stage 2 -- capture on 1JTG (~$10, ~2 h)
+
+2a. One IG run on 1JTG capturing **both** the pair gradient (L, L) and the
+    (L, 20) simplex map from entry 31. Same backward passes; take both.
+2b. Also capture `F(baseline)` and `F(input)` for the alpha-profile
+    (section 11 item 5) -- `09_path_profile.py` already supports `--baseline`.
+
+> **GATE B, sanity only.** Is the pair map non-degenerate -- not near-constant,
+> not concentrated on one row, not tracking the diagonal alone? Report the same
+> concentration statistics entry 31 used, because a flat map here means the
+> contraction is wrong, not that biology is absent.
+
+### Stage 3 -- analysis, local, free
+
+3a. Join to the 82 cycles / 76 pairs. Run all four controls from section 12:
+    distance partial, **singles partial**, permutation null, cluster bootstrap
+    by position (31 clusters, not 76 pairs).
+
+> **GATE C -- the kill condition, stated before the data exists.** If
+> `A[i,j]` adds nothing over `A[i]` and `A[j]`, the pair tensor carries nothing
+> the diagonal did not, and **Phase 5 ends here.** Write the result up as a
+> negative and return to section 11's queue. Benchmark for a positive:
+> r in 0.26-0.37 is what pLM epistasis achieves (section 12); do **not**
+> compare against the 0.77-0.88 multi-point numbers, which are dominated by
+> additivity.
+
+### Stage 4 -- replication (~$10 per complex)
+
+Only if Gate C passes. In order:
+
+4a. **1BRS** (~$10) -- barnase-barstar, 37 pairs, the canonical system. If the
+    effect does not appear here it is not real.
+4b. **4G0N, 1LFD, 1AO7, 3HFM** (~$40) -- takes the pooled total toward ~250
+    pairs. 3HFM is small at 11 pairs but has the strongest coupling in the set
+    (std 2.12), so it is a high-information cheap add.
+4c. 3S9D only as a **negative control**: a near-additive system where the
+    predictor should score near zero. If it scores well there, the signal is
+    additive contamination.
+
+### Stage 5 -- write-up
+
+Claim exactly the sentence in section 12, cite and distinguish PairSAE,
+TopoScorer, AF2BIND and IGMI, report model-faithfulness and
+biological-faithfulness separately per Yao et al., and state the frozen-trunk
+limitation rather than glossing it.
+
+### What this plan deliberately defers
+
+- **The brute-force scan** (~$22). Still the only thing that answers the
+  original headline claim, and still unpublishable without it -- but it is a
+  claim about the *position-level* method, and Phase 5 is now the lead.
+- **The 6M0J saturation arm.** Built and tested, never run. The (L, 20) map
+  from entry 31 is its natural input, so revisit after Gate C.
+- **Pooling 3HFM/1VFB/1JRH/2JEL for single mutants.** Note 2JEL has **zero**
+  doubles and 1JRH six, so that set does almost nothing for Phase 5; it stays
+  in the queue for the position-level question only.
