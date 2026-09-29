@@ -831,9 +831,69 @@ No GPU beyond a run already required. The pair gradient is ~93 MB fp32 at
   the pair representation is what the model uses to predict structure. Control
   1 is the test, and a strong distance correlation with a null partial is the
   failure signature.
-- `z` interpolation turns out not to be re-enterable cleanly given the
-  checkpoint arrangement. Entries 8-11 record how load-bearing the checkpoint
-  mode is here; **verify re-entry on a small L before costing this.**
+- ~~`z` interpolation turns out not to be re-enterable cleanly~~ --
+  **ASSESSED 2026-09-29, GREEN.** See below.
+
+### Feasibility of the z seam -- assessed 2026-09-29
+
+**Verdict: green.** `z` enters `_checkpointed_forward` as a parameter and
+leaves as a return value with no side effects and no other uses
+(`src/igv/boltz_score.py:1335-1349`), so it can be supplied externally without
+touching any existing path.
+
+**Seam: `src/igv/boltz_score.py:1780`**, immediately before the existing
+`model.confidence_module(...)` call. Nothing upstream -- `z_init`, the
+recycling loop, the MSA blocks -- needs to change; `s`, `x_pred` and `feats`
+are fixed across interpolation steps.
+
+**The checkpointing fear does not apply here.** The inner per-layer checkpoints
+are already `use_reentrant=False` (line 1347). The reentrant one that caused
+entries 8-11 is the *outer* wrapper at line 1832, and calling the confidence
+head directly bypasses it: grad is enabled throughout, `_ckpt_mha`
+(lines 1428-1429) takes its checkpointed branch, and gradients accumulate on
+`z.grad` normally. Entry 11's triangle-attention checkpointing already uses
+this exact pattern.
+
+**Recycling resolves itself.** Only the final `z_` after all recycling
+iterations reaches the confidence head (line 1777 onward); intermediate values
+never do. So "the pair tensor" is unambiguous -- attribute to the final one.
+Per-iteration attribution would need new code and is not needed here.
+
+**Memory: ~5.5-8 GiB against the 78 GiB that full-trunk backward needs**
+(entry 12, all nine measured configurations). A 10-14x reduction, because the
+confidence head is 8 checkpointed layers rather than 64 pairformer blocks plus
+4 MSA blocks. **This is the same frozen-trunk escape entry 12 already chose**,
+so Phase 5 does not need the full-trunk problem solved -- it rides the decision
+we already made.
+
+Carry the matching caveat: attributing through the confidence head with `s` and
+the trunk fixed answers "how does the confidence head use `z`", not "how does
+the whole model use `z`". That is the limitation frozen-trunk already accepts,
+and it should be stated rather than glossed.
+
+### The de-risking test -- and what it must NOT be
+
+Run at L ~ 100, `m_steps=5`, a few minutes on the A100, before anything is
+costed.
+
+**The test must call the real confidence head.** The version first proposed
+scored a synthetic random `z` through a mock `(z**2).sum()*0.01` and checked
+completeness. That is a tautology -- IG on a quadratic satisfies completeness
+by construction, and it exercises none of the risk. The whole question is
+whether gradient flows through the **real checkpointed confidence pairformer**
+to an externally supplied `z`. A mock cannot answer it and would give false
+assurance, which is exactly the failure mode of the `dead_target` check
+(section 4) that passes vacuously at 0.000e+00 every run.
+
+Pass criteria: `z.grad` is not None; not uniformly zero; shape
+`(1, L, L, 128)`; all finite; and completeness relative error under ~20% at
+m=5 against a real `f(z_x) - f(z_baseline)` computed from the same head.
+
+Three runtime unknowns, none blocking: whether model parameters are frozen
+(`MEMORY.md` section 6 says they are not -- check
+`sum(p.numel() for p in model.parameters() if p.requires_grad)`), the exact `s`
+dimension, and whether `z.grad` stays fp32 under autocast (`MEMORY.md` section
+2.2 says `z` is fp32 in the forward even under bf16 -- verify).
 
 ### Status of the novelty claim
 
