@@ -716,6 +716,133 @@ a hypothesis worth testing, not a result. The test is n, not method.
    tried two baselines and one worked" into a mechanistic explanation. Cheap,
    but it does need GPU -- the only saved profile data is 4fqi at L=554.
 
-Still not justified: a different attribution method. Items 1 and 4 establish
+Still not justified: a different attribution *method*. Items 1 and 4 establish
 whether the method is at fault, and the reduction fix in entry 31 has not yet
 been measured.
+
+**Superseded as the focus by section 12 (Phase 5), decided 2026-09-29.** The
+list above is all position-level work validated at n=28, where nothing survives
+its own CI. Phase 5 asks a pair-level question at n=76 on data already on disk,
+and rides the same backward pass as item 1. Items 1 and 2 remain worth doing and
+are unchanged in cost; they are no longer the front of the queue.
+
+---
+
+## 12. Phase 5 — attribute to the pair representation, and predict residue coupling
+
+Proposed 2026-09-29. **This is the new focus.** Everything in sections 8 and 11
+attributes one scalar per residue and validates it against single-mutant ddG at
+n=28, where nothing survives its own confidence interval. This phase asks a
+different question, on a sample nearly three times larger, using data already
+on disk and a gradient that falls out of a backward pass we already run.
+
+### The idea
+
+Binding is not a property of residues. It is a property of residue **pairs**,
+and Boltz-2's central object is the pair tensor `z`, shape `(1, L, L, 128)`.
+Every attribution in this project so far -- and, as far as three independent
+literature sweeps found, every attribution published on any protein model --
+collapses to one number per position. The gradient with respect to `z` gives an
+**L x L interaction map** instead: for each pair of residues, how much that
+specific contact contributes to predicted affinity.
+
+Alternatives cannot reach this. Burial and the rest of the confound panel give
+one number per position. Brute-force ISM would need **double** mutants, an L^2
+scan -- the exact combinatorial wall this project exists to avoid.
+
+### The ground truth, verified locally 2026-09-29
+
+A double-mutant cycle measures whether two residues interact:
+`coupling = ddG(AB) - ddG(A) - ddG(B)`. Zero if they act independently.
+Computed from `data/raw/skempi_v2.csv` on 1JTG, the complex we have **already
+run and already hold gradients for**:
+
+| | |
+|---|---|
+| Complete cycles (both constituent singles measured) | **82** |
+| Distinct position pairs | **76** |
+| Distinct positions involved | 31 |
+| Cross-chain pairs (spanning the interface) | 66 |
+| Cycles with abs(coupling) > 0.5 kcal/mol | **53 / 82** |
+| Coupling range | -4.96 to +7.40 kcal/mol, std 1.84 |
+| Replicate spread on the 6 repeated pairs | median **0.21** kcal/mol, max 2.35 |
+
+**1JTG has 83 double mutants, the most of any complex in SKEMPI** (next is
+3S9D at 59, then 1BRS at 45). Our target was chosen for other reasons and
+happens to be the best-suited complex in the canonical dataset for this.
+
+Two facts matter for inference. Unlike entry 23 -- where 96 mutations collapsed
+to 28 positions, 3.4x redundancy -- **82 cycles are 76 distinct pairs, 1.08x**.
+This is a near-independent sample. But the 76 pairs draw on only 31 positions,
+so the same residue recurs across pairs: **cluster-bootstrap by position, not by
+pair**, or significance will be overstated. The 0.21 kcal/mol replicate spread
+is the experimental noise floor and therefore the ceiling any predictor can hit.
+
+Physics sanity check, which passes: cross-chain pairs show mean abs(coupling)
+**1.374** kcal/mol against **0.889** for same-chain. Residues coupling across
+the interface -- which is what binding is -- are more strongly coupled than
+pairs within one chain.
+
+### Method
+
+**Layer IG on `z`, not input IG.** `BoltzScorer._checkpointed_forward(self, s,
+z, mask, pair_mask)` (`src/igv/boltz_score.py:1335`) already takes `z` as an
+argument and returns `(s, z)`, so `z` can be interpolated directly between the
+`mean_aa` baseline's pair tensor and the wild-type's, and the model re-entered
+from there. This makes completeness well-defined at that layer and avoids
+retaining grad on an intermediate inside reentrant checkpointing.
+
+    A[i,j] = (z_x[i,j] - z_b[i,j]) . integral_0^1 dF/dz[i,j] dalpha
+
+contracted over the 128 channels, then symmetrised as `A[i,j] + A[j,i]` since
+the pair representation is not guaranteed symmetric.
+
+**Contract with a dot product, not an L2 norm.** This is entry 31 arriving in
+advance: an L2 norm over 128 channels is non-negative, discards sign, and by
+concentration of measure flattens the map whatever the model does. The dot
+product preserves sign and satisfies completeness. Do not repeat that mistake
+one dimension up.
+
+### Controls — the second one decides whether this is interesting
+
+1. **Inter-residue distance.** Nearby pairs couple more, so distance will
+   predict coupling on its own. Report partial correlation controlling for
+   Cbeta-Cbeta distance. This is the burial lesson (section 11) applied before
+   rather than after.
+2. **The two single-residue attributions.** Does the off-diagonal carry
+   information beyond the diagonal? Partial correlation of `A[i,j]` against
+   coupling, controlling for `A[i]` and `A[j]`. **If the pair term adds nothing
+   over the two single terms, the pair tensor is not telling us anything new
+   and this phase ends here.** Exactly the IG-vs-burial test from section 11,
+   one dimension up.
+3. **Permutation null** over pair labels, matching the shuffled-null convention
+   already used in stage 10.
+4. **Cluster bootstrap by position** (31 clusters), not by pair.
+
+### Cost
+
+No GPU beyond a run already required. The pair gradient is ~93 MB fp32 at
+1JTG's 427 tokens (427^2 x 128 x 4). Capture it during the Phase 2 IG run.
+
+### What would kill it, stated in advance
+
+- Control 2 fails: the pair map is just the outer product of the singles.
+- The map tracks contact geometry rather than energetics -- plausible, since
+  the pair representation is what the model uses to predict structure. Control
+  1 is the test, and a strong distance correlation with a null partial is the
+  failure signature.
+- `z` interpolation turns out not to be re-enterable cleanly given the
+  checkpoint arrangement. Entries 8-11 record how load-bearing the checkpoint
+  mode is here; **verify re-entry on a small L before costing this.**
+
+### Status of the novelty claim
+
+Three literature sweeps found no gradient attribution on a co-folding model's
+affinity head. Pairwise readouts from protein models exist but all target
+**contacts and structure** on sequence-only models -- Rao et al. (ICLR 2021,
+attention-head logistic regression), Vig et al. (ICLR 2021), Zhang et al.
+(*PNAS* 2024, the categorical Jacobian, ~19L forward passes), Thorstenson
+(arXiv:2606.21876). None targets binding energetics, and none is a gradient on
+an internal pair tensor. **A confirmatory search was still running when this
+was written -- treat the novelty claim as unverified until it is recorded
+here.**
