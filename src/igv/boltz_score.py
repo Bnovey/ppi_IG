@@ -1863,6 +1863,83 @@ def confidence_forward(
     return scalar
 
 
+def confidence_head_forward(
+    model,
+    s_inputs,
+    s,
+    z,
+    x_pred,
+    feats,
+    score_name: str,
+    autocast_dtype=None,
+):
+    """Score from the confidence head with an externally supplied ``z``.
+
+    This is the seam for pair-layer Integrated Gradients: ``z`` is supplied by
+    the caller (typically an interpolated tensor with ``requires_grad=True``)
+    and is **not** recomputed from the trunk.  Everything upstream of the
+    confidence head -- ``s``, ``s_inputs``, ``x_pred``, ``feats`` -- is fixed
+    across interpolation steps.
+
+    Does NOT wrap in the outer ``use_reentrant=True`` checkpoint that
+    :func:`confidence_forward` uses at line 1832: the inner per-layer
+    checkpoints are already ``use_reentrant=False``, and bypassing the outer
+    wrapper is exactly the intent (see ``notes/ROADMAP.md`` section 12).
+
+    ``z`` must be fp32; it is not cast even under autocast, so that its
+    ``.grad`` stays fp32.
+
+    The distogram is recomputed from the supplied ``z`` rather than passed in
+    frozen, because the distogram is a direct function of ``z`` and freezing it
+    would break the path integral: the completeness identity requires that
+    every ``z``-dependent intermediate tracks the interpolated ``z``.
+    """
+    import torch
+
+    _amp_dtype = resolve_autocast_dtype(autocast_dtype)
+    _use_kernels, _ = resolve_use_kernels(model)
+
+    if score_name not in SCORES:
+        raise ValueError(
+            f"Unknown score: {score_name!r}. Available: {sorted(SCORES)}"
+        )
+
+    _amp_ctx = (
+        torch.autocast("cuda", dtype=_amp_dtype)
+        if _amp_dtype is not None
+        else contextlib.nullcontext()
+    )
+
+    with _amp_ctx:
+        # Duplicated from _full_trunk_and_confidence lines 1777-1798 rather
+        # than refactored into a shared helper: the existing path is wrapped in
+        # reentrant checkpointing with load-bearing use_reentrant=True, and any
+        # extraction risks changing its behaviour.  ~15 lines of duplication is
+        # the safer choice.
+        pred_distogram_logits = model.distogram_module(z)[:, :, :, 0]
+
+        out_dict = model.confidence_module(
+            s_inputs=s_inputs,
+            s=s,
+            z=z,
+            x_pred=x_pred,
+            feats=feats,
+            pred_distogram_logits=pred_distogram_logits,
+            multiplicity=1,
+            run_sequentially=False,
+            # Flows on into confidence_module.pairformer_stack, which boltz
+            # calls with use_kernels=use_kernels -- so the rebound
+            # _checkpointed_forward receives it and must not switch it again.
+            use_kernels=_use_kernels,
+        )
+
+        scalar = SCORES[score_name](out_dict)
+        if scalar.dim() > 0:
+            scalar = scalar.squeeze()
+
+    return scalar
+
+
 # ---------------------------------------------------------------------------
 # ipTM argmax recording
 # ---------------------------------------------------------------------------

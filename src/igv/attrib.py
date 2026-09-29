@@ -468,6 +468,160 @@ def predict_mutants(
     return out
 
 
+@dataclass
+class PairAttribResult:
+    """Container for pair-layer IG attribution on z, shape (L, L)."""
+
+    interaction_map: Tensor
+    grad: Tensor
+    n_steps: int
+    quadrature: str
+    meta: dict = field(default_factory=dict)
+
+
+def pair_completeness_error(
+    result: PairAttribResult, f_x: float, f_baseline: float
+) -> float:
+    """Relative completeness error for pair-layer IG.
+
+    ``sum(interaction_map)`` should equal ``f_x - f_baseline``.
+    """
+    ig_sum = float(result.interaction_map.sum())
+    diff = f_x - f_baseline
+    if abs(diff) == 0.0:
+        return 0.0 if abs(ig_sum) == 0.0 else float("inf")
+    return abs(ig_sum - diff) / abs(diff)
+
+
+def pair_layer_ig(
+    score_fn: Callable[[Tensor], Tensor],
+    z_baseline: Tensor,
+    z_x: Tensor,
+    m_steps: int = 15,
+    quadrature: str = "gausslegendre",
+    clear_cache_each_step: bool = False,
+    log_progress: bool = False,
+) -> PairAttribResult:
+    """Integrated Gradients on the pair tensor z, producing an L x L map.
+
+    Parameters
+    ----------
+    score_fn : callable
+        ``fn(z: Tensor[1, L, L, C]) -> scalar Tensor`` with grad enabled.
+    z_baseline : Tensor
+        Baseline pair tensor, shape ``(1, L, L, C)``.
+    z_x : Tensor
+        Input pair tensor, shape ``(1, L, L, C)``.
+    m_steps : int
+        Number of quadrature points.
+    quadrature : str
+        ``"gausslegendre"`` or ``"uniform"``.
+    clear_cache_each_step : bool
+        Release cached CUDA allocations after each step.
+    log_progress : bool
+        Emit a per-step INFO line.
+
+    Returns
+    -------
+    PairAttribResult
+        ``.interaction_map`` is the ``(L, L)`` symmetrised attribution map.
+        ``.grad`` is the path-averaged gradient, shape ``(1, L, L, C)``.
+
+    Notes
+    -----
+    The interaction map is ``(z_x - z_baseline) . mean_grad`` contracted over
+    the C channels with a **dot product** (not an L2 norm), then symmetrised
+    as ``(A + A^T) / 2``.  The halving is not cosmetic: ``A + A^T`` doubles the
+    total, so only the averaged form keeps ``sum(map) = f(z_x) - f(z_b)``.
+    (ROADMAP section 12 writes the symmetrisation as ``A[i,j] + A[j,i]``;
+    completeness is the constraint it states as primary, so the /2 wins.)
+    The dot product preserves sign and satisfies completeness;
+    an L2 norm would be non-negative, discard sign, and flatten the map by
+    concentration of measure.
+
+    Unlike :func:`score_deltas` — where the path-averaged gradient alone is
+    the per-substitution predictor and the ``(x - baseline)`` factor belongs
+    only to the completeness identity — here the product
+    ``(z_x - z_baseline) * grad`` IS the quantity of interest, because
+    completeness is the point: the map must sum to ``f(z_x) - f(z_baseline)``.
+    Do not "fix" this to use the gradient alone.
+    """
+    if z_baseline.ndim != 4:
+        raise ValueError(
+            f"z_baseline must be rank 4 (1, L, L, C), got ndim={z_baseline.ndim}"
+        )
+    if z_x.ndim != 4:
+        raise ValueError(
+            f"z_x must be rank 4 (1, L, L, C), got ndim={z_x.ndim}"
+        )
+    if z_baseline.shape != z_x.shape:
+        raise ValueError(
+            f"Shape mismatch: z_baseline {tuple(z_baseline.shape)} vs "
+            f"z_x {tuple(z_x.shape)}"
+        )
+    C = z_x.shape[-1]
+    if C != 128:
+        raise ValueError(
+            f"Expected 128 channels in the pair tensor, got {C}"
+        )
+
+    if quadrature == "gausslegendre":
+        gl_nodes, gl_weights = np.polynomial.legendre.leggauss(m_steps)
+        alphas_np = (gl_nodes + 1.0) / 2.0
+        weights_np = gl_weights / 2.0
+        alphas = torch.as_tensor(
+            alphas_np, dtype=z_x.dtype, device=z_x.device
+        )
+        weights = torch.as_tensor(
+            weights_np, dtype=z_x.dtype, device=z_x.device
+        )
+    elif quadrature == "uniform":
+        alphas = torch.linspace(
+            0.0, 1.0, m_steps + 1,
+            dtype=z_x.dtype, device=z_x.device,
+        )
+        weights = torch.ones(
+            len(alphas), dtype=z_x.dtype, device=z_x.device
+        )
+        weights = weights / len(alphas)
+    else:
+        raise ValueError(
+            f"Unknown quadrature: {quadrature!r}. Use 'gausslegendre' or 'uniform'."
+        )
+
+    accumulated_grads = torch.zeros_like(z_x)
+    n_alphas = len(alphas)
+
+    for step_i, (alpha, weight) in enumerate(zip(alphas, weights)):
+        if log_progress:
+            log.info("pair IG step %d/%d", step_i + 1, n_alphas)
+        z_interp = (
+            z_baseline + alpha * (z_x - z_baseline)
+        ).detach().requires_grad_(True)
+        with torch.enable_grad():
+            score = score_fn(z_interp)
+            score.backward()
+        accumulated_grads = accumulated_grads + weight * z_interp.grad.detach()
+        del z_interp, score
+        if clear_cache_each_step:
+            free_cuda_memory()
+
+    delta = z_x.detach() - z_baseline.detach()
+    # Dot product over C channels: sum over batch (1) and channel dims,
+    # yielding (L, L).
+    interaction_unsym = (delta * accumulated_grads).sum(dim=(0, -1))
+    # Average rather than sum so that sum(map) = f(z_x) - f(z_baseline)
+    # (completeness). A + A^T would double the total.
+    interaction_map = (interaction_unsym + interaction_unsym.T) / 2
+
+    return PairAttribResult(
+        interaction_map=interaction_map,
+        grad=accumulated_grads,
+        n_steps=m_steps,
+        quadrature=quadrature,
+    )
+
+
 def completeness_error(result: AttribResult, f_x: float, f_baseline: float) -> float:
     """Relative error of the completeness identity: sum(ig) vs (f(x) - f(baseline)).
 
