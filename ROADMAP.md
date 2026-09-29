@@ -843,6 +843,74 @@ affinity head. Pairwise readouts from protein models exist but all target
 attention-head logistic regression), Vig et al. (ICLR 2021), Zhang et al.
 (*PNAS* 2024, the categorical Jacobian, ~19L forward passes), Thorstenson
 (arXiv:2606.21876). None targets binding energetics, and none is a gradient on
-an internal pair tensor. **A confirmatory search was still running when this
-was written -- treat the novelty claim as unverified until it is recorded
-here.**
+an internal pair tensor.
+
+**Confirmed 2026-09-29 by a dedicated search: no one has produced a pairwise
+attribution map for binding affinity or ddG.** The strongest evidence is the
+incumbent naming the gap itself. BALM-PPI (Singh et al., bioRxiv
+10.64898/2026.03.30.715237) is the current state of the art in *explainable*
+PPI affinity -- >12,000 complexes, residue-level IG maps that recover known
+hotspots -- and its own text concedes that its Integrated Gradients
+attributions "reflect mean-pooled embeddings and do not yet provide pairwise
+residue-residue contact predictions."
+
+Every ingredient exists separately; nobody has assembled them:
+
+| Nearest neighbour | L x L | Attribution | Target | Gap |
+|---|---|---|---|---|
+| Categorical Jacobian (Zhang, *PNAS* 2024) | yes | finite difference | MLM logits | wrong target |
+| Top-K attention heads (Thorstenson) | yes | no, a readout | contacts | wrong target |
+| Nambiar et al. 2025 pLM epistasis matrix | **yes** | finite difference | DMS fitness epistasis | closest on form, wrong target |
+| DFIM (Greenside, *Bioinformatics* 2018) | **yes** | **yes** | TF binding | **right method, wrong molecule -- DNA** |
+| Integrated Hessians (Janizek, Sturmfels & Lee, *JMLR* 22(104):1-54, 2021) | **yes** | **yes**, axiomatic | anything differentiable | **never applied to any protein model** |
+| BALM-PPI (2026) | no | yes, IG | **binding affinity** | first-order only, and says so |
+
+Note DFIM: genomics solved pairwise attribution in 2018 and it never crossed
+into proteins. That is the same pattern as the Majdandzic simplex correction in
+entry 31 -- **the genomics community's answers keep not being carried over**,
+and carrying them is repeatedly where the contribution turns out to be.
+
+### Calibration -- what counts as a good coupling correlation
+
+**Do not benchmark against SKEMPI multi-point numbers.** IGMI reports Pearson
+0.77 on M1707, DDMut-PPI 0.83 on SM1124, MutPPI+ 0.880. Those are correlations
+against **total** multi-point ddG, which is dominated by the additive sum of
+the singles. A model can score 0.8 there with **zero** signal on the
+non-additive part. The search found no paper reporting a SKEMPI-wide
+correlation on the coupling term alone -- which is both why this is open and
+why the comparison must not be made.
+
+The honest benchmarks for a coupling-term prediction:
+
+| Source | Target | Number |
+|---|---|---|
+| Nambiar et al. 2025 (bioRxiv 10.1101/2025.09.14.676130), ESM-2 | TEM-1 epistasis, ~12k doubles | **r = 0.37** |
+| same, YAP1-WW, ~8,670 pairs | fitness epistasis | **r = 0.34** |
+| same, Pab1-RRM2, ~36,500 pairs | fitness epistasis | **r = 0.26** |
+| FEP (Schrodinger), 45 staph nuclease doubles | **non-additivity** | **r = 0.79** -- UNVERIFIED, snippet-sourced, verify before citing |
+
+So **r in the 0.26-0.37 band is what a pLM currently achieves on epistasis**,
+and that is against fitness, not binding. Corroborating the difficulty:
+Kolchina et al. (bioRxiv 10.64898/2026.02.17.706292) benchmark 95 zero-shot VEP
+models and find they "perform well for single mutations and non-epistatic
+combinations ... [but] fail to predict the effect of strongly epistatic
+combinations."
+
+### The cost argument is not the contribution
+
+Thorstenson gets the *contact* signal in one forward pass, so "cheaper than the
+categorical Jacobian's ~19L" is not by itself a result. **The contribution is
+the target quantity (ddG coupling) and the attribution semantics, not the
+FLOPs.** State it that way.
+
+### Two things to close before claiming priority
+
+1. **Read IGMI properly** (*Bioinformatics* 42(4):btag150, 2026, open access).
+   It is the one paper where an L x L object and a ddG target co-occur -- its
+   Figure 8c is reportedly an L x L attention heatmap. Attention visualisation
+   is not attribution, but this is the closest possible competitor and the
+   claim should not be made without reading it.
+2. **Sweep MLSB 2025/2026 and OpenReview.** Workshop papers are exactly where
+   "pairwise attribution for ddG" would surface first and they index poorly.
+   The search that produced this section flagged that tail as the one place it
+   expected a surprise.
