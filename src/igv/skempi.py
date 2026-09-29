@@ -80,6 +80,34 @@ SKEMPI_COMPLEXES: dict[str, SkempiComplex] = {
         pdb_id="2JEL", partner1=("L", "H"), partner2=("P",),
         note="Jel42 / HPr",
     ),
+    "1BRS": SkempiComplex(
+        pdb_id="1BRS", partner1=("A",), partner2=("D",),
+        note="barnase / barstar",
+    ),
+    "4G0N": SkempiComplex(
+        pdb_id="4G0N", partner1=("A",), partner2=("B",),
+        note="H-Ras1 / Raf-RBD",
+    ),
+    "1LFD": SkempiComplex(
+        pdb_id="1LFD", partner1=("A",), partner2=("B",),
+        note="RalGDS-RBD / H-Ras1",
+    ),
+    "1AO7": SkempiComplex(
+        pdb_id="1AO7", partner1=("A", "B", "C"), partner2=("D", "E"),
+        note="A6 TCR / HLA-A2-Tax peptide",
+    ),
+    "1DQJ": SkempiComplex(
+        pdb_id="1DQJ", partner1=("A", "B"), partner2=("C",),
+        note="HyHEL-63 Fab / HEW lysozyme",
+    ),
+    "1DVF": SkempiComplex(
+        pdb_id="1DVF", partner1=("A", "B"), partner2=("C", "D"),
+        note="D1.3 Fv / E5.2 Fv (idiotope–anti-idiotope)",
+    ),
+    "3S9D": SkempiComplex(
+        pdb_id="3S9D", partner1=("A",), partner2=("B",),
+        note="interferon alpha-2 / IFNAR2",
+    ),
 }
 
 

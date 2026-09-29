@@ -12,6 +12,7 @@ import pytest
 from igv.skempi import (
     HYDROPHOBICITY_KD,
     RESIDUE_VOLUME,
+    SKEMPI_COMPLEXES,
     SKEMPI_MUTATION_COL,
     Mutation,
     SkempiComplex,
@@ -169,6 +170,27 @@ def test_get_complex_unknown():
         get_complex("9ZZZ")
 
 
+_STAGE4_COMPLEXES = [
+    "1JTG", "3HFM", "1VFB", "1JRH", "2JEL",
+    "1BRS", "4G0N", "1LFD", "1AO7", "1DQJ", "1DVF", "3S9D",
+]
+
+
+@pytest.mark.parametrize("pdb_id", _STAGE4_COMPLEXES)
+def test_stage4_complexes_resolve(pdb_id):
+    cx = get_complex(pdb_id)
+    assert isinstance(cx, SkempiComplex)
+    assert cx.pdb_id == pdb_id
+
+
+@pytest.mark.parametrize("pdb_id", list(SKEMPI_COMPLEXES))
+def test_partner_chains_disjoint_and_nonempty(pdb_id):
+    cx = SKEMPI_COMPLEXES[pdb_id]
+    assert len(cx.partner1) > 0
+    assert len(cx.partner2) > 0
+    assert set(cx.partner1).isdisjoint(set(cx.partner2))
+
+
 # ---------------------------------------------------------------------------
 # Integration test (requires real CSV on disk)
 # ---------------------------------------------------------------------------
@@ -186,6 +208,35 @@ def test_load_real_csv():
     df = add_ddg(df)
     sp = single_point(df)
     assert len(sp) > 4000
+
+
+@pytest.mark.skipif(not _SKEMPI_CSV.exists(), reason="SKEMPI CSV not on disk")
+@pytest.mark.parametrize("pdb_id", list(SKEMPI_COMPLEXES))
+def test_mutation_chains_covered_by_partners(pdb_id):
+    """Every chain referenced in Mutation(s)_PDB must appear in partner1 or partner2."""
+    import re
+
+    cx = SKEMPI_COMPLEXES[pdb_id]
+    all_chains = set(cx.all_chains)
+
+    df = pd.read_csv(_SKEMPI_CSV, sep=";")
+    rows = df[df["#Pdb"].str.split("_").str[0].str.upper() == pdb_id]
+    assert len(rows) > 0, f"No SKEMPI rows for {pdb_id}"
+
+    mut_re = re.compile(r"^([A-Z])([A-Za-z])(.+?)([A-Z])$")
+    uncovered: set[str] = set()
+    for raw in rows["Mutation(s)_PDB"].dropna():
+        for part in raw.split(","):
+            m = mut_re.match(part.strip())
+            if m:
+                chain = m.group(2)
+                if chain not in all_chains:
+                    uncovered.add(chain)
+
+    assert not uncovered, (
+        f"{pdb_id}: mutation chain(s) {uncovered} not in partners "
+        f"{cx.partner1} + {cx.partner2}"
+    )
 
 
 # ---------------------------------------------------------------------------
