@@ -905,12 +905,91 @@ FLOPs.** State it that way.
 
 ### Two things to close before claiming priority
 
-1. **Read IGMI properly** (*Bioinformatics* 42(4):btag150, 2026, open access).
-   It is the one paper where an L x L object and a ddG target co-occur -- its
-   Figure 8c is reportedly an L x L attention heatmap. Attention visualisation
-   is not attribution, but this is the closest possible competitor and the
-   claim should not be made without reading it.
-2. **Sweep MLSB 2025/2026 and OpenReview.** Workshop papers are exactly where
-   "pairwise attribution for ddG" would surface first and they index poorly.
-   The search that produced this section flagged that tail as the one place it
-   expected a surprise.
+1. **IGMI -- READ IN FULL 2026-09-29. It does not pre-empt us.** Wu, Xu, Xin,
+   Zhang, Liu, Zhu, Wei, Zhao, Yu & Feng, *Bioinformatics* 42(4):btag150, 2026,
+   PMC13070472. Its only pairwise object is Figure 8c, whose in-image title is
+   "Attention Mechanism Head 1 Weight Matrix Heatmap": **one head, one layer,
+   one complex, 128x128 rather than L x L** (the model only ever sees a fixed
+   128-residue mutation-centred subgraph), non-negative, unitless, computed in
+   the forward pass and **never connected to the predicted ddG by any
+   computation**. The predicted ddG for that complex is not even reported. The
+   word "attribution" appears nowhere in the paper; neither do gradient,
+   Shapley, saliency, or completeness. The deciding sentence is the first line
+   of their section 3.4: *"Since attention weights can reflect residue-level
+   contributions in PPIs, we analyzed IGMI's attention distributions"* --
+   attention weights, justified by citation rather than axiom, and described as
+   **residue-level**. Its pairwise object is validated against nothing: one
+   qualitative case study, no coupling energies, no contact AUC. It also never
+   reports the coupling term, only total multi-point ddG on M1707.
+
+   **But phrase our novelty carefully.** IGMI contains an exact
+   completeness-satisfying *per-residue* decomposition it never uses
+   interpretively -- Eq. 15/17 give `ddG = sum_i ddG_i` by construction. So
+   claim **pairwise** attribution, not "first attribution of any kind for
+   ddG"; a referee who knows Eq. 17, or the per-residue decomposition
+   literature generally, would push back on the broader phrasing.
+
+   Three framings that survive, in increasing strength: (i) **attribution vs
+   attention** -- theirs is an architectural internal with no output
+   dependence, ours is a gradient of the score with a completeness story;
+   (ii) **sign** -- attention is non-negative and cannot say whether a pair
+   helps or hurts binding, which for ddG is the entire point; (iii)
+   **validation** -- they validate their pairwise object against nothing, so
+   validating against double-mutant cycles makes us first to show one means
+   something.
+2. **MLSB and OpenReview -- SWEPT 2026-09-29. No pre-emption.** All 225 MLSB
+   titles across 2023/2024/2025; OpenReview via `api2.openreview.net` with
+   `source=forum` across ICLR 2024-26, ICML 2025-26, NeurIPS 2023-25 mains and
+   the MLSB / GEM / GenBio / LMRL / AI4Science / MLGenX / Mech-Interp
+   workshops, including under-review, withdrawn and rejected; arXiv and Europe
+   PMC with a preprint filter. `"pairwise attribution" AND protein` returns
+   zero on arXiv; `abs:"integrated gradients" AND abs:"binding affinity"`
+   returns zero.
+
+   **Three papers must be cited and explicitly distinguished:**
+
+   - **PairSAE** (Migliorini et al., MLSB 2025, arXiv:2606.27440) is the
+     closest thing that exists -- it overlaps on pair representation,
+     co-folding model, and Boltz-2 affinity simultaneously. It does not
+     pre-empt us for a specific reason worth stating in the paper: its stated
+     contribution is summarising the pair tensor "into token-wise interaction
+     roles" precisely to avoid "a quadratic blow-up of features". **The L x L
+     object is what they engineer around; it is what we produce.** It is also
+     an SAE rather than a gradient, affinity enters as a probe *target* rather
+     than the quantity attributed, and it is protein-ligand on PLINDER.
+   - **TopoScorer** (ICLR 2026 submission, OpenReview QNcrdCKNa5) states our
+     motivating gap almost verbatim -- deep affinity models "generally lack
+     interpretable attributions" -- but answers it by building a new
+     interpretable architecture rather than attributing an existing model.
+     **This is the paper most likely to be raised in review.** Pre-empt it by
+     framing ours as post-hoc attribution of a frozen co-folding score.
+   - **AF2BIND** (MLSB 2023) probes AF2's pair representation for binding
+     sites. So do not claim "first interpretability on pair representations",
+     and do not claim "first interpretability of Boltz affinity" either --
+     PairSAE has a colourable claim to the latter.
+
+### The claim, phrased to survive review
+
+**"First gradient-based, pair-resolved attribution of a co-folding model's
+binding-affinity score onto the L x L pair representation."** Every element is
+load-bearing: PairSAE has pair-representation + co-folding + affinity but is
+SAE-based and deliberately token-level; TopoScorer has affinity + attribution
+but is a bespoke architecture; the Boltz probing cluster has pair
+representation + causal intervention but targets structure; IGMI has an L x L
+object and a ddG target but the object is attention, not attribution. Claim the
+intersection, never the parts.
+
+Supporting argument worth citing: Jedryszek et al. (arXiv:2608.11475) showed a
+beta-strand direction in Boltz-1 that was highly linearly decodable (F1 0.82)
+yet produced **no** structural change when steered. **Linear decodability does
+not imply causal influence** -- which is a direct argument for gradient-based
+attribution over the probing and SAE work that currently dominates this space.
+
+### Residual risk, stated honestly
+
+MLSB 2020-2022 was not scanned (predates co-folding affinity heads).
+Non-archival workshop posters with no OpenReview record are invisible to every
+index. ICLR/ICML 2026 submissions still under embargo would not surface. And
+Europe PMC search is title/abstract-weighted, so this done as an unadvertised
+side analysis inside a broader affinity paper would be missed. Confidence is
+high for the specific claim above, moderate-high for any looser phrasing.
