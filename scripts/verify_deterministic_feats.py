@@ -5,8 +5,8 @@ Run on the VM (where boltz is installed).  Featurises the same input twice
 and asserts every feature tensor is identical.  Reports per-tensor max
 absolute difference so ``ref_pos`` is visible specifically.
 
-This is modelled on what the deleted ``probe_msa3.py`` did (see
-``ERRORS_LOG.md`` entry 18 for its output format).
+This is modelled on what the deleted ``probe_msa3.py`` did (per-tensor
+max-abs-diff table, one row per feature key).
 
 Usage
 -----

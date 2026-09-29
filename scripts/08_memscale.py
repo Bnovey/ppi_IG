@@ -8,7 +8,7 @@ deliberately-OOMing sweep in the default path would break every full run.
 WHY THIS EXISTS
 ---------------
 Every "peak VRAM" number this project has recorded so far comes from a run that
-died. The nine rows in ERRORS_LOG.md entry 12 (77.64 - 78.64 GiB) and the
+died. The nine OOM-truncated rows from early profiling (77.64 - 78.64 GiB) and the
 79.21 GiB / 78.43 GiB pair in ``results/sanity_4fqi_h1_complex_pde.json`` are
 the allocator hitting the wall, i.e. TRUNCATED LOWER BOUNDS on the requirement,
 not the requirement. A run that got further would have reported *more*, not
@@ -103,9 +103,9 @@ TARGET_TOKENS = 730
 
 # Chain lengths of data/raw/4fqi_hlab.pdb, MEASURED with igv.data.read_pdb_chains
 # in this repo: A=324, B=176, H=121, L=109, total 730 -- matching the 730 tokens
-# the pipeline actually reports. ERRORS_LOG.md entry 12's "A:336 + B:185, Fab
-# H:123 + L:109" sums to 753 and is wrong; it is left in place as the historical
-# record. Used ONLY as a fallback so --dry-run can print a plan on a laptop with
+# the pipeline actually reports. An earlier debug log recorded "A:336 + B:185,
+# Fab H:123 + L:109" (summing to 753) from a misparsed chain split; the correct
+# counts above supersede it. Used ONLY as a fallback so --dry-run can print a plan on a laptop with
 # no PDB downloaded; a real run re-parses the PDB.
 FQI_CHAIN_LENGTHS: dict[str, int] = {"A": 324, "B": 176, "H": 121, "L": 109}
 
@@ -550,9 +550,9 @@ def build_notes(msa_spec: str, ladder: str) -> str:
         "in use by the process vs 78.43 GiB allocated by PyTorch), so both the "
         "measured peaks and the extrapolation UNDERSTATE the true requirement by "
         "roughly that much plus fragmentation.",
-        "The nine peaks in ERRORS_LOG.md entry 12 are lower bounds from runs "
-        "that never finished and must not be compared with these as if they were "
-        "requirements.",
+        "The nine OOM-truncated peaks from early profiling are lower bounds "
+        "from runs that never finished and must not be compared with these as "
+        "if they were requirements.",
         "Literature expectation for the exponent is ~2.7 (MegaFold: AF3 "
         "EvoAttention activations 3.75 GB at L=96 -> 24.61 GB at L=192). "
         "UNCONFIRMED for this code path -- confirm against fit.exponent_b, do "
@@ -575,7 +575,7 @@ def build_notes(msa_spec: str, ladder: str) -> str:
         "msa_depth is recorded per point because MSA depth is unpadded and "
         "data-dependent (pad_to_max_seqs=False), making it a second uncontrolled "
         "variable that directly drives the checkpointed MSA term (3.25 GiB at "
-        "L=730 per ERRORS_LOG.md)."
+        "L=730 as measured in the checkpointed MSA forward)."
     )
     if msa_spec != "server":
         lines.append(

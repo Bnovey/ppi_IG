@@ -13,7 +13,6 @@ import pytest
 import torch
 
 from igv.attrib import (
-    AttribResult,
     completeness_error,
     integrated_gradient,
     make_dead_target,

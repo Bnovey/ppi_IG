@@ -737,7 +737,7 @@ def build_complex_feats(
         exactly what makes offline featurisation impossible today. With explicit
         per-chain paths this is avoided because every chain has an ``msa`` key.
         (2) ``msa="empty"`` changes the memory profile of the 4 MSA blocks
-        (ERRORS_LOG.md attributes 3.25 GiB to ``_msa_forward_checkpointed``), so
+        (the 4 MSA blocks cost ~3.25 GiB under ``_msa_forward_checkpointed``), so
         a reference point measured WITH MSAs is not comparable to one measured
         without. Any artifact must record which was used.
     feat_seed : int or None
@@ -769,7 +769,6 @@ def build_complex_feats(
         in the feats tensors.
     """
     import yaml
-    import torch
     from boltz.main import process_inputs
 
     from igv.deterministic import deterministic_featurisation
@@ -1286,8 +1285,8 @@ def enable_confidence_checkpointing(model) -> int:
     layers' L x L activations materialised at once. On a 730-token complex
     (4fqi: HA A=324 + B=176, Fab H=121 + L=109 = 730, as parsed by
     igv.data.read_pdb_chains from data/raw/4fqi_hlab.pdb; the "753" in
-    ERRORS_LOG.md entry 12 does not match its own token count and is left as the
-    historical record) that overruns an 80 GiB A100, OOMing at
+    an earlier debug log recorded "753" tokens from a misparsed chain split
+    and is left as the historical record) that overruns an 80 GiB A100, OOMing at
     ``transition.py: silu(fc1(x)) * fc2(x)`` while trying to allocate 1.02 GiB
     with 78.43 GiB already held.
 
@@ -1635,8 +1634,8 @@ def confidence_forward(
     #     one chunk of 128 : 128*4*730*730*4B = 1.0164 GiB
     #     full attention   : 730*4*730*730*4B = 5.7968 GiB
     #     per PairformerLayer (tri_att_start + tri_att_end) = 11.5936 GiB
-    # 11.59 GiB is precisely what ERRORS_LOG.md entry 12 attributes to
-    # primitives.py:170 across 12 tensors at IGV_PF_GROUP_SIZE=1
+    # 11.59 GiB matches the observed OOM profile: primitives.py:170
+    # held 12 tensors at IGV_PF_GROUP_SIZE=1
     # (12 = 2 attentions x 6 chunks, since 730 = 5x128 + 90), and 1.02 GiB is
     # precisely the failing allocation in every recorded OOM. That is the whole
     # explanation of commit b1c29cc ("chunk knobs do not fix the OOM").
@@ -1889,8 +1888,6 @@ def record_iptm_argmax(out_dict, token_to_chain):
     pae_logits = out_dict.get("pae_logits")
     if pae_logits is None:
         return {"argmax_token": None, "argmax_chain": None, "argmax_resi": None}
-
-    from boltz.model.modules.confidence_utils import compute_aggregated_metric
 
     num_bins = pae_logits.shape[-1]
     bin_width = 32.0 / num_bins

@@ -1,24 +1,24 @@
 """Measure Boltz-2 trainable params -- CPU only, so it cannot perturb a running sweep.
 
-Settles docs/MEMORY.md section 6: "Model parameters are never frozen", so the
-first backward allocates a full fp32 gradient copy of every trainable weight
-and it survives free_cuda_memory() for the whole IG loop.
+Boltz-2 freezes everything outside the confidence head (boltz2.py:350-357).
+The first backward allocates a full fp32 gradient copy of every trainable
+weight, and that copy survives free_cuda_memory() for the whole IG loop.
 
-Measured 2026-09-04 on igv-gpu, boltz 2.2.1:
+Measured on boltz 2.2.1:
     total params   506,724,992
     requires_grad   25,026,048  (4.9%)  -- all in confidence_module
     fp32 grad copy       0.09 GiB
-i.e. boltz already freezes everything outside the confidence head
-(boltz2.py:350-357), and the lever is worth 0.09 GiB. Closed as negligible.
+i.e. the gradient memory cost is negligible (~0.09 GiB).
 
 Run inside the container WITHOUT --gpus, so it cannot touch a measurement:
     sudo docker run --rm --ipc=host -v $HOME/boltz_cache:/root/.boltz \
-        -v $HOME/IG:/app -w /app igv:latest python3 probe_params.py
+        -v $HOME/IG:/app -w /app igv:latest python3 scripts/probe_params.py
 """
 import logging
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 logging.basicConfig(level=logging.WARNING)
 
 from igv.boltz_score import load_model  # noqa: E402

@@ -93,7 +93,7 @@ memscale-plan: ## Print the memscale ladder and pinned knobs, no GPU (CPU)
 
 # DIAGNOSTIC -- deliberately NOT in `all`. Compares the autograd directional
 # derivative against a central finite difference along the IG path to diagnose
-# the 4.64x completeness overshoot recorded in docs/MEMSCALE_RESULTS.md §6a.
+# a completeness overshoot (see docs/MEMSCALE_RESULTS.md section 6a).
 path-profile: ## Gradient fidelity profile along the IG path [GPU, diagnostic]
 	$(PY) $(SCRIPTS)/09_path_profile.py --dataset $(DATASET) --score $(SCORE) \
 		$(if $(CHAIN_SUBSET),--chain-subset $(CHAIN_SUBSET),)

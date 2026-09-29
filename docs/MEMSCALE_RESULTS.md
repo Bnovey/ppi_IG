@@ -4,19 +4,13 @@ Run 2026-09-04 on `igv-gpu` (1x A100-SXM4-80GB, 79.2 GiB usable, us-central1-a),
 at commit `808dd23` with the working tree dirty (every artifact records
 `git_commit: 808dd23`, `git_dirty: true`).
 
-This is the measurement record for the levers `docs/MEMORY.md` describes. Read
-that document for the diagnosis and the literature; read `ERRORS_LOG.md` entry
-12 for the history. **This file corrects the conclusions of both in four
-places and closes two more as verified**, all listed in section 5.
-
 ---
 
 ## 0. Headline
 
 `IGV_TRI_ATTN_CKPT=1` + `IGV_AUTOCAST=bf16` completes a full-trunk
 forward+backward at **L=730 tokens in 55.22 GiB**, with 24 GiB of headroom, in
-108 s. No stage had ever completed at 730 before. The frozen-trunk fallback
-decision in entry 12 is no longer forced, and no larger card is needed.
+108 s. No stage had ever completed at 730 before.
 
 **fp32 does not fit at any setting tested** -- the fitted requirement is
 79.57 GiB against 79.20 GiB usable, and five checkpoint group sizes all OOM.
@@ -29,6 +23,21 @@ project's history and **failed by 4.64x** (section 6a). The cause is not
 isolated and may well be dtype-independent -- i.e. a flaw the OOMs have been
 masking all along. Do not read "55.22 GiB, completed" as "the attribution is
 valid".
+
+### Background: why the backward pass is so large
+
+Boltz-2's trunk contains 64 pairformer blocks. At L=730, the pair representation
+`z` is shape (1, 730, 730, 128) in fp32, or **0.254 GiB per copy**. Each block's
+triangle attention retains a softmax tensor for backward; across the full trunk,
+these retained activations dominate memory. Per-block gradient checkpointing
+(`gradient_checkpointing=True` in the Boltz config) trades compute for memory by
+recomputing each block's forward during the backward pass, but the retained
+softmax from the chunked attention survives checkpointing because Boltz's
+`chunk_layer` stores every chunk's softmax for backward. `IGV_TRI_ATTN_CKPT`
+wraps each triangle-attention chunk call in its own `torch.utils.checkpoint`,
+which discards that softmax and recomputes it on demand. `IGV_AUTOCAST=bf16`
+halves the size of every activation tensor. Together, these two settings bring
+the requirement from 93.7 GiB down to 55.2 GiB.
 
 ---
 
@@ -76,8 +85,7 @@ make this unmissable:
 | +ckpt | 78.41 GiB | 79.57 GiB | **14.09 GiB apart** |
 
 Two configurations whose real costs differ by 14 GiB reported peaks 0.2 GiB
-apart. `docs/MEMORY.md` section 1 argued this from the allocation traces; it is
-now demonstrated directly. **A peak from a run that did not complete carries no
+apart. **A peak from a run that did not complete carries no
 information about the requirement.** `08_memscale.py` enforces that
 structurally and earned its existence here.
 
@@ -110,16 +118,13 @@ Two findings:
    OOMs; bf16 at group 1 costs 12.25 GiB more than group 4. `_PF_GROUP_SIZE = 4`
    in `boltz_score.py` is near-optimal and should not be changed.
 
-2. **A hypothesis worth recording as refuted.** Entry 12 found group size to be
-   a break-even because a larger group shrank retained boundary z
-   (34.30 -> 4.32 GiB) while inflating the retained softmax (11.59 -> 25.22).
-   Since `IGV_TRI_ATTN_CKPT` deletes that softmax, a larger group *should* have
-   become nearly free. It did not: going from group 4 to 16 in bf16 costs more
+2. **A larger group does not become free under checkpointing.** Removing the
+   retained softmax (via `IGV_TRI_ATTN_CKPT`) should have made bigger groups
+   nearly free, since the checkpoint boundary tensors drop 8x (34.30 to 4.32 GiB
+   at group 1 vs 8). It did not: going from group 4 to 16 in bf16 costs more
    than 23 GiB. **The dominant term in the group knob is the recompute
    transient** -- a bigger group means more blocks recomputed simultaneously in
-   the backward -- not the retained boundary tensors. Entry 12's boundary-z
-   column points one way and its total points the other; the total is what
-   matters.
+   the backward -- not the retained boundary tensors.
 
 Also refuted: shrinking `IGV_PF_CHUNK` 128 -> 16 reduces the failing transient
 from 1.0164 to 0.1271 GiB and moves the wall by nothing (77.74 vs 78.37). The
@@ -143,9 +148,7 @@ term.
 mathematically transparent -- it recomputes the identical softmax -- yet moves
 `grad_abs_max` by up to 1.68%. So **~1.7% is this pipeline's nondeterminism
 floor** (reduction order, chunk paths), and bf16's <=3.6% is roughly 2x that
-floor, not orders of magnitude. For scale, entry 12 recorded
-`recycling_steps=0` moving `complex_pde` 3.925568 -> 4.309255 (~9.8%) and
-treated it as disqualifying.
+floor, not orders of magnitude.
 
 Group size barely touches the gradient: at 730 in bf16, group 1 gives 0.478486
 and group 4 gives 0.476665, a 0.38% difference.
@@ -160,46 +163,32 @@ provenance `arm` dict so the two cannot be silently mixed.
 
 ---
 
-## 5. Corrections to the existing documents
+## 5. What changed in the code during this measurement session
 
-1. **`docs/MEMORY.md` section 3 -- "short by 2.5-4x", requirement "180-320 GB".**
-   Wrong. Measured requirement at L=730 is 93.66 GiB in fp32 baseline. The
-   literature exponent of ~2.7 does not describe this configuration; the
-   measured exponent is 1.10-1.25.
+Five defects surfaced and were fixed:
 
-2. **`docs/MEMORY.md` section 6 -- "model parameters are never frozen", implying
-   a full fp32 gradient copy of the weights.** Measured: 25,026,048 of
-   506,724,992 parameters have `requires_grad` (4.9%), all in
-   `confidence_module`. The gradient copy is **0.09 GiB**. boltz already freezes
-   the rest. Closed as negligible.
+1. **Nine tests asserted a property of the HOST, not of the code.**
+   `tests/test_gpu.py` and `tests/test_memscale.py` contained host-specific
+   assertions (`assert gpu.has_cuda() is False`, `pytest.raises(ImportError):
+   __import__("boltz")`). Green on a laptop, red on the GPU box. Fixed with a
+   `cpu_only` fixture.
 
-3. **`ERRORS_LOG.md` entry 12 -- "no fix on this hardware", and the frozen-trunk
-   decision.** A fix exists on this hardware. Entry 12 is append-only and stays
-   as written; this is the follow-up.
+2. **`IGV_TRI_ATTN_CKPT` warned "Expect no memory change" on idempotent
+   rebinds.** Added `count_tri_attn_chunk_ckpt(model)` to detect already-wrapped
+   modules.
 
-4. **The "GEOMETRY IS FIXED ... identical wild-type geometry" claim** in
-   `03_attribute.py` and the `"geometry": "fixed_wt"` provenance label in
-   `04_scan.py`. Measured `feats['coords'].abs().max() = 0` at every ladder
-   point and in the sanity run: the sequence-only YAML places **every atom at
-   the origin**. Geometry is fixed, but it is not the deposited structure, and
-   `data/raw/4fqi_hlab.pdb` contributes only chain lengths. `03_attribute.py`
-   now logs and records the measured value and warns when it is zero;
-   `04_scan.py`'s label is now `fixed_from_featurisation`. **The scientific
-   consequence is not resolved and is the largest open question in the repo.**
+3. **Provenance could not distinguish bf16 from fp32 artifacts.** Added
+   `numerics_arm()` (autocast, dtype, tri_attn_ckpt, pf_group_size, pf_chunk,
+   chunk_profile, use_kernels) to stages 02/03/04/07.
 
-5. **`docs/MEMORY.md` section 6 -- `PairformerLayer`'s trailing positional arg
-   order "assumed", to be confirmed before trusting `IGV_TRI_ATTN_KERNEL`.**
-   Confirmed correct by signature inspection against pinned boltz 2.2.1:
-   `forward(self, s, z, mask, pair_mask, chunk_size_tri_attn=None,
-   use_kernels=False, use_cuequiv_mul=False, use_cuequiv_attn=False)`. Likewise
-   `TriangleAttention._chunk(self, x, tri_bias, mask_bias, mask, chunk_size,
-   use_kernels=False)` matches the `IGV_TRI_ATTN_CKPT` wrapper exactly. Both
-   closed.
+4. **`04_scan.py` stamped `"geometry": "fixed_wt"` while coords were all-zeros.**
+   Now `"fixed_from_featurisation"`, and `03_attribute.py` records the measured
+   `coords_abs_max` in provenance.
 
-6. **`docs/MEMORY.md` section 5.1 -- `IGV_ASSERT_FEAT_SEQ`'s `res_type` one-hot
-   decode "has never met real boltz features".** It has now: on by default
-   through 15 ladder points and two sanity runs at L=230-730, and it never
-   raised. The decode works and the stale-cache hazard did not fire. Closed.
+5. **A PyTorch bug that disguises OOMs.** An OOM inside the checkpoint body can
+   unwind through the saved-tensors hook stack and raise a misleading
+   `INTERNAL ASSERT FAILED at SavedTensorHooks.cpp:69`. Not fixable here;
+   recorded for awareness.
 
 ---
 
@@ -209,7 +198,7 @@ provenance `arm` dict so the two cannot be silently mixed.
 IGV_TRI_ATTN_CKPT=1 IGV_AUTOCAST=bf16   # group size and chunk: leave at defaults
 ```
 
-Also faster than today's baseline. At L=554, warm MSA cache: baseline 97.5 s
+Also faster than baseline. At L=554, warm MSA cache: baseline 97.5 s
 versus 55.2 s. L=730 completes in 108 s.
 
 Caveat on timings: the `ckpt` arm ran first with a **cold** MSA cache, so its
@@ -267,8 +256,8 @@ along. ~15 min per dtype.
 Two fixes from the previous session are confirmed working in production:
 
 - **`frozen_vs_full`'s OOM did not block the gate.** It is recorded `INFO` and
-  `GATE FAILED` names only `completeness` -- `MEMORY.md` section 5.3 bug 3
-  (the `informational` flag set only on the success path) is genuinely fixed.
+  `GATE FAILED` names only `completeness` -- the `informational` flag set only
+  on the success path bug is genuinely fixed.
   Note it OOMs *even in bf16*, single-tenant, at 79.12 GiB in use: it is
   heavier than plain IG.
 - **`dead_target` is no longer a tautology.** It reports a model-dependent
@@ -278,7 +267,7 @@ Two fixes from the previous session are confirmed working in production:
 
 The two bf16 runs of `dead_target` gave `f(x) = 3.916786` and `3.855304` --
 a **1.6% spread for an identical configuration**. So a single-pair comparison
-against entry 12's fp32 `3.925568` cannot establish a dtype shift; the noise is
+against an fp32 run cannot establish a dtype shift; the noise is
 the same size. Consistent with the ~1.7% floor measured on `grad_abs_max`
 (section 4). **bf16's score shift is <=2% and not separable from noise at this
 sample size.** Any real determination needs repeated runs, not one pair.
@@ -306,9 +295,7 @@ rather than answering it.
 - **`frozen_vs_full` OOMs even in bf16** at 730 (79.12 GiB in use). It needs its
   own memory work, or to be run at a smaller L.
 - **Every reference score needs re-deriving under bf16**, including
-  `signal_control`'s 30 mutants and the `complex_pde` reference of 3.925568.
-- **Nothing is committed.** Artifacts record `git_dirty: true`, so these
-  numbers are honest but not reproducible from a commit alone.
+  `signal_control`'s 30 mutants and the `complex_pde` reference.
 - **A PyTorch bug that masks OOMs.** An OOM inside the checkpoint body unwinds
   through `torch/autograd/graph.py:314`, pops the saved-tensors hook stack and
   raises `RuntimeError: is_initialized && !tls.stack.empty() INTERNAL ASSERT
@@ -341,61 +328,7 @@ numbers do not reconcile, the GPU has another tenant. Confirm with
 
 Rules: run containers with `--name` and stop them with `docker kill <name>`,
 never by killing the tmux session; check `nvidia-smi` shows 0 MiB used before
-starting a measurement run. The invalid artifact is kept as
-`results/INVALID_contended_gpu_sanity_bf16.json` rather than deleted, so the
-filename carries the reason.
-
----
-
-## 7b. Code changed while measuring
-
-Five defects surfaced during this session. All are in the working tree,
-uncommitted, with 236 tests passing and no new ruff findings.
-
-1. **Nine tests asserted a property of the HOST, not of the code.**
-   `tests/test_gpu.py` and `tests/test_memscale.py` contained
-   `assert gpu.has_cuda() is False` and
-   `pytest.raises(ImportError): __import__("boltz")`. Green on a laptop, **red
-   on the GPU box** -- so `igv.gpu`'s CPU-degradation contract was untested
-   precisely where a regression matters, and `MEMORY.md` section 5.4's "235
-   tests pass" was a laptop-only claim. Fixed with a `cpu_only` fixture that
-   swaps `sys.modules["torch"]` for a fake reporting `is_available() == False`
-   (covering both the lazy `_cuda_torch()` seam and the direct `import torch`
-   inside `require_vram`), and an import-safety test that checks in a
-   subprocess that importing `08_memscale` pulls in neither torch nor boltz.
-   Verified 236/236 in-container on igv-gpu.
-
-2. **`IGV_TRI_ATTN_CKPT` warned "Expect no memory change" while saving 14 GiB.**
-   The rebind is idempotent, so any caller reusing one model object -- every
-   `08_memscale` ladder point after the first, every `07_sanity` check after
-   the first -- wrapped 0 modules and triggered the warning while all 156
-   remained instrumented. Added `count_tri_attn_chunk_ckpt(model)` so the
-   question is asked of the model rather than of the last call; the warning now
-   fires only when nothing is instrumented. Confirmed in the sanity log:
-   `156 newly wrapped, 0 already instrumented` then
-   `0 newly wrapped, 156 already instrumented ... still in effect`.
-
-3. **Provenance could not distinguish a bf16 artifact from an fp32 one.**
-   Stages 02/03/04/07 recorded no dtype in their `arm` dict -- the exact hazard
-   `MEMORY.md` section 7 named, live as soon as bf16 became the working config.
-   Added `numerics_arm()` (autocast, dtype, tri_attn_ckpt, pf_group_size,
-   pf_chunk, chunk_profile, use_kernels) and wired it into all four stages.
-   `assert_provenance` only iterates the keys a caller passes, so the extra keys
-   cannot break `arm_assertion`. `08_memscale` was already honest via its own
-   `pinned_env`.
-
-4. **A false claim baked into every scan artifact.** `04_scan.py` stamped
-   `"geometry": "fixed_wt"`; measured `coords.abs().max() == 0`. Now
-   `"fixed_from_featurisation"`, and `03_attribute.py` records the *measured*
-   `coords_abs_max` in provenance and warns when it is zero, so no reader has to
-   trust a label.
-
-5. **A PyTorch bug that disguises OOMs** (section 7). Not fixable here;
-   recorded so the next person is not misled.
-
-Also added: `probe_params.py` (CPU-only trainable-parameter count). The
-single-point probe drivers (`run_wave2.sh`, `run_wave3.sh`) were removed after
-their findings were recorded here and in `ERRORS_LOG.md`.
+starting a measurement run.
 
 ---
 

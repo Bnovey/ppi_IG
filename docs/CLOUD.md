@@ -2,25 +2,23 @@
 
 Run the IG (Boltz-2 gradient attribution) pipeline on GCP GPU instances.
 
-> **Always pass `--project=agrosbio`.** The local `gcloud` default config points
-> at a different project (`g-prs-478707`) which has the Compute Engine API
-> disabled, so a command missing `--project` fails with a confusing
-> `PERMISSION_DENIED` and then *offers to enable Compute Engine on that other
-> project*. Do not accept that prompt. Every command below passes `--project`
-> explicitly; keep it that way.
+> **Always pass `--project=<YOUR_PROJECT>` explicitly.** If your local `gcloud`
+> default project differs from the one with GPU quota, a command missing
+> `--project` fails with a confusing `PERMISSION_DENIED`. Every command below
+> uses a placeholder `$GCP_PROJECT`; set it once at the top of your session.
 
 ## Quick reference
 
 | Step | Command |
 |------|---------|
-| 1. Launch instance | `bash scripts/cloud/gcp_launch.sh --project agrosbio` |
-| 2. SSH in | `gcloud compute ssh igv-gpu --zone=us-central1-a --project=agrosbio` |
+| 1. Launch instance | `bash scripts/cloud/gcp_launch.sh --project $GCP_PROJECT` |
+| 2. SSH in | `gcloud compute ssh igv-gpu --zone=us-central1-a --project=$GCP_PROJECT` |
 | 3. Clone repo | `git clone ... && cd IG` |
 | 4. Bootstrap | `bash scripts/cloud/bootstrap.sh` |
 | 5. Fetch weights | `bash scripts/cloud/fetch_weights.sh` (one time; several GB into `~/boltz_cache`) |
 | 6. Run pipeline | `tmux new -s igv` then `docker run --rm --gpus all --shm-size=32g --ipc=host -v $(pwd):/app -w /app -v $HOME/boltz_cache:/root/.boltz igv:latest bash scripts/run_all.sh` |
 | 7. Sync results | `bash scripts/cloud/sync_results.sh --host ubuntu@<IP> --remote-dir /home/ubuntu/IG` |
-| 8. Tear down | `gcloud compute instances stop igv-gpu --zone=us-central1-a --project=agrosbio --discard-local-ssd=true` |
+| 8. Tear down | `gcloud compute instances stop igv-gpu --zone=us-central1-a --project=$GCP_PROJECT --discard-local-ssd=true` |
 
 ## Instance selection
 
@@ -48,11 +46,10 @@ Workload is approximately 40 GPU-hours. GPU stages are 02 (embed), 03 (attribute
 raise by asking. Capacity is whether the zone physically has a free machine
 right now. You can hold quota and still get `ZONE_RESOURCE_POOL_EXHAUSTED`.
 
-### Verified GCP state, project `agrosbio`, checked 2026-08-30
+### Checking your GCP state
 
-Compute Engine API is enabled and billing is linked to the open account
-(ID redacted for the public repo). GPU quota in us-central1 / us-east4 / us-west4 /
-europe-west4:
+Verify that the Compute Engine API is enabled and billing is linked to a paid
+account. GPU quota in common regions:
 
 | Metric | Limit | Usable here? |
 |---|---|---|
@@ -64,19 +61,14 @@ europe-west4:
 | `NVIDIA_T4_GPUS` (16 GB) | 4 | no |
 | H100 (`a3-*`) | metric absent | no |
 
-**GCP has zero 80 GB-class quota.** Every GPU it will currently let you start is
-too small for full-trunk Boltz-2 backprop. An increase must be requested and
-takes 24-48h.
-
-Note also that the default `gcloud` project was `g-prs-478707`, which is not in
-this account's project list. The correct project is `agrosbio`:
-`gcloud config set project agrosbio`.
+New GCP projects typically have **zero 80 GB-class quota**. An increase must be
+requested and takes 24-48 h (see "Requesting A100-80GB quota" below).
 
 ### Current instance
 
-`igv-gpu`, `a2-ultragpu-1g`, `us-central1-a`, project `agrosbio`. Quota was
-approved 2026-09-02. The 500 GB pd-ssd boot disk is retained while the VM is
-stopped (~$2.83/day).
+The scripts default to VM name `igv-gpu`, machine type `a2-ultragpu-1g`, zone
+`us-central1-a`. A 500 GB pd-ssd boot disk is recommended; it costs ~$2.83/day
+while the VM is stopped.
 
 ### Do this first, today
 
@@ -93,14 +85,13 @@ console.cloud.google.com/iam-admin/quotas before booking time to run this.
 
 ## Requesting A100-80GB quota on GCP
 
-Only one metric needs raising: the regional `NVIDIA_A100_80GB_GPUS`. There is
-**no** `GPUS_ALL_REGIONS` cap on project `agrosbio` (verified -- that global
-metric is absent from `compute.googleapis.com` project-level quotas here), so
-there is no second request to file.
+Only one metric needs raising: the regional `NVIDIA_A100_80GB_GPUS`. Some
+projects also have a `GPUS_ALL_REGIONS` cap; check whether yours does and raise
+it too if needed.
 
 ### Console path (recommended -- the CLI needs the `beta` component)
 
-1. https://console.cloud.google.com/iam-admin/quotas?project=agrosbio
+1. https://console.cloud.google.com/iam-admin/quotas?project=$GCP_PROJECT
 2. Filter box, paste exactly: **`NVIDIA A100 80GB GPUs`**
 
    Note the spaces. The console filters on the *display* name, not the
@@ -157,7 +148,7 @@ with `ZONE_RESOURCE_POOL_EXHAUSTED`. Try `us-central1-a`, then `-b`, `-c`, `-f`.
 curl -X POST \
   -H "Authorization: Bearer $(gcloud auth print-access-token)" \
   -H "Content-Type: application/json" \
-  "https://cloudquotas.googleapis.com/v1/projects/agrosbio/locations/global/quotaPreferences?quotaPreferenceId=a100-80gb-us-central1" \
+  "https://cloudquotas.googleapis.com/v1/projects/$GCP_PROJECT/locations/global/quotaPreferences?quotaPreferenceId=a100-80gb-us-central1" \
   -d '{
     "service": "compute.googleapis.com",
     "quotaId": "NVIDIA-A100-80GB-GPUS-per-project-region",
@@ -172,14 +163,14 @@ Check status:
 
 ```bash
 curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-  "https://cloudquotas.googleapis.com/v1/projects/agrosbio/locations/global/quotaPreferences"
+  "https://cloudquotas.googleapis.com/v1/projects/$GCP_PROJECT/locations/global/quotaPreferences"
 ```
 
 Discover ids for any other quota:
 
 ```bash
 curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-  "https://cloudquotas.googleapis.com/v1/projects/agrosbio/locations/global/services/compute.googleapis.com/quotaInfos?pageSize=500"
+  "https://cloudquotas.googleapis.com/v1/projects/$GCP_PROJECT/locations/global/services/compute.googleapis.com/quotaInfos?pageSize=500"
 ```
 
 ## GCP launch
@@ -308,6 +299,6 @@ Run through this list **every time** you finish a session:
 
 - [ ] Pipeline results synced locally (run `sync_results.sh`)
 - [ ] Provenance sidecars present for all artifacts (sync script reports orphans)
-- [ ] **GCP**: VM stopped (`gcloud compute instances stop igv-gpu --zone=us-central1-a --project=agrosbio --discard-local-ssd=true`)
+- [ ] **GCP**: VM stopped (`gcloud compute instances stop igv-gpu --zone=us-central1-a --project=$GCP_PROJECT --discard-local-ssd=true`)
 - [ ] Verify in cloud console that no instances are running
 - [ ] Check for leftover persistent disks (GCP) that may still incur charges

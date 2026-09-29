@@ -289,7 +289,7 @@ def main() -> None:
     # Compare the two featurisations of the same reference. The correct pair
     # is file-loaded run 1 vs file-loaded run 2 (both sides of every delta use
     # the file path), but we only have server vs file here. Entry 18 in
-    # ERRORS_LOG.md measured the file-vs-file gap at ~1.14 and server-vs-file
+    # Early profiling measured the file-vs-file gap at ~1.14 and server-vs-file
     # at ~1.14, both driven by unseeded ref_pos in RDKit conformer generation.
     # Tolerance 2.0 accommodates the measured noise; tighten once featurisation
     # is deterministic (ref_pos seeding).

@@ -11,7 +11,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from igv.data import (
-    _STRUCTURE_NAMES,
     align_reference_to_structure,
     build_library,
     download,

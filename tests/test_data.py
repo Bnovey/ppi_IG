@@ -177,7 +177,7 @@ def test_build_library_logic():
     seqs_h = ["ACGT", "AXGT", "ACYT", "AXYT"]
     seqs_l = ["MMMM"] * 4
     scores = [1.0, 2.0, 3.0, 4.0]
-    df = pd.DataFrame({
+    _df = pd.DataFrame({
         "heavy_chain_seq": seqs_h,
         "light_chain_seq": seqs_l,
         "binding_score": scores,

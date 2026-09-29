@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import math
 import os
 import sys
 import time
@@ -28,7 +27,6 @@ from igv.boltz_score import (
 from igv.attrib import (
     build_mean_aa_baseline,
     completeness_error,
-    free_cuda_memory,
     integrated_gradient,
     plain_gradient,
 )
@@ -50,9 +48,7 @@ IPTM_SCORES = {"iptm", "ptm", "protein_iptm"}
 def _confidence_forward_out_dict(model, s_inputs, feats, x_pred, score_name):
     """No-grad trunk + confidence pass returning the raw out_dict."""
     import torch
-    from boltz.data import const as _boltz_const
 
-    device = s_inputs.device
     mask = feats["token_pad_mask"].float()
     pair_mask = mask[:, :, None] * mask[:, None, :]
 
