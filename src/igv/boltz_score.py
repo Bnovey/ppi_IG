@@ -1276,6 +1276,81 @@ def compute_homopolymer_embeddings(
     return per_aa
 
 
+def build_mean_aa_pair_baseline(
+    model,
+    chains: dict[str, str],
+    structure_pdb,
+    cache_dir,
+    feats: dict,
+    device,
+    recycling_steps: int = 1,
+    use_msa_server: bool = False,
+    feat_seed: int | None = None,
+):
+    """Build a z baseline by running the trunk on the mean-AA s_inputs.
+
+    Computes the 20 homopolymer embeddings (one per canonical amino acid),
+    builds the mean-AA baseline in s_inputs space via
+    :func:`igv.attrib.build_mean_aa_baseline`, then runs the trunk to produce
+    the pair tensor ``z``.  This ``z`` is the baseline for pair-layer IG,
+    matching section 12's spec: interpolate z between the mean_aa baseline's
+    pair tensor and the wild-type's.
+    """
+    import numpy as np
+    import torch
+
+    from igv.attrib import build_mean_aa_baseline
+
+    structure_pdb = Path(structure_pdb)
+    cache_dir = Path(cache_dir)
+
+    chain_id = next(iter(chains))
+    chain_len = len(chains[chain_id])
+
+    per_aa_embs = compute_homopolymer_embeddings(
+        model, chains, chain_id, structure_pdb, cache_dir, device,
+        use_msa_server=use_msa_server, feat_seed=feat_seed,
+    )
+
+    s_inputs_real = embedder_only(model, feats)
+
+    token_indices_arr = np.arange(chain_len, dtype=np.int64)
+    baseline_s = build_mean_aa_baseline(
+        s_inputs_real, token_indices_arr, per_aa_embs,
+    )
+
+    mask = feats["token_pad_mask"].float()
+    pair_mask = mask[:, :, None] * mask[:, None, :]
+
+    with torch.no_grad():
+        rel_pos = model.rel_pos(feats)
+        token_bonds_z = model.token_bonds(feats["token_bonds"].float())
+        contact_z = model.contact_conditioning(feats)
+
+        s_init = model.s_init(baseline_s)
+        z_init = (
+            model.z_init_1(baseline_s)[:, :, None, :]
+            + model.z_init_2(baseline_s)[:, None, :, :]
+            + rel_pos + token_bonds_z + contact_z
+        )
+
+        s_ = torch.zeros_like(s_init)
+        z_ = torch.zeros_like(z_init)
+
+        for _ in range(recycling_steps + 1):
+            s_ = s_init + model.s_recycle(model.s_norm(s_))
+            z_ = z_init + model.z_recycle(model.z_norm(z_))
+            z_ = z_ + model.msa_module(
+                z_, baseline_s, feats, use_kernels=False,
+            )
+            s_, z_ = model.pairformer_module(
+                s_, z_, mask=mask, pair_mask=pair_mask,
+                use_kernels=False,
+            )
+
+    return z_.detach()
+
+
 def enable_confidence_checkpointing(model) -> int:
     """Per-block gradient checkpointing inside the CONFIDENCE pairformer stack.
 
