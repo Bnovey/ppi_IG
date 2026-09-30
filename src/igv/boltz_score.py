@@ -1374,7 +1374,17 @@ def compute_homopolymer_embeddings(
         homo_chains = dict(chains)
         homo_chains[chain] = aa * chain_len
 
-        aa_cache = cache_dir / "boltz_homopolymer" / f"{aa}_{_chain_cache_key(chains)}"
+        # Key on what is actually featurised (homo_chains), NOT on the real
+        # chains.  Keying on `chains` made the directory independent of which
+        # chain was substituted, so a run varying chain A and a run varying
+        # chain B collided on the same cache and the second silently received
+        # the first's features.  Boltz's process_inputs skips any YAML stem
+        # already in <cache_dir>/processed/records and this repo always writes
+        # the stem "input", so a colliding directory returns stale features
+        # rather than recomputing.  Cf. ERRORS_LOG entries 24, 34 and 40.
+        aa_cache = (
+            cache_dir / "boltz_homopolymer" / f"{aa}_{_chain_cache_key(homo_chains)}"
+        )
         log.info("Homopolymer %s: featurising (%s)", aa, aa_cache)
 
         # msa="empty": a homopolymer has no evolutionary profile, so querying
