@@ -531,11 +531,17 @@ class TestHotspotPrecisionAtK:
 
 class TestTopkOverlapChance:
     def test_basic_arithmetic(self):
-        assert topk_overlap_chance(5, 28) == pytest.approx(25.0 / 28.0)
+        # Fraction, not count: k / n.  See the docstring -- this asserted
+        # 25/28 (the k**2/n count) until 2026-09-30.
+        assert topk_overlap_chance(5, 28) == pytest.approx(5.0 / 28.0)
 
-    def test_k10_n28_capped(self):
-        # k^2/n = 100/28 > 1.0, capped to 1.0
-        assert topk_overlap_chance(10, 28) == pytest.approx(1.0)
+    def test_k10_n28_is_a_fraction_not_a_count(self):
+        # The old k**2/n gave 100/28 -> clamped to 1.0, which made the chance
+        # baseline unbeatable.  The correct chance fraction is 10/28.
+        assert topk_overlap_chance(10, 28) == pytest.approx(10.0 / 28.0)
+
+    def test_below_one_when_k_below_n(self):
+        assert topk_overlap_chance(20, 28) == pytest.approx(20.0 / 28.0)
 
     def test_k_equals_n(self):
         assert topk_overlap_chance(10, 10) == pytest.approx(1.0)

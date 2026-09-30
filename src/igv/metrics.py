@@ -319,7 +319,18 @@ def hotspot_precision_at_k(
 
 
 def topk_overlap_chance(k: int, n: int) -> float:
-    """Expected top-k rank overlap under a random permutation: k**2 / n.
+    """Expected top-k rank overlap *fraction* under a random permutation: k / n.
+
+    CORRECTED 2026-09-30.  This previously returned ``k**2 / n``, which is the
+    expected *count* of shared items between two independent random top-k sets,
+    not the fraction.  :func:`precision_at_k` returns a fraction, so the two
+    were not comparable: at k=10, n=28 the old formula gave 100/28 = 3.57,
+    clamped to 1.0, making the chance baseline unbeatable by construction and
+    hiding a real above-chance result.  Same family of defect as ERRORS_LOG
+    entry 30.
+
+    The expected overlap count is ``k * (k / n)``; dividing by ``k`` to match
+    :func:`precision_at_k`'s normalisation gives ``k / n``.
 
     Parameters
     ----------
@@ -331,14 +342,15 @@ def topk_overlap_chance(k: int, n: int) -> float:
     Returns
     -------
     float
-        Chance-level overlap in [0, 1].  Returns 1.0 when k >= n.
+        Chance-level overlap fraction in [0, 1].  Returns 1.0 when k >= n,
+        where the two top-k sets are both the whole set and overlap exactly.
     """
     if n <= 0:
         raise ValueError(f"n must be positive, got {n}")
     if k <= 0:
         raise ValueError(f"k must be positive, got {k}")
     k = min(k, n)
-    return min(float(k ** 2 / n), 1.0)
+    return min(float(k / n), 1.0)
 
 
 def hotspot_precision_chance(n_positives: int, n: int) -> float:
