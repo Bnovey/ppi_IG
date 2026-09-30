@@ -2225,6 +2225,7 @@ def res_type_gradient_forward(
     model,
     feats: dict,
     score_name: str,
+    x_pred=None,
     gradient_checkpointing: bool = True,
     recycling_steps: int = 1,
     autocast_dtype: str | None = None,
@@ -2266,13 +2267,28 @@ def res_type_gradient_forward(
     try:
         s_inputs = model.input_embedder(feats)
 
+        if x_pred is None:
+            # Zeros are legitimate for a gradient-flow smoke test -- that is
+            # what Gate A ran -- but wrong for a reported attribution: the
+            # confidence head then sees no geometry at all.  Gate A measured
+            # complex_pde 1.988813 -> 1.029308 (-48.2%) once real coordinates
+            # were supplied.  Warn rather than fabricate silently.
+            log.warning(
+                "res_type_gradient_forward: x_pred not supplied, using zeros. "
+                "The confidence head sees no geometry; Gate A measured a "
+                "-48.2%% shift in complex_pde when real coordinates were "
+                "passed. Fine for a gradient-flow check, not for a reported "
+                "attribution -- pass the predicted coordinates."
+            )
+            x_pred = torch.zeros(
+                1, s_inputs.shape[1], 3, device=s_inputs.device
+            )
+
         scalar = confidence_forward(
             model,
             s_inputs,
             feats,
-            x_pred=torch.zeros(
-                1, s_inputs.shape[1], 3, device=s_inputs.device
-            ),
+            x_pred=x_pred,
             score_name=score_name,
             gradient_checkpointing=gradient_checkpointing,
             recycling_steps=recycling_steps,

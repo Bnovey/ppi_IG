@@ -17,14 +17,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from igv.boltz_score import (
     SCORES,
     build_complex_feats,
+    canonical_aa_token_indices,
     compute_homopolymer_embeddings,
     confidence_forward,
     embedder_only,
     load_model,
     numerics_arm,
     record_iptm_argmax,
+    res_type_gradient_forward,
 )
 from igv.attrib import (
+    CANONICAL_AMINO_ACIDS,
     build_mean_aa_baseline,
     completeness_error,
     integrated_gradient,
@@ -43,6 +46,79 @@ STRUCTURE_FOR_DATASET = {
 }
 
 IPTM_SCORES = {"iptm", "ptm", "protein_iptm"}
+
+
+def _ig_res_type(
+    model, feats, score_name, x_pred,
+    baseline_name: str,
+    m_steps: int,
+    quadrature: str = "gausslegendre",
+) -> np.ndarray:
+    """Integrated gradient of the score w.r.t. feats["res_type"].
+
+    Interpolates the one-hot res_type tensor along the same quadrature path
+    that :func:`igv.attrib.integrated_gradient` uses for the embedding, so the
+    two IG results are consistent (same alpha schedule, same number of steps).
+
+    The baseline in res_type space is zeros when the embedding baseline is
+    "zeros" or "none", and a uniform 1/20 over the 20 canonical AA columns
+    when the embedding baseline is "mean_aa".
+    """
+    import torch
+    from igv.boltz_score import confidence_forward as _cf
+
+    res_type_orig = feats["res_type"]
+    L_full = res_type_orig.shape[1]
+    num_tokens = res_type_orig.shape[2]
+
+    if baseline_name == "mean_aa":
+        from igv.boltz_score import canonical_aa_token_indices as _caa
+        aa_idx = _caa()
+        rt_baseline = torch.zeros_like(res_type_orig).float()
+        rt_baseline[0, :, aa_idx] = 1.0 / len(aa_idx)
+    else:
+        rt_baseline = torch.zeros_like(res_type_orig).float()
+
+    rt_x = res_type_orig.detach().float()
+
+    if quadrature == "gausslegendre":
+        gl_nodes, gl_weights = np.polynomial.legendre.leggauss(m_steps)
+        alphas_np = (gl_nodes + 1.0) / 2.0
+        weights_np = gl_weights / 2.0
+    else:
+        alphas_np = np.linspace(0.0, 1.0, m_steps + 1)
+        weights_np = np.ones(len(alphas_np)) / len(alphas_np)
+
+    accumulated = np.zeros((L_full, num_tokens), dtype=np.float64)
+
+    for step_i, (alpha, weight) in enumerate(zip(alphas_np, weights_np)):
+        log.info("res_type IG step %d/%d", step_i + 1, len(alphas_np))
+
+        rt_interp = (rt_baseline + alpha * (rt_x - rt_baseline)).detach().requires_grad_(True)
+        feats["res_type"] = rt_interp
+
+        try:
+            s_inputs_interp = model.input_embedder(feats)
+            scalar = _cf(
+                model, s_inputs_interp, feats, x_pred, score_name,
+                gradient_checkpointing=True,
+            )
+            scalar.backward()
+        finally:
+            feats["res_type"] = res_type_orig
+
+        grad = rt_interp.grad
+        if grad is None:
+            raise RuntimeError(
+                "No gradient on res_type at IG step %d/%d. An intermediate "
+                "detach() or torch.no_grad() inside input_embedder severed "
+                "the computation graph." % (step_i + 1, len(alphas_np))
+            )
+        accumulated += weight * grad[0].detach().cpu().float().numpy().astype(np.float64)
+        del rt_interp, s_inputs_interp, scalar
+
+    feats["res_type"] = res_type_orig
+    return accumulated
 
 
 def _confidence_forward_out_dict(model, s_inputs, feats, x_pred, score_name):
@@ -131,6 +207,11 @@ def main() -> None:
         default="zeros",
         choices=["zeros", "none", "mean_aa"],
         help="Baseline for IG (zeros, none, or mean_aa)",
+    )
+    parser.add_argument(
+        "--no-res-type-grad",
+        action="store_true",
+        help="Disable the res_type (one-hot) gradient computation",
     )
     args = parser.parse_args()
 
@@ -297,6 +378,53 @@ def main() -> None:
     elapsed = time.time() - t0
     log.info("Attribution completed in %.1f s (%.1f min)", elapsed, elapsed / 60)
 
+    # --- 6b. Res-type (one-hot) gradient ---
+    token_indices = [token_map[(chain, i)] for i in range(len(reference_seq))]
+    res_type_grad_enabled = not args.no_res_type_grad
+    res_type_extras: dict = {}
+    if res_type_grad_enabled:
+        log.info("Computing res_type gradient (method=%s)", method)
+        t0_rt = time.time()
+
+        aa_token_indices = canonical_aa_token_indices()
+
+        aa_to_idx = {aa: i for i, aa in enumerate(CANONICAL_AMINO_ACIDS)}
+        wt_indices = np.array(
+            [aa_to_idx.get(c, 0) for c in reference_seq], dtype=np.intp,
+        )
+
+        if method == "plain_grad":
+            rt_result = res_type_gradient_forward(
+                model, feats, score,
+                gradient_checkpointing=True,
+            )
+            grad_res_type_full = rt_result["grad_res_type"]  # (L_full, num_tokens)
+        elif method == "ig":
+            grad_res_type_full = _ig_res_type(
+                model, feats, score, x_pred,
+                baseline_name=args.baseline,
+                m_steps=args.m_steps,
+            )
+
+        grad_res_type_chain = grad_res_type_full[token_indices, :]
+        if grad_res_type_chain.shape[0] != len(reference_seq):
+            raise RuntimeError(
+                f"grad_res_type sliced to {grad_res_type_chain.shape[0]} rows "
+                f"but reference_seq has {len(reference_seq)} residues"
+            )
+
+        res_type_extras = {
+            "grad_res_type": grad_res_type_chain.astype(np.float32),
+            "aa_token_indices": aa_token_indices,
+            "wt_indices": wt_indices,
+        }
+
+        elapsed_rt = time.time() - t0_rt
+        log.info(
+            "res_type gradient: shape %s, computed in %.1f s",
+            grad_res_type_chain.shape, elapsed_rt,
+        )
+
     # --- 7. f_x and completeness ---
     with torch.no_grad():
         f_x = float(forward_fn(s_inputs))
@@ -321,7 +449,6 @@ def main() -> None:
         )
 
     # --- 8. Slice gradient to varying chain ---
-    token_indices = [token_map[(chain, i)] for i in range(len(reference_seq))]
     # .float() is load-bearing: numpy has no bfloat16, so .numpy() on a non-fp32
     # grad raises "TypeError: Got unsupported ScalarType BFloat16". Today the leaf
     # is fp32 (src/igv/attrib.py builds it that way) so this is a no-op copy-free
@@ -375,6 +502,7 @@ def main() -> None:
             save_dict[f"argmax_{k}" if not k.startswith("argmax_") else k] = (
                 np.array(v) if v is not None else np.array(None)
             )
+    save_dict.update(res_type_extras)
 
     np.savez(out_path, **save_dict)
     log.info("Wrote %s", out_path)
@@ -396,6 +524,7 @@ def main() -> None:
             "method": method,
             "m_steps": args.m_steps,
             "baseline": args.baseline,
+            "res_type_grad": res_type_grad_enabled,
         },
         arm={
             "score": score,
