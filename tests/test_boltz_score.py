@@ -80,6 +80,7 @@ from igv.boltz_score import (  # noqa: E402
     _prediction_cache_key,
     _residue_letter_table,
     X_PRED_MODES,
+    canonical_aa_token_indices,
     chunk_profile,
     featurised_sequences,
     resolve_assert_feat_seq,
@@ -1156,3 +1157,72 @@ def test_prediction_cache_key_differs_across_complexes():
 def test_prediction_cache_key_is_deterministic():
     chains = {"A": "MKV", "B": "QVQ"}
     assert _prediction_cache_key(chains, "X") == _prediction_cache_key(chains, "X")
+
+
+# ---------------------------------------------------------------------------
+# canonical_aa_token_indices
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_aa_token_indices_returns_20_entries():
+    import numpy as np
+    idx = canonical_aa_token_indices(
+        tokens=_BOLTZ_TOKENS_2_2_1,
+        token_to_letter=dict(_PROT_TOKEN_TO_LETTER_2_2_1),
+    )
+    assert idx.shape == (20,)
+    assert idx.dtype == np.intp
+
+
+def test_canonical_aa_token_indices_maps_correctly():
+    """Each canonical AA letter maps to the right token index."""
+    from igv.attrib import CANONICAL_AMINO_ACIDS
+    idx = canonical_aa_token_indices(
+        tokens=_BOLTZ_TOKENS_2_2_1,
+        token_to_letter=dict(_PROT_TOKEN_TO_LETTER_2_2_1),
+    )
+    letter_to_tok = {v: k for k, v in _PROT_TOKEN_TO_LETTER_2_2_1.items()}
+    for i, aa in enumerate(CANONICAL_AMINO_ACIDS):
+        tok_name = letter_to_tok[aa]
+        expected_idx = list(_BOLTZ_TOKENS_2_2_1).index(tok_name)
+        assert idx[i] == expected_idx, f"AA {aa}: expected {expected_idx}, got {idx[i]}"
+
+
+def test_canonical_aa_token_indices_are_2_through_21():
+    """In boltz 2.2.1 the canonical AAs live at indices 2-21."""
+    idx = canonical_aa_token_indices(
+        tokens=_BOLTZ_TOKENS_2_2_1,
+        token_to_letter=dict(_PROT_TOKEN_TO_LETTER_2_2_1),
+    )
+    assert int(idx.min()) >= 2
+    assert int(idx.max()) <= 21
+
+
+def test_canonical_aa_token_indices_raises_on_missing_aa():
+    """Removing one AA from the token-to-letter map must raise."""
+    truncated = {k: v for k, v in _PROT_TOKEN_TO_LETTER_2_2_1.items() if v != "W"}
+    with pytest.raises(RuntimeError, match="Canonical amino acid.*not found"):
+        canonical_aa_token_indices(
+            tokens=_BOLTZ_TOKENS_2_2_1,
+            token_to_letter=truncated,
+        )
+
+
+def test_canonical_aa_token_indices_raises_lists_missing():
+    """The error message should name the missing amino acid."""
+    truncated = {k: v for k, v in _PROT_TOKEN_TO_LETTER_2_2_1.items() if v != "C"}
+    with pytest.raises(RuntimeError, match="C"):
+        canonical_aa_token_indices(
+            tokens=_BOLTZ_TOKENS_2_2_1,
+            token_to_letter=truncated,
+        )
+
+
+def test_canonical_aa_token_indices_uses_fallback_without_boltz():
+    """When no explicit tokens are passed and boltz is not installed, the
+    pinned fallback tables are used (same as _residue_letter_table)."""
+    import numpy as np
+    idx = canonical_aa_token_indices()
+    assert idx.shape == (20,)
+    assert np.all(idx >= 0)
+    assert np.all(idx < len(_BOLTZ_TOKENS_2_2_1))

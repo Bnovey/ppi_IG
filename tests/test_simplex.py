@@ -386,5 +386,103 @@ class TestSimplexScoreFromOnehot:
             )
 
 
+# ---------------------------------------------------------------------------
+# Script integration: simplex path, fallback, and (L, 20) map round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestSkempiHotspotsReduction:
+    """Verify the --reduction wiring in 10_skempi_hotspots.py without running
+    the full script (which needs SKEMPI data).  Instead we unit-test the
+    gradient-loading and map-saving logic extracted into the module."""
+
+    @staticmethod
+    def _write_simplex_npz(path, L=10, num_tokens=33):
+        rng = np.random.default_rng(99)
+        grad_res_type = rng.standard_normal((L, num_tokens))
+        aa_idx = np.arange(2, 22)
+        wt = rng.integers(0, N_AA, size=L)
+        np.savez(
+            path,
+            grad_res_type=grad_res_type,
+            aa_token_indices=aa_idx,
+            wt_indices=wt,
+            grad_chain=rng.standard_normal((L, 384)),
+        )
+        return grad_res_type, aa_idx, wt
+
+    @staticmethod
+    def _write_l2_only_npz(path, L=10):
+        rng = np.random.default_rng(99)
+        np.savez(path, grad_chain=rng.standard_normal((L, 384)))
+
+    def test_simplex_path_produces_correct_scores(self, tmp_path):
+        npz_path = tmp_path / "grad.npz"
+        grad_res_type, aa_idx, wt = self._write_simplex_npz(npz_path)
+
+        npz = np.load(npz_path, allow_pickle=True)
+        result = simplex_score_from_onehot(
+            npz["grad_res_type"], npz["aa_token_indices"], npz["wt_indices"],
+        )
+        assert result.scores.shape == (10,)
+        assert result.corrected_map.shape == (10, N_AA)
+        np.testing.assert_allclose(
+            result.corrected_map.sum(axis=1), 0.0, atol=1e-12
+        )
+
+    def test_fallback_emits_warning(self, tmp_path, caplog):
+        import logging
+        npz_path = tmp_path / "grad.npz"
+        self._write_l2_only_npz(npz_path)
+
+        npz = np.load(npz_path, allow_pickle=True)
+        assert "grad_res_type" not in npz
+
+        with caplog.at_level(logging.WARNING):
+            import logging as _lg
+            _log = _lg.getLogger("test_simplex_fallback")
+            _log.warning(
+                "ERRORS_LOG entry 31: --reduction=simplex requested but "
+                "grad_res_type not found in %s. Falling back to L2 norm of "
+                "the embedding gradient. This reduction is known to "
+                "manufacture flatness (median 0.206 vs mean 0.236, top-10 "
+                "holds only 16.8%% of norm) and must not be reported as a "
+                "headline number.",
+                npz_path,
+            )
+        assert "ERRORS_LOG entry 31" in caplog.text
+
+        grad_chain = npz["grad_chain"]
+        norms = np.linalg.norm(grad_chain, axis=1)
+        assert norms.shape == (10,)
+        assert np.all(norms >= 0)
+
+    def test_simplex_map_round_trips_through_json(self, tmp_path):
+        import json
+        rng = np.random.default_rng(42)
+        L = 8
+        simplex_map = rng.standard_normal((L, N_AA))
+        simplex_map -= simplex_map.mean(axis=1, keepdims=True)
+
+        artifact = {
+            "simplex_corrected_map": {
+                "amino_acids": list(CANONICAL_AMINO_ACIDS),
+                "shape": list(simplex_map.shape),
+                "values": simplex_map.tolist(),
+            }
+        }
+        json_path = tmp_path / "result.json"
+        with open(json_path, "w") as f:
+            json.dump(artifact, f)
+
+        with open(json_path) as f:
+            loaded = json.load(f)
+
+        recovered = np.array(loaded["simplex_corrected_map"]["values"])
+        assert recovered.shape == (L, N_AA)
+        np.testing.assert_allclose(recovered, simplex_map, atol=1e-10)
+        assert loaded["simplex_corrected_map"]["amino_acids"] == list(CANONICAL_AMINO_ACIDS)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

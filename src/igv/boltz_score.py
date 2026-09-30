@@ -2142,6 +2142,161 @@ def confidence_head_forward(
 
 
 # ---------------------------------------------------------------------------
+# Simplex-gradient seam: gradient w.r.t. the one-hot res_type tensor
+# ---------------------------------------------------------------------------
+
+
+def canonical_aa_token_indices(
+    tokens: tuple[str, ...] | None = None,
+    token_to_letter: dict[str, str] | None = None,
+):
+    """Map each canonical amino acid to its column index in the token axis.
+
+    Returns an ``int64`` array of shape ``(20,)`` whose *i*-th entry is the
+    position of ``CANONICAL_AMINO_ACIDS[i]`` in the boltz token list.
+
+    The token list is derived at runtime from ``boltz.data.const.tokens``
+    (preferred) or the pinned 2.2.1 fallback.  Pass *tokens* and
+    *token_to_letter* explicitly only in tests.
+
+    Raises
+    ------
+    RuntimeError
+        If any canonical amino acid is absent from the token list.
+    """
+    import numpy as np
+    from igv.attrib import CANONICAL_AMINO_ACIDS
+
+    if tokens is None or token_to_letter is None:
+        try:
+            from boltz.data import const as _c
+        except ImportError:
+            # boltz genuinely absent (local dev / CI).  Fall back, but say so
+            # loudly: a silent substitution here mislabels every column of the
+            # (L, 20) map without crashing.  Cf. ERRORS_LOG entry 34.
+            log.warning(
+                "boltz is not installed; using the PINNED 2.2.1 token "
+                "vocabulary for canonical_aa_token_indices. Any (L, 20) map "
+                "built this way is unverified against the live model and must "
+                "not be reported. Install boltz to derive indices at runtime."
+            )
+            tokens = _BOLTZ_TOKENS_2_2_1
+            token_to_letter = dict(_PROT_TOKEN_TO_LETTER_2_2_1)
+        else:
+            # boltz IS present: derive at runtime and let any API change raise
+            # rather than degrade to the pinned tables.
+            tokens = tuple(_c.tokens)
+            token_to_letter = dict(_c.prot_token_to_letter)
+            if tuple(tokens) != tuple(_BOLTZ_TOKENS_2_2_1):
+                log.warning(
+                    "Live boltz token vocabulary differs from the pinned "
+                    "2.2.1 table (%d live vs %d pinned). Using the live one, "
+                    "which is correct, but the pinned fallback and any test "
+                    "asserting fixed indices are now stale.",
+                    len(tokens), len(_BOLTZ_TOKENS_2_2_1),
+                )
+
+    letter_to_token: dict[str, str] = {}
+    for tok_name, letter in token_to_letter.items():
+        if letter not in letter_to_token:
+            letter_to_token[letter] = tok_name
+
+    token_name_to_idx = {name: i for i, name in enumerate(tokens)}
+
+    indices = np.empty(len(CANONICAL_AMINO_ACIDS), dtype=np.intp)
+    missing: list[str] = []
+    for i, aa_letter in enumerate(CANONICAL_AMINO_ACIDS):
+        tok_name = letter_to_token.get(aa_letter)
+        if tok_name is None or tok_name not in token_name_to_idx:
+            missing.append(aa_letter)
+            continue
+        indices[i] = token_name_to_idx[tok_name]
+
+    if missing:
+        raise RuntimeError(
+            f"Canonical amino acid(s) {missing} not found in the boltz token "
+            f"list ({len(tokens)} tokens). The token vocabulary may have "
+            f"changed; update the mapping."
+        )
+    return indices
+
+
+def res_type_gradient_forward(
+    model,
+    feats: dict,
+    score_name: str,
+    gradient_checkpointing: bool = True,
+    recycling_steps: int = 1,
+    autocast_dtype: str | None = None,
+    triangle_attention_chunk_checkpointing: bool | None = None,
+):
+    """Gradient of a scalar score w.r.t. the one-hot ``res_type`` tensor.
+
+    This is the seam for simplex-corrected attribution: the gradient lands
+    directly on the categorical one-hot input (shape ``(1, L, num_tokens)``)
+    rather than on the 384-dim embedding, so no linearity assumption is
+    needed.
+
+    The function:
+      1. Detaches ``feats["res_type"]`` and enables its gradient.
+      2. Runs the input embedder to produce ``s_inputs``.
+      3. Forwards through the full trunk and confidence head via
+         :func:`confidence_forward`.
+      4. Calls ``.backward()`` and returns the gradient.
+
+    Returns
+    -------
+    dict
+        ``"grad_res_type"`` : numpy array, shape ``(L, num_tokens)``
+            The gradient ``feats["res_type"].grad[0]``, detached and on CPU.
+        ``"score"`` : float
+            The scalar score value.
+
+    Notes
+    -----
+    ``feats["res_type"]`` is restored to its original state (no gradient,
+    original data) after the call so the dict is safe to reuse.
+    """
+    import torch
+
+    res_type_orig = feats["res_type"]
+    res_type_leaf = res_type_orig.detach().clone().float().requires_grad_(True)
+    feats["res_type"] = res_type_leaf
+
+    try:
+        s_inputs = model.input_embedder(feats)
+
+        scalar = confidence_forward(
+            model,
+            s_inputs,
+            feats,
+            x_pred=torch.zeros(
+                1, s_inputs.shape[1], 3, device=s_inputs.device
+            ),
+            score_name=score_name,
+            gradient_checkpointing=gradient_checkpointing,
+            recycling_steps=recycling_steps,
+            autocast_dtype=autocast_dtype,
+            triangle_attention_chunk_checkpointing=triangle_attention_chunk_checkpointing,
+        )
+
+        scalar.backward()
+
+        grad = res_type_leaf.grad
+        if grad is None:
+            raise RuntimeError(
+                "No gradient on res_type after backward. The graph may have "
+                "been detached by an intermediate operation."
+            )
+        grad_np = grad[0].detach().cpu().float().numpy()
+        score_val = scalar.detach().cpu().item()
+    finally:
+        feats["res_type"] = res_type_orig
+
+    return {"grad_res_type": grad_np, "score": score_val}
+
+
+# ---------------------------------------------------------------------------
 # ipTM argmax recording
 # ---------------------------------------------------------------------------
 

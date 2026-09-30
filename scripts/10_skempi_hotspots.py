@@ -13,6 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from igv.attrib import CANONICAL_AMINO_ACIDS, simplex_score_from_onehot
 from igv.metrics import (
     auroc,
     auprc,
@@ -57,6 +58,15 @@ def main() -> None:
         "--allow-mismatch", action="store_true",
         help="Log and exclude wild-type mismatches instead of failing",
     )
+    parser.add_argument(
+        "--reduction", choices=("simplex", "l2norm"), default="simplex",
+        help=(
+            "How to reduce per-residue gradients to a scalar score. "
+            "'simplex' (default) uses the simplex-corrected one-hot gradient; "
+            "'l2norm' uses the L2 norm of the embedding gradient (legacy, "
+            "known flat -- see ERRORS_LOG entry 31)."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -73,11 +83,47 @@ def main() -> None:
     if not grad_path.exists():
         sys.exit(f"ERROR: gradient file not found: {grad_path}")
 
-    # --- Load gradient and compute per-residue L2 norms ---
+    # --- Load gradient and compute per-residue scores ---
     npz = np.load(grad_path, allow_pickle=True)
-    grad_chain = npz["grad_chain"]  # (n_residues, 384)
-    norms = np.linalg.norm(grad_chain, axis=1)  # (n_residues,)
-    log.info("Loaded gradient: %d residues, norm range [%.4f, %.4f]",
+
+    reduction = args.reduction
+    simplex_map: np.ndarray | None = None
+
+    if reduction == "simplex" and "grad_res_type" in npz:
+        grad_res_type = npz["grad_res_type"]  # (L, num_tokens)
+        aa_token_indices = npz["aa_token_indices"]  # (20,)
+        wt_indices = npz["wt_indices"]  # (L,)
+        simplex_result = simplex_score_from_onehot(
+            grad_res_type, aa_token_indices, wt_indices,
+        )
+        norms = np.abs(simplex_result.scores)
+        simplex_map = simplex_result.corrected_map  # (L, 20)
+        log.info(
+            "Simplex-corrected scores: %d residues, range [%.4f, %.4f]",
+            len(norms), norms.min(), norms.max(),
+        )
+    else:
+        if reduction == "simplex":
+            log.warning(
+                "ERRORS_LOG entry 31: --reduction=simplex requested but "
+                "grad_res_type not found in %s. Falling back to L2 norm of "
+                "the embedding gradient. This reduction is known to "
+                "manufacture flatness (median 0.206 vs mean 0.236, top-10 "
+                "holds only 16.8%% of norm) and must not be reported as a "
+                "headline number.",
+                grad_path,
+            )
+            reduction = "l2norm"
+        if reduction == "l2norm":
+            log.warning(
+                "ERRORS_LOG entry 31: L2 norm over the 384-dim embedding "
+                "gradient is sign-discarding and concentration-of-measure "
+                "flat. Results must not be reported as headline numbers."
+            )
+        grad_chain = npz["grad_chain"]  # (n_residues, 384)
+        norms = np.linalg.norm(grad_chain, axis=1)  # (n_residues,)
+
+    log.info("Loaded gradient: %d residues, score range [%.4f, %.4f]",
              len(norms), norms.min(), norms.max())
 
     # --- Load PDB residue mapping ---
@@ -292,6 +338,7 @@ def main() -> None:
     result = {
         "complex": pdb_id,
         "chain": chain,
+        "reduction": reduction,
         "n_residues_compared": n_residues,
         "n_mutations_used": n_mutations_used,
         "n_excluded_mismatch": n_excluded,
@@ -339,6 +386,13 @@ def main() -> None:
         ],
     }
 
+    if simplex_map is not None:
+        result["simplex_corrected_map"] = {
+            "amino_acids": list(CANONICAL_AMINO_ACIDS),
+            "shape": list(simplex_map.shape),
+            "values": simplex_map.tolist(),
+        }
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)
@@ -354,6 +408,7 @@ def main() -> None:
             "chain": chain,
             "hotspot_threshold": HOTSPOT_THRESHOLD,
             "allow_mismatch": args.allow_mismatch,
+            "reduction": reduction,
         },
         arm={"stage": "skempi_hotspots", "complex": pdb_id, "chain": chain},
     )
