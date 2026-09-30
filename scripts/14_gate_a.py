@@ -746,6 +746,8 @@ def main(argv: list[str] | None = None) -> int:
         threshold=args.completeness_threshold,
     )
 
+    for c in checks:
+        c["x_pred_mode"] = "zeros"
     all_pass = print_checks(checks)
 
     gate_result = "PASS" if all_pass else "FAIL"
@@ -788,6 +790,40 @@ def main(argv: list[str] | None = None) -> int:
         print(x_pred_comparison)
 
         print("\n--- Gate A with predicted x_pred ---")
+
+        # Diagnostic backward under predicted x_pred (criteria 1-4).
+        # Without this, criteria 1-4 would report stale values from the
+        # zeros backward above -- the bug fixed in this block.
+        print("  Running diagnostic backward under predicted x_pred...")
+        for p in model.parameters():
+            if p.grad is not None:
+                p.grad = None
+
+        z_test_pred = z_x.clone().detach().requires_grad_(True)
+        with torch.enable_grad():
+            score_test_pred = score_fn_predicted(z_test_pred)
+            score_test_pred.backward()
+
+        z_grad_pred = z_test_pred.grad
+        z_grad_not_none_pred = z_grad_pred is not None
+        z_grad_max_abs_pred = (
+            float(z_grad_pred.abs().max()) if z_grad_pred is not None else None
+        )
+        z_grad_zero_frac_pred = (
+            float((z_grad_pred == 0).float().mean())
+            if z_grad_pred is not None else None
+        )
+        z_grad_shape_pred = (
+            tuple(z_grad_pred.shape) if z_grad_pred is not None else None
+        )
+        z_grad_n_nan_pred = (
+            int(z_grad_pred.isnan().sum()) if z_grad_pred is not None else None
+        )
+        z_grad_n_inf_pred = (
+            int(z_grad_pred.isinf().sum()) if z_grad_pred is not None else None
+        )
+        del z_test_pred, score_test_pred
+
         print(f"  Re-running pair_layer_ig (m_steps={args.m_steps}) with "
               f"predicted x_pred...")
         with torch.no_grad():
@@ -806,19 +842,21 @@ def main(argv: list[str] | None = None) -> int:
         abs_err_pred = abs(ig_sum_pred - f_diff_pred)
 
         checks_pred = evaluate_checks(
-            z_grad_not_none=z_grad_not_none,
-            z_grad_max_abs=z_grad_max_abs,
-            z_grad_zero_frac=z_grad_zero_frac,
-            z_grad_shape=z_grad_shape,
+            z_grad_not_none=z_grad_not_none_pred,
+            z_grad_max_abs=z_grad_max_abs_pred,
+            z_grad_zero_frac=z_grad_zero_frac_pred,
+            z_grad_shape=z_grad_shape_pred,
             expected_shape=expected_shape,
-            z_grad_n_nan=z_grad_n_nan,
-            z_grad_n_inf=z_grad_n_inf,
+            z_grad_n_nan=z_grad_n_nan_pred,
+            z_grad_n_inf=z_grad_n_inf_pred,
             completeness_abs_err=abs_err_pred,
             completeness_rel_err=rel_err_pred,
             ig_sum=ig_sum_pred,
             f_diff=f_diff_pred,
             threshold=args.completeness_threshold,
         )
+        for c in checks_pred:
+            c["x_pred_mode"] = "predicted"
         all_pass_pred = print_checks(checks_pred)
         gate_result_pred = "PASS" if all_pass_pred else "FAIL"
         print(f"\n  Gate A (predicted x_pred): {gate_result_pred}")
@@ -826,6 +864,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  completeness (predicted): abs_err={abs_err_pred:.6f}")
 
         compare_predicted_results = {
+            "x_pred_mode": "predicted",
             "score_zeros": score_zeros,
             "score_predicted": score_predicted,
             "score_diff": score_predicted - score_zeros,
@@ -834,6 +873,14 @@ def main(argv: list[str] | None = None) -> int:
             "ig_sum_pred": ig_sum_pred,
             "completeness_abs_err_pred": abs_err_pred,
             "completeness_rel_err_pred": rel_err_pred,
+            "z_grad_not_none_pred": z_grad_not_none_pred,
+            "z_grad_max_abs_pred": z_grad_max_abs_pred,
+            "z_grad_zero_frac_pred": z_grad_zero_frac_pred,
+            "z_grad_shape_pred": (
+                list(z_grad_shape_pred) if z_grad_shape_pred else None
+            ),
+            "z_grad_n_nan_pred": z_grad_n_nan_pred,
+            "z_grad_n_inf_pred": z_grad_n_inf_pred,
             "gate_result_pred": gate_result_pred,
             "checks_pred": checks_pred,
             "x_pred_abs_max": float(x_pred_real.abs().max()),
