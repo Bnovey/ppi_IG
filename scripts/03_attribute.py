@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from igv.boltz_score import (
     SCORES,
+    X_PRED_MODES,
     build_complex_feats,
     canonical_aa_token_indices,
     compute_homopolymer_embeddings,
@@ -23,8 +24,10 @@ from igv.boltz_score import (
     embedder_only,
     load_model,
     numerics_arm,
+    predict_structure_coords,
     record_iptm_argmax,
     res_type_gradient_forward,
+    resolve_x_pred_mode,
 )
 from igv.attrib import (
     CANONICAL_AMINO_ACIDS,
@@ -209,6 +212,11 @@ def main() -> None:
         help="Baseline for IG (zeros, none, or mean_aa)",
     )
     parser.add_argument(
+        "--x-pred", default="predicted",
+        choices=list(X_PRED_MODES),
+        help="x_pred mode. Default: predicted (run structure prediction).",
+    )
+    parser.add_argument(
         "--no-res-type-grad",
         action="store_true",
         help="Disable the res_type (one-hot) gradient computation",
@@ -305,27 +313,33 @@ def main() -> None:
     s_inputs = embedder_only(model, feats)
     log.info("s_inputs shape: %s", list(s_inputs.shape))
 
-    # --- 3. Obtain x_pred from feats (fixed geometry) ---
-    # Boltz featurisation places the wild-type atom coordinates into
-    # feats["coords"] (shape [B, N_atoms, 3]). We detach to ensure geometry
-    # is fixed and not differentiated through.
-    x_pred = feats["coords"].detach()
+    # --- 3. Obtain x_pred (resolved mode) ---
+    x_pred_mode = resolve_x_pred_mode(args.x_pred)
+    log.info("x_pred mode: %s", x_pred_mode)
+
+    if x_pred_mode == "predicted":
+        x_pred = predict_structure_coords(
+            model, feats, cache_dir, chains, dataset,
+        )
+    else:
+        x_pred = feats["coords"].detach()
+
     _coords_max = float(x_pred.abs().max())
     log.info(
-        "x_pred detached from feats['coords'] (shape %s), coords.abs().max()=%g. "
-        "Geometry is FIXED (identical for attribution and the brute-force scan) "
-        "but it is NOT necessarily the deposited structure: measured 0.0 on "
-        "igv-gpu 2026-09-04, i.e. the sequence-only YAML places every atom at "
-        "the origin. structure_pdb is accepted by build_complex_feats and never "
-        "read. Do not describe this as wild-type geometry unless this number is "
-        "non-zero.",
-        list(x_pred.shape),
-        _coords_max,
+        "x_pred (mode=%s, shape %s), coords.abs().max()=%g",
+        x_pred_mode, list(x_pred.shape), _coords_max,
     )
+    if x_pred_mode == "predicted" and _coords_max == 0.0:
+        raise RuntimeError(
+            "x_pred mode is 'predicted' but predicted coordinates are all zeros "
+            "(abs max = 0.0). Structure prediction silently failed; every "
+            "downstream attribution number would be the off-manifold one while "
+            "provenance claims real geometry. Aborting."
+        )
     if _coords_max == 0.0:
         log.warning(
             "coords.abs().max() == 0: attribution is being taken at a collapsed "
-            "all-zeros geometry, not at the 4fqi structure. The gradient is "
+            "all-zeros geometry, not at the deposited structure. The gradient is "
             "still sequence-dependent (the confidence head sees s and z), but "
             "no claim about structural context is supported."
         )
@@ -396,6 +410,7 @@ def main() -> None:
         if method == "plain_grad":
             rt_result = res_type_gradient_forward(
                 model, feats, score,
+                x_pred=x_pred,
                 gradient_checkpointing=True,
             )
             grad_res_type_full = rt_result["grad_res_type"]  # (L_full, num_tokens)
@@ -496,6 +511,7 @@ def main() -> None:
         "score": np.array(score),
         "method": np.array(method),
         "m_steps": np.int64(args.m_steps),
+        "x_pred_mode": np.array(x_pred_mode),
     }
     if argmax_record:
         for k, v in argmax_record.items():
@@ -525,6 +541,7 @@ def main() -> None:
             "m_steps": args.m_steps,
             "baseline": args.baseline,
             "res_type_grad": res_type_grad_enabled,
+            "x_pred_mode": x_pred_mode,
         },
         arm={
             "score": score,
@@ -533,6 +550,7 @@ def main() -> None:
             "m_steps": args.m_steps if method == "ig" else 1,
             "dataset": dataset,
             "chain": chain,
+            "x_pred_mode": x_pred_mode,
             # The knobs that change the numbers. Two runs differing only in
             # IGV_AUTOCAST give different scores from identical inputs, so an
             # artifact that does not record them cannot be safely compared with
