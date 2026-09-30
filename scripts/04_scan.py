@@ -300,6 +300,8 @@ def main() -> None:
     if args.score not in SCORES:
         raise SystemExit(f"--score must be one of {sorted(SCORES)}")
 
+    scan_suffix = f"_{args.dataset}"
+
     if is_dms:
         model, _boltz_version = load_model(args.checkpoint_dir, args.device)
 
@@ -311,7 +313,7 @@ def main() -> None:
         ref_feats, _ = build_complex_feats(
             chains_for(reference_seq),
             pdb,
-            cache_dir / "boltz_ref",
+            cache_dir / f"boltz_ref{scan_suffix}",
             args.device,
             use_msa_server=not args.no_msa_server,
         )
@@ -325,7 +327,7 @@ def main() -> None:
             feats, _ = build_complex_feats(
                 chains_for(mut_seq),
                 pdb,
-                cache_dir / f"boltz_scan/{pos}_{aa}",
+                cache_dir / f"boltz_scan{scan_suffix}/{pos}_{aa}",
                 args.device,
                 use_msa_server=not args.no_msa_server,
             )
@@ -393,7 +395,7 @@ def main() -> None:
         ref_feats, _ = build_complex_feats(
             chains_for(reference_seq),
             pdb,
-            cache_dir / "boltz_ref",
+            cache_dir / f"boltz_ref{scan_suffix}",
             args.device,
             use_msa_server=not args.no_msa_server,
         )
@@ -407,7 +409,7 @@ def main() -> None:
             feats, _ = build_complex_feats(
                 chains_for(mut_seq),
                 pdb,
-                cache_dir / f"boltz_scan/{pos}_{aa}",
+                cache_dir / f"boltz_scan{scan_suffix}/{pos}_{aa}",
                 args.device,
                 use_msa_server=not args.no_msa_server,
             )
@@ -489,7 +491,7 @@ def main() -> None:
         ref_feats, _ = build_complex_feats(
             chains_for(lib.reference_seq),
             pdb,
-            cache_dir / "boltz_ref",
+            cache_dir / f"boltz_ref{scan_suffix}",
             args.device,
             use_msa_server=not args.no_msa_server,
         )
@@ -504,7 +506,7 @@ def main() -> None:
             feats, _ = build_complex_feats(
                 chains_for(seq),
                 pdb,
-                cache_dir / f"boltz_scan/{row_i}",
+                cache_dir / f"boltz_scan{scan_suffix}/{row_i}",
                 args.device,
                 use_msa_server=not args.no_msa_server,
             )

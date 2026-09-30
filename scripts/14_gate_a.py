@@ -482,7 +482,9 @@ def main(argv: list[str] | None = None) -> int:
     enable_confidence_checkpointing(model)
 
     # ---- Featurise ----
-    cache_suffix = f"_{subset_label}" if subset_label != "all" else ""
+    cache_suffix = f"_{args.dataset}"
+    if subset_label != "all":
+        cache_suffix += f"_{subset_label}"
     msa_kwarg = {"msa": args.msa} if args.msa is not None else {}
     feats, _token_map = build_complex_feats(
         struct_chains,

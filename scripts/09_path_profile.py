@@ -303,7 +303,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         n_tokens = sum(len(s) for s in struct_chains.values())
 
-    cache_suffix = f"_{subset_label}" if subset_label != "all" else ""
+    cache_suffix = f"_{args.dataset}"
+    if subset_label != "all":
+        cache_suffix += f"_{subset_label}"
     model, _boltz_version = load_model(args.checkpoint_dir, args.device)
 
     def chains_for(seq):

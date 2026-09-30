@@ -1110,32 +1110,22 @@ def _check_featurised_sequences(
 
     Uses the chain ordering ``_build_token_map`` already resolved from asym_id
     runs rather than re-deriving it. Raises ``RuntimeError`` (not ``assert``, so
-    it survives ``python -O``) on the first mismatch, unless
-    ``IGV_ASSERT_FEAT_SEQ=0``, which downgrades it to ``log.error``.
+    it survives ``python -O``) unconditionally on the first mismatch.
 
-    The failure this defends against: boltz's ``process_inputs`` skips any input
-    whose YAML stem is already present in ``<cache_dir>/processed/records``
-    (boltz 2.2.1 ``main.py:724-742``), and this module always writes the stem
-    "input", so a cache_dir reused across different sequences silently returns
-    the FIRST sequence's features.
-
-    Honest status of that hazard, so nobody re-litigates it from scratch: it is
-    real in the code, but NOT yet proven to have fired. The recorded
-    signal_control run in results/sanity_4fqi_h1_complex_pde.json shows 30
-    DISTINCT scores (std 1.49e-2), which identical features could not produce,
-    even though that script re-featurises all 30 mutants into one shared
-    directory. Rather than guess which side is wrong, this check makes each run
-    verify.
+    Made unconditional after entry 34: the stale-cache hazard fired in
+    production and was caught only by ``_build_token_map``'s chain-count guard.
+    The sequence check is a pure Python string comparison (no GPU, no torch
+    ops), so its cost is negligible. ``IGV_ASSERT_FEAT_SEQ`` is still read for
+    backward compatibility but no longer downgrades the check -- a mismatch
+    always raises.
     """
     if "res_type" not in feats or "asym_id" not in feats:
-        # Never block a run over missing instrumentation inputs.
         log.warning(
             "Cannot verify featurised sequences: feats lacks res_type/asym_id."
         )
         return
 
     decoded = _decode_residue_tokens(feats)
-    strict = resolve_assert_feat_seq()
 
     for chain_id, seq in chains.items():
         for resi, raw_expected in enumerate(seq):
@@ -1156,7 +1146,7 @@ def _check_featurised_sequences(
                 if (chain_id, i) in token_map
                 and token_map[(chain_id, i)] < len(decoded)
             )
-            msg = (
+            raise RuntimeError(
                 f"Featurised sequence does not match the requested chains. "
                 f"Chain {chain_id!r} differs first at residue index {resi}: "
                 f"requested {expected!r}, featurised {observed!r} "
@@ -1166,14 +1156,39 @@ def _check_featurised_sequences(
                 "<cache_dir>/processed/records, and this repo always writes the "
                 "stem \"input\", so a cache_dir reused across different "
                 "sequences returns the FIRST sequence's features. Pass a unique "
-                "cache_dir per sequence -- scripts/04_scan.py already does this "
-                "with cache_dir/f\"boltz_scan/{row_i}\". Set "
-                "IGV_ASSERT_FEAT_SEQ=0 to downgrade this to a logged error."
+                "cache_dir per sequence."
             )
-            if strict:
-                raise RuntimeError(msg)
-            log.error("%s", msg)
-            return
+
+
+# ---------------------------------------------------------------------------
+# Cache-key helpers
+# ---------------------------------------------------------------------------
+
+
+def _chain_cache_key(chains: dict[str, str]) -> str:
+    """A short deterministic key encoding the identity of a chain set.
+
+    Chain IDs with their lengths, sorted by chain ID, plus a digest of the
+    sequences themselves -- e.g. ``"A107_B116_C129-3f9a1c7e"``.
+
+    The digest is load-bearing, not decoration. Keying on IDs and lengths
+    alone collides for two different complexes that happen to share chain
+    labels and lengths, which is not far-fetched among antibody complexes of
+    the same isotype. Such a collision is exactly entry 34's failure: a cache
+    hit returning another protein's tensors. ``_check_featurised_sequences``
+    would now catch it, but a directory key that cannot collide is better than
+    one that relies on a downstream guard.
+
+    Uses ``hashlib``, never the builtin ``hash()``: string hashing is salted
+    per process, so ``hash()`` would produce a different directory name on
+    every run and defeat caching entirely.
+    """
+    import hashlib
+
+    lengths = "_".join(f"{cid}{len(seq)}" for cid, seq in sorted(chains.items()))
+    payload = "|".join(f"{cid}:{seq}" for cid, seq in sorted(chains.items()))
+    digest = hashlib.sha256(payload.encode()).hexdigest()[:8]
+    return f"{lengths}-{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -1248,7 +1263,7 @@ def compute_homopolymer_embeddings(
         homo_chains = dict(chains)
         homo_chains[chain] = aa * chain_len
 
-        aa_cache = cache_dir / "boltz_homopolymer" / aa
+        aa_cache = cache_dir / "boltz_homopolymer" / f"{aa}_{_chain_cache_key(chains)}"
         log.info("Homopolymer %s: featurising (%s)", aa, aa_cache)
 
         # msa="empty": a homopolymer has no evolutionary profile, so querying

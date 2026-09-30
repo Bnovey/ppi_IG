@@ -593,7 +593,8 @@ def log_plan(args, points: list[dict], out_csv: Path, profile_cfg, resolved_env:
         log.info(
             "  L=%-5d point=%-11s n_chains=%d natural_profile=%s cache_dir=%s",
             p["n_tokens"], label, p["n_chains"], side,
-            Path(args.cache_dir) / f"boltz_mem/{p['n_tokens']}_{label}",
+            Path(args.cache_dir)
+            / f"boltz_mem_{args.dataset}/{p['n_tokens']}_{label}",
         )
     n_above = sum(1 for p in points if p["n_tokens"] > CHUNK_SIZE_THRESHOLD)
     log.info(
@@ -1029,7 +1030,13 @@ def main(argv: list[str] | None = None) -> int:
         # Own cache_dir per point. A shared one would silently hand back the
         # FIRST point's features (boltz skips already-processed YAML stems and
         # this repo always writes the stem "input"), producing a flat curve.
-        point_cache = cache_dir / f"boltz_mem/{point['n_tokens']}_{subset}"
+        # Keyed on dataset too, per entry 34. An audit judged this path safe
+        # because a collision needs the same n_tokens AND the same subset
+        # label across two datasets -- but "unlikely" is the reasoning that
+        # let entry 34 happen, and the key costs nothing.
+        point_cache = (
+            cache_dir / f"boltz_mem_{args.dataset}/{point['n_tokens']}_{subset}"
+        )
         point_pdb = (
             pdb if args.ladder == "chain-subset"
             else cache_dir / f"{point['structure']}.pdb"

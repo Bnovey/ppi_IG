@@ -72,8 +72,10 @@ from igv.boltz_score import (  # noqa: E402
     _BOLTZ_TOKENS_2_2_1,
     _CHUNK_PROFILE_KEYS,
     _PROT_TOKEN_TO_LETTER_2_2_1,
+    _build_token_map,
     _build_yaml_sequences,
     _canonical_letter,
+    _chain_cache_key,
     _check_featurised_sequences,
     _residue_letter_table,
     chunk_profile,
@@ -385,15 +387,15 @@ def test_sequence_check_catches_a_stale_cache(monkeypatch):
     assert "process_inputs" in msg and "cache_dir" in msg
 
 
-def test_sequence_check_can_be_downgraded_for_debugging(monkeypatch, caplog):
+def test_sequence_check_is_unconditional_even_with_env_override(monkeypatch):
+    """After entry 34, IGV_ASSERT_FEAT_SEQ=0 no longer suppresses the raise."""
     pytest.importorskip("torch")
     monkeypatch.setenv("IGV_ASSERT_FEAT_SEQ", "0")
     chains = {"H": "ACD"}
     feats = _synthetic_feats(["ACE"])
     token_map = {("H", 0): 0, ("H", 1): 1, ("H", 2): 2}
-    with caplog.at_level("ERROR"):
+    with pytest.raises(RuntimeError, match="Featurised sequence does not match"):
         _check_featurised_sequences(chains, feats, token_map)
-    assert any("Featurised sequence does not match" in r.message for r in caplog.records)
 
 
 def test_ambiguous_letters_canonicalise_the_way_boltz_does():
@@ -970,3 +972,129 @@ def test_baseline_zeros_unchanged():
     s = torch.randn(1, 20, 64)
     baseline = torch.zeros_like(s)
     assert torch.equal(baseline, torch.zeros_like(s))
+
+
+# ---------------------------------------------------------------------------
+# Cache-key uniqueness (entry 34 regression)
+#
+# Two different datasets, or the same dataset with different chain subsets,
+# must produce different featurisation directory paths. These tests verify
+# _chain_cache_key and the directory patterns in compute_homopolymer_embeddings.
+# ---------------------------------------------------------------------------
+
+
+def test_chain_cache_key_different_datasets():
+    """1VFB and 1JTG have different chain sets -- keys must differ."""
+    chains_1vfb = {"A": "M" * 107, "B": "G" * 116, "C": "K" * 129}
+    chains_1jtg = {"A": "M" * 262, "B": "G" * 165}
+    assert _chain_cache_key(chains_1vfb) != _chain_cache_key(chains_1jtg)
+
+
+def test_chain_cache_key_same_dataset_different_subsets():
+    """Same protein, different chain subsets -- keys must differ."""
+    chains_ab = {"A": "M" * 107, "B": "G" * 116}
+    chains_abc = {"A": "M" * 107, "B": "G" * 116, "C": "K" * 129}
+    assert _chain_cache_key(chains_ab) != _chain_cache_key(chains_abc)
+
+
+def test_chain_cache_key_same_chains_same_key():
+    """Identical chain sets produce identical keys (caching works)."""
+    chains = {"A": "M" * 107, "B": "G" * 116}
+    assert _chain_cache_key(chains) == _chain_cache_key(chains)
+
+
+def test_chain_cache_key_is_deterministic_across_dict_order():
+    """Keys are sorted by chain ID, so insertion order does not matter."""
+    from collections import OrderedDict
+    chains_ab = OrderedDict([("A", "MK"), ("B", "GG")])
+    chains_ba = OrderedDict([("B", "GG"), ("A", "MK")])
+    assert _chain_cache_key(chains_ab) == _chain_cache_key(chains_ba)
+
+
+def test_chain_cache_key_encodes_length_not_just_id():
+    """Same chain IDs but different lengths (e.g. truncated chain) differ."""
+    short = {"A": "M" * 100}
+    long = {"A": "M" * 200}
+    assert _chain_cache_key(short) != _chain_cache_key(long)
+
+
+def test_chain_cache_key_distinguishes_same_lengths_different_sequences():
+    """Identical chain IDs AND lengths but different sequences must not collide.
+
+    This is the residual hole a length-only key leaves, and it is not
+    far-fetched -- two antibody complexes of the same isotype can share chain
+    labels and lengths. A collision here is entry 34's exact failure: a cache
+    hit handing back another protein's tensors.
+    """
+    a = {"A": "MKV" * 36, "B": "QVQ" * 39}
+    b = {"A": "AAA" * 36, "B": "CCC" * 39}
+    assert {k: len(v) for k, v in a.items()} == {k: len(v) for k, v in b.items()}
+    assert _chain_cache_key(a) != _chain_cache_key(b)
+
+
+def test_chain_cache_key_is_stable_across_processes():
+    """The key must not depend on builtin hash(), which is salted per process.
+
+    A per-process key would change the directory name on every run and defeat
+    caching entirely -- the opposite failure from a colliding key, and easy to
+    introduce by reaching for hash() instead of hashlib.
+    """
+    import subprocess
+    import sys
+
+    chains = {"A": "MKVLAA", "B": "QVQLQE"}
+    expected = _chain_cache_key(chains)
+    out = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import sys; sys.path.insert(0, 'src');"
+            "from igv.boltz_score import _chain_cache_key;"
+            f"print(_chain_cache_key({chains!r}))",
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == expected
+
+
+# ---------------------------------------------------------------------------
+# Validation: _build_token_map catches cross-complex confusion
+# ---------------------------------------------------------------------------
+
+
+def test_token_map_rejects_wrong_chain_count():
+    """The exact failure from entry 34: 2 asym_id runs vs 3 expected chains."""
+    pytest.importorskip("torch")
+    feats_2chain = _synthetic_feats(["M" * 262, "G" * 165])
+    chains_3 = {"A": "M" * 107, "B": "G" * 116, "C": "K" * 129}
+    with pytest.raises(RuntimeError, match="contiguous asym_id runs"):
+        _build_token_map(chains_3, feats_2chain)
+
+
+def test_token_map_rejects_wrong_lengths():
+    """Same chain count but wrong lengths -- must not silently proceed."""
+    pytest.importorskip("torch")
+    feats = _synthetic_feats(["M" * 100, "G" * 200])
+    chains = {"A": "M" * 150, "B": "G" * 150}
+    with pytest.raises(RuntimeError):
+        _build_token_map(chains, feats)
+
+
+def test_token_map_accepts_correct_chains():
+    pytest.importorskip("torch")
+    feats = _synthetic_feats(["M" * 107, "G" * 116])
+    chains = {"A": "M" * 107, "B": "G" * 116}
+    token_map = _build_token_map(chains, feats)
+    assert len(token_map) == 107 + 116
+
+
+def test_sequence_check_catches_cross_complex_substitution():
+    """Sequence check catches when features are from a different complex."""
+    pytest.importorskip("torch")
+    requested = {"H": "ACD", "L": "EF"}
+    actual_feats = _synthetic_feats(["GHI", "KL"])
+    token_map = {
+        ("H", 0): 0, ("H", 1): 1, ("H", 2): 2,
+        ("L", 0): 3, ("L", 1): 4,
+    }
+    with pytest.raises(RuntimeError, match="Featurised sequence does not match"):
+        _check_featurised_sequences(requested, actual_feats, token_map)

@@ -244,7 +244,8 @@ def main() -> None:
 
     # 6. Reference embedding (server MSA)
     log.info("Featurising reference complex (server MSA)")
-    ref_cache = cache_dir / "boltz_delta" / "ref_server"
+    delta_suffix = f"_{args.dataset}"
+    ref_cache = cache_dir / f"boltz_delta{delta_suffix}" / "ref_server"
     feats_ref_server, token_map = build_complex_feats(
         chains, pdb_path, ref_cache, device,
         use_msa_server=not args.no_msa_server,
@@ -278,7 +279,7 @@ def main() -> None:
     # Both sides of every delta subtraction use the same code path (file-loaded),
     # so no part of the delta can be a server-vs-file artifact.
     log.info("Re-featurising reference with file-loaded MSAs")
-    ref_cache_from_files = cache_dir / "boltz_delta" / "ref_from_files"
+    ref_cache_from_files = cache_dir / f"boltz_delta{delta_suffix}" / "ref_from_files"
     feats_ref, token_map = build_complex_feats(
         chains, pdb_path, ref_cache_from_files, device,
         use_msa_server=False, msa=msa_by_chain,
@@ -330,7 +331,7 @@ def main() -> None:
         mut_chains[chain] = mutant_seq
 
         feats_mut, token_map_mut = build_complex_feats(
-            mut_chains, pdb_path, cache_dir / f"boltz_delta/{pos}_{aa}", device,
+            mut_chains, pdb_path, cache_dir / f"boltz_delta{delta_suffix}/{pos}_{aa}", device,
             use_msa_server=False, msa=msa_by_chain,
         )
         s_inputs_mut = embedder_only(model, feats_mut)
