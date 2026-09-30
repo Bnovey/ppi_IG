@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import logging
 import math
 import os
 import re
 import tempfile
+import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -439,6 +443,16 @@ RESIDUE_VOLUME: dict[str, float] = {
     "S": 89.0, "T": 116.1, "W": 227.8, "Y": 193.6, "V": 140.0,
 }
 
+# Tien et al. (2013) theoretical maximum accessible surface area (angstrom^2).
+# "Maximum allowed solvent accessibilities of residues in proteins", PLOS ONE.
+# Values are for the Gly-X-Gly extended tripeptide model.
+MAX_ASA_TIEN: dict[str, float] = {
+    "A": 129.0, "R": 274.0, "N": 195.0, "D": 193.0, "C": 167.0,
+    "Q": 225.0, "E": 223.0, "G": 104.0, "H": 224.0, "I": 197.0,
+    "L": 201.0, "K": 236.0, "M": 224.0, "F": 240.0, "P": 159.0,
+    "S": 155.0, "T": 172.0, "W": 285.0, "Y": 263.0, "V": 174.0,
+}
+
 
 # ---------------------------------------------------------------------------
 # PDB heavy-atom parsing for structural confounds
@@ -544,6 +558,286 @@ def compute_distance_to_partner(
     return result
 
 
+def _biopython_res_key(res) -> str:
+    """Build the same residue-key string as the ATOM-line parser (resSeq + iCode)."""
+    _, resseq, icode = res.get_id()
+    ic = icode.strip()
+    return f"{resseq}{ic}"
+
+
+def compute_rsa(
+    pdb_path: Path,
+    chain: str,
+    residue_ids: list[str],
+    sequence: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-residue relative solvent accessibility via Shrake-Rupley.
+
+    Computes RSA in two contexts:
+      - **complex**: all chains present (inter-chain contacts occlude surface)
+      - **monomer**: target chain in isolation
+
+    RSA is absolute SASA divided by the Tien et al. (2013) theoretical maximum
+    for the amino-acid type (Gly-X-Gly tripeptide model).  Values are clipped
+    to [0, 1]; positions with non-standard residues or missing atoms get NaN.
+
+    Returns ``(rsa_complex, rsa_monomer, delta_rsa)`` arrays of length
+    ``len(residue_ids)``.  ``delta_rsa = rsa_monomer - rsa_complex`` and is
+    >= 0 for residues buried by complex formation.
+    """
+    from Bio.PDB import PDBParser
+    from Bio.PDB.SASA import ShrakeRupley
+
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure("s", str(pdb_path))
+    model = structure[0]
+
+    sr = ShrakeRupley()
+
+    sr.compute(model, level="R")
+    complex_sasa: dict[str, float] = {}
+    for res in model[chain].get_residues():
+        if res.get_id()[0] != " ":
+            continue
+        complex_sasa[_biopython_res_key(res)] = res.sasa
+
+    mono_model = copy.deepcopy(model)
+    chains_to_remove = [c.id for c in mono_model.get_chains() if c.id != chain]
+    for cid in chains_to_remove:
+        mono_model.detach_child(cid)
+    sr.compute(mono_model, level="R")
+    mono_sasa: dict[str, float] = {}
+    for res in mono_model[chain].get_residues():
+        if res.get_id()[0] != " ":
+            continue
+        mono_sasa[_biopython_res_key(res)] = res.sasa
+
+    n = len(residue_ids)
+    rsa_complex = np.full(n, np.nan)
+    rsa_monomer = np.full(n, np.nan)
+
+    for i, rid in enumerate(residue_ids):
+        aa = sequence[i] if i < len(sequence) else None
+        max_asa = MAX_ASA_TIEN.get(aa, None) if aa else None
+        if max_asa is None or max_asa <= 0:
+            continue
+        if rid in complex_sasa:
+            rsa_complex[i] = min(complex_sasa[rid] / max_asa, 1.0)
+        if rid in mono_sasa:
+            rsa_monomer[i] = min(mono_sasa[rid] / max_asa, 1.0)
+
+    delta_rsa = rsa_monomer - rsa_complex
+
+    return rsa_complex, rsa_monomer, delta_rsa
+
+
+# ---------------------------------------------------------------------------
+# Conservation from MSA
+# ---------------------------------------------------------------------------
+
+_STANDARD_AA = set("ACDEFGHIKLMNPQRSTVWY")
+
+
+def parse_a3m(
+    msa_path: Path,
+    query_length: int,
+) -> tuple[list[str], list[str]]:
+    """Parse an a3m (or FASTA) alignment file.
+
+    Returns ``(query_seq_str, aligned_rows)`` where each element of
+    *aligned_rows* is a string of length *query_length* containing only
+    uppercase letters and gap characters ('-').
+
+    Lowercase letters in a3m mark insertions relative to the query and are
+    removed.  The first sequence is treated as the query.
+
+    Raises ``ValueError`` if the query row length (after dropping
+    insertions) does not equal *query_length*.
+    """
+    headers: list[str] = []
+    seqs: list[list[str]] = []
+
+    with open(msa_path) as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if line.startswith(">"):
+                headers.append(line)
+                seqs.append([])
+            elif seqs:
+                seqs[-1].append(line)
+            else:
+                headers.append(">query")
+                seqs.append([line])
+
+    rows: list[str] = []
+    for parts in seqs:
+        raw = "".join(parts)
+        cleaned = re.sub(r"[a-z]", "", raw)
+        rows.append(cleaned)
+
+    if not rows:
+        raise ValueError(f"No sequences found in {msa_path}")
+
+    if len(rows[0]) != query_length:
+        raise ValueError(
+            f"Query row in {msa_path} has length {len(rows[0])} after "
+            f"removing insertions, but expected {query_length}"
+        )
+
+    return rows[0], rows
+
+
+def compute_conservation(
+    msa_path: Path,
+    sequence: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-column conservation score and gap fraction from an MSA.
+
+    Conservation is ``1 - H / log2(20)`` where *H* is Shannon entropy over the
+    20 standard amino acids at each column, computed from non-gap sequences only.
+    A fully conserved column scores 1.0; a column with uniform distribution over
+    all 20 amino acids scores 0.0.  **Higher values mean more conserved.**
+
+    ``gap_fraction`` is the fraction of non-query sequences that have a gap at
+    each column.  Columns with high gap fraction may be unreliable.
+
+    Returns ``(conservation, gap_fraction)`` arrays of length ``len(sequence)``.
+    """
+    query_len = len(sequence)
+    _query_row, rows = parse_a3m(msa_path, query_len)
+
+    max_entropy = math.log2(20)
+    conservation = np.zeros(query_len)
+    gap_fraction = np.zeros(query_len)
+
+    non_query_rows = rows[1:]
+    n_non_query = len(non_query_rows)
+
+    for col in range(query_len):
+        counts: Counter[str] = Counter()
+        n_gaps = 0
+        for row in non_query_rows:
+            ch = row[col] if col < len(row) else "-"
+            if ch in _STANDARD_AA:
+                counts[ch] += 1
+            else:
+                n_gaps += 1
+
+        gap_fraction[col] = n_gaps / n_non_query if n_non_query > 0 else 0.0
+
+        total = sum(counts.values())
+        if total == 0:
+            conservation[col] = np.nan
+            continue
+
+        entropy = 0.0
+        for count in counts.values():
+            p = count / total
+            if p > 0:
+                entropy -= p * math.log2(p)
+
+        conservation[col] = 1.0 - entropy / max_entropy
+
+    return conservation, gap_fraction
+
+
+# ---------------------------------------------------------------------------
+# ColabFold MMseqs2 MSA fetcher
+# ---------------------------------------------------------------------------
+
+_COLABFOLD_HOST = "https://api.colabfold.com"
+_COLABFOLD_MAX_POLLS = 120
+_COLABFOLD_POLL_INTERVAL = 5
+
+
+def fetch_colabfold_msa(
+    sequence: str,
+    cache_dir: Path,
+    *,
+    timeout: float = 600,
+) -> Path:
+    """Fetch an MSA for *sequence* from the ColabFold MMseqs2 public API.
+
+    **This sends the query sequence to a third-party public server**
+    (``api.colabfold.com``).  Call this only with explicit user consent.
+
+    The result is cached at ``cache_dir/msa/<sha256>.a3m``; subsequent calls
+    for the same sequence return the cache immediately.
+
+    Raises ``RuntimeError`` on HTTP failures or if the server does not
+    complete within *timeout* seconds.
+    """
+    seq_hash = hashlib.sha256(sequence.encode()).hexdigest()
+    msa_dir = Path(cache_dir) / "msa"
+    cached = msa_dir / f"{seq_hash}.a3m"
+    if cached.exists():
+        return cached
+
+    msa_dir.mkdir(parents=True, exist_ok=True)
+
+    resp = requests.post(
+        f"{_COLABFOLD_HOST}/ticket/msa",
+        data={"q": f">query\n{sequence}", "mode": "all"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    ticket = resp.json()
+    ticket_id = ticket["id"]
+
+    deadline = time.monotonic() + timeout
+    status = None
+    for _ in range(_COLABFOLD_MAX_POLLS):
+        if time.monotonic() > deadline:
+            break
+        resp = requests.get(
+            f"{_COLABFOLD_HOST}/ticket/{ticket_id}",
+            timeout=30,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        status = body.get("status")
+        if status == "COMPLETE":
+            break
+        if status == "ERROR":
+            raise RuntimeError(
+                f"ColabFold MSA server returned ERROR for ticket {ticket_id}"
+            )
+        time.sleep(_COLABFOLD_POLL_INTERVAL)
+    else:
+        raise RuntimeError(
+            f"ColabFold MSA server did not complete within {timeout}s "
+            f"(last status: {status})"
+        )
+
+    if status != "COMPLETE":
+        raise RuntimeError(
+            f"ColabFold MSA server did not complete within {timeout}s "
+            f"(last status: {status})"
+        )
+
+    resp = requests.get(
+        f"{_COLABFOLD_HOST}/result/download/{ticket_id}",
+        timeout=60,
+    )
+    resp.raise_for_status()
+
+    a3m_text = resp.text
+    if not a3m_text.strip():
+        raise RuntimeError("ColabFold returned an empty MSA result")
+
+    fd, tmp = tempfile.mkstemp(dir=msa_dir, suffix=".a3m")
+    try:
+        os.write(fd, a3m_text.encode())
+        os.close(fd)
+        os.replace(tmp, cached)
+    except BaseException:
+        os.close(fd)
+        os.unlink(tmp)
+        raise
+
+    return cached
+
+
 def compute_confounds(
     pdb_path: Path,
     chain: str,
@@ -551,11 +845,16 @@ def compute_confounds(
     sequence: str,
     partner_chains: tuple[str, ...],
     positions: list[int],
+    *,
+    msa_path: Path | None = None,
 ) -> dict[str, np.ndarray]:
     """Compute structural and sequence confounds for mutated positions.
 
     Returns a dict mapping confound name to a 1-D array aligned with
     *positions* (which are 0-based indices into *residue_ids*/*sequence*).
+
+    When *msa_path* is provided, ``conservation`` and ``gap_fraction`` are
+    included.  When it is ``None`` those keys are simply omitted.
     """
     coords, atom_chains, atom_res_keys = parse_pdb_heavy_atoms(pdb_path)
 
@@ -585,5 +884,17 @@ def compute_confounds(
     confounds["norm_position"] = np.array(
         [p / max(n_chain - 1, 1) for p in positions]
     )
+
+    rsa_complex, rsa_monomer, delta_rsa = compute_rsa(
+        pdb_path, chain, residue_ids, sequence,
+    )
+    confounds["rsa_complex"] = np.array([rsa_complex[p] for p in positions])
+    confounds["rsa_monomer"] = np.array([rsa_monomer[p] for p in positions])
+    confounds["delta_rsa"] = np.array([delta_rsa[p] for p in positions])
+
+    if msa_path is not None:
+        cons, gap_frac = compute_conservation(msa_path, sequence)
+        confounds["conservation"] = np.array([cons[p] for p in positions])
+        confounds["gap_fraction"] = np.array([gap_frac[p] for p in positions])
 
     return confounds

@@ -11,6 +11,7 @@ import pytest
 
 from igv.skempi import (
     HYDROPHOBICITY_KD,
+    MAX_ASA_TIEN,
     RESIDUE_VOLUME,
     SKEMPI_COMPLEXES,
     SKEMPI_MUTATION_COL,
@@ -20,11 +21,15 @@ from igv.skempi import (
     antibody_antigen,
     compute_burial,
     compute_confounds,
+    compute_conservation,
     compute_distance_to_partner,
+    compute_rsa,
     ddg,
+    fetch_colabfold_msa,
     filter_complex,
     get_complex,
     map_mutations_to_indices,
+    parse_a3m,
     parse_mutation,
     parse_mutations,
     parse_pdb_heavy_atoms,
@@ -667,3 +672,246 @@ def test_1jtg_confound_panel():
     print(f"\n  random gradient vs |ddG|:  simple {rho_grad:+.4f}  partial {partial_rho:+.4f}")
     print(f"  AUROC (random grad):      {auroc(fake_grad, hot_labels):.4f}")
     print(f"  AUPRC (random grad):      {auprc(fake_grad, hot_labels):.4f}")
+
+
+# ---------------------------------------------------------------------------
+# RSA tests
+# ---------------------------------------------------------------------------
+
+
+def test_max_asa_tien_covers_20_aa():
+    assert set(MAX_ASA_TIEN.keys()) == set("ACDEFGHIKLMNPQRSTVWY")
+
+
+@pytest.mark.skipif(not _PDB_1JTG.exists(), reason="1jtg.pdb not on disk")
+def test_rsa_values_in_zero_one():
+    ids, seqs = read_pdb_residue_ids(_PDB_1JTG)
+    rsa_c, rsa_m, delta = compute_rsa(_PDB_1JTG, "B", ids["B"], seqs["B"])
+    valid_c = rsa_c[~np.isnan(rsa_c)]
+    valid_m = rsa_m[~np.isnan(rsa_m)]
+    assert np.all(valid_c >= 0.0)
+    assert np.all(valid_c <= 1.0)
+    assert np.all(valid_m >= 0.0)
+    assert np.all(valid_m <= 1.0)
+
+
+@pytest.mark.skipif(not _PDB_1JTG.exists(), reason="1jtg.pdb not on disk")
+def test_rsa_buried_core_lower_than_surface():
+    """Core residues should have lower RSA than surface residues."""
+    ids, seqs = read_pdb_residue_ids(_PDB_1JTG)
+    rsa_c, rsa_m, _ = compute_rsa(_PDB_1JTG, "B", ids["B"], seqs["B"])
+    core_mask = rsa_m < 0.05
+    surface_mask = rsa_m > 0.3
+    if core_mask.any() and surface_mask.any():
+        assert np.nanmean(rsa_c[core_mask]) < np.nanmean(rsa_c[surface_mask])
+
+
+@pytest.mark.skipif(not _PDB_1JTG.exists(), reason="1jtg.pdb not on disk")
+def test_rsa_delta_nonneg_interface():
+    """delta_rsa should be >= 0 (within tolerance) for interface residues."""
+    ids, seqs = read_pdb_residue_ids(_PDB_1JTG)
+    rsa_c, rsa_m, delta = compute_rsa(_PDB_1JTG, "B", ids["B"], seqs["B"])
+    valid = delta[~np.isnan(delta)]
+    assert np.all(valid >= -1e-10)
+
+
+@pytest.mark.skipif(not _PDB_1JTG.exists(), reason="1jtg.pdb not on disk")
+def test_rsa_nan_for_absent_residue():
+    """A fabricated residue ID not in the PDB should get NaN."""
+    ids, seqs = read_pdb_residue_ids(_PDB_1JTG)
+    extended_ids = ids["B"] + ["9999"]
+    extended_seq = seqs["B"] + "A"
+    rsa_c, rsa_m, delta = compute_rsa(
+        _PDB_1JTG, "B", extended_ids, extended_seq,
+    )
+    assert np.isnan(rsa_c[-1])
+    assert np.isnan(rsa_m[-1])
+
+
+# ---------------------------------------------------------------------------
+# Conservation tests
+# ---------------------------------------------------------------------------
+
+
+def _write_a3m(tmp_path, content, name="test.a3m"):
+    p = tmp_path / name
+    p.write_text(content)
+    return p
+
+
+def test_conservation_fully_conserved_column(tmp_path):
+    content = ">query\nACDEF\n>s2\nACDEF\n>s3\nACDEF\n>s4\nACDEF\n"
+    path = _write_a3m(tmp_path, content)
+    cons, gap_frac = compute_conservation(path, "ACDEF")
+    assert len(cons) == 5
+    assert np.allclose(cons, 1.0)
+    assert np.allclose(gap_frac, 0.0)
+
+
+def test_conservation_uniform_column(tmp_path):
+    aa = list("ACDEFGHIKLMNPQRSTVWY")
+    lines = [">query\n" + aa[0]]
+    for i, a in enumerate(aa):
+        lines.append(f">s{i}\n{a}")
+    content = "\n".join(lines) + "\n"
+    path = _write_a3m(tmp_path, content)
+    cons, _ = compute_conservation(path, aa[0])
+    assert cons[0] == pytest.approx(0.0, abs=0.01)
+
+
+def test_conservation_gap_handling(tmp_path):
+    content = ">query\nAC\n>s2\nA-\n>s3\nAC\n>s4\nA-\n"
+    path = _write_a3m(tmp_path, content)
+    cons, gap_frac = compute_conservation(path, "AC")
+    assert gap_frac[0] == 0.0
+    assert gap_frac[1] == pytest.approx(2.0 / 3.0)
+    assert cons[0] == 1.0
+
+
+def test_conservation_a3m_insertions_dropped(tmp_path):
+    content = ">query\nACDEF\n>s2\nAabCDEF\n>s3\nACDEF\n"
+    path = _write_a3m(tmp_path, content)
+    cons, _ = compute_conservation(path, "ACDEF")
+    assert len(cons) == 5
+
+
+def test_conservation_length_mismatch_raises(tmp_path):
+    content = ">query\nACDEF\n>s2\nACDEF\n"
+    path = _write_a3m(tmp_path, content)
+    with pytest.raises(ValueError, match="length"):
+        compute_conservation(path, "ACD")
+
+
+def test_parse_a3m_basic(tmp_path):
+    content = ">query\nACDEF\n>s2\nACDEG\n"
+    path = _write_a3m(tmp_path, content)
+    query_row, rows = parse_a3m(path, 5)
+    assert query_row == "ACDEF"
+    assert len(rows) == 2
+    assert rows[1] == "ACDEG"
+
+
+def test_parse_a3m_insertion_removal(tmp_path):
+    content = ">query\nACDEF\n>s2\nAabcCDEF\n"
+    path = _write_a3m(tmp_path, content)
+    _, rows = parse_a3m(path, 5)
+    assert rows[1] == "ACDEF"
+
+
+# ---------------------------------------------------------------------------
+# ColabFold fetcher tests (mocked HTTP)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_colabfold_msa_uses_cache(tmp_path, monkeypatch):
+    """Second call should use the cached file without any HTTP requests."""
+    import hashlib
+
+    seq = "ACDEF"
+    h = hashlib.sha256(seq.encode()).hexdigest()
+    msa_dir = tmp_path / "msa"
+    msa_dir.mkdir()
+    cached = msa_dir / f"{h}.a3m"
+    cached.write_text(">query\nACDEF\n>s2\nACDEG\n")
+
+    call_count = 0
+
+    def fake_post(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise AssertionError("should not make HTTP request")
+
+    monkeypatch.setattr("igv.skempi.requests.post", fake_post)
+    monkeypatch.setattr("igv.skempi.requests.get", fake_post)
+
+    result = fetch_colabfold_msa(seq, tmp_path)
+    assert result == cached
+    assert call_count == 0
+
+
+def test_fetch_colabfold_msa_mock_roundtrip(tmp_path, monkeypatch):
+    """Mock the full submit/poll/download cycle."""
+    import types
+
+    seq = "ACDEF"
+    poll_count = 0
+
+    def fake_post(url, **kwargs):
+        resp = types.SimpleNamespace()
+        resp.status_code = 200
+        resp.raise_for_status = lambda: None
+        resp.json = lambda: {"id": "test-ticket-123"}
+        return resp
+
+    def fake_get(url, **kwargs):
+        nonlocal poll_count
+        resp = types.SimpleNamespace()
+        resp.status_code = 200
+        resp.raise_for_status = lambda: None
+        if "ticket/" in url and "result" not in url:
+            poll_count += 1
+            resp.json = lambda: {"status": "COMPLETE"}
+        else:
+            resp.text = ">query\nACDEF\n>s2\nACDEG\n"
+        return resp
+
+    monkeypatch.setattr("igv.skempi.requests.post", fake_post)
+    monkeypatch.setattr("igv.skempi.requests.get", fake_get)
+
+    result = fetch_colabfold_msa(seq, tmp_path)
+    assert result.exists()
+    assert result.read_text().startswith(">query")
+    assert poll_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# compute_confounds with and without MSA
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _PDB_1JTG.exists(), reason="1jtg.pdb not on disk")
+def test_confounds_no_msa_omits_conservation():
+    ids, seqs = read_pdb_residue_ids(_PDB_1JTG)
+    positions = [0, 10, 50]
+    c = compute_confounds(
+        _PDB_1JTG, "B", ids["B"], seqs["B"], ("A",), positions,
+    )
+    assert "conservation" not in c
+    assert "gap_fraction" not in c
+    assert "rsa_complex" in c
+    assert "rsa_monomer" in c
+    assert "delta_rsa" in c
+    for v in c.values():
+        assert len(v) == len(positions)
+
+
+@pytest.mark.skipif(not _PDB_1JTG.exists(), reason="1jtg.pdb not on disk")
+def test_confounds_with_msa(tmp_path):
+    ids, seqs = read_pdb_residue_ids(_PDB_1JTG)
+    seq = seqs["B"]
+    positions = [0, 10, 50]
+
+    lines = [f">query\n{seq}"]
+    for i in range(3):
+        lines.append(f">s{i}\n{seq}")
+    msa_file = tmp_path / "test.a3m"
+    msa_file.write_text("\n".join(lines) + "\n")
+
+    c = compute_confounds(
+        _PDB_1JTG, "B", ids["B"], seq, ("A",), positions, msa_path=msa_file,
+    )
+    assert "conservation" in c
+    assert "gap_fraction" in c
+    assert len(c["conservation"]) == len(positions)
+    assert np.allclose(c["conservation"], 1.0)
+
+
+@pytest.mark.skipif(not _PDB_1JTG.exists(), reason="1jtg.pdb not on disk")
+def test_confounds_all_arrays_same_length():
+    ids, seqs = read_pdb_residue_ids(_PDB_1JTG)
+    positions = list(range(0, len(ids["B"]), 10))
+    c = compute_confounds(
+        _PDB_1JTG, "B", ids["B"], seqs["B"], ("A",), positions,
+    )
+    for name, arr in c.items():
+        assert len(arr) == len(positions), f"{name} has wrong length"
