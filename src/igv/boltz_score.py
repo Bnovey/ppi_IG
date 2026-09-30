@@ -1192,6 +1192,117 @@ def _chain_cache_key(chains: dict[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# x_pred modes
+# ---------------------------------------------------------------------------
+
+X_PRED_MODES = ("zeros", "predicted")
+
+
+def resolve_x_pred_mode(
+    mode: str | None = None, env: Mapping[str, str] | None = None
+) -> str:
+    """Resolve the x_pred mode from an explicit value or ``IGV_X_PRED``.
+
+    Returns ``"zeros"`` or ``"predicted"``.  Default is ``"zeros"`` so that
+    existing callers are not silently changed.
+    """
+    if mode is None:
+        env = os.environ if env is None else env
+        mode = env.get("IGV_X_PRED", "zeros")
+    mode = str(mode).strip().lower()
+    if mode not in X_PRED_MODES:
+        raise ValueError(
+            f"x_pred mode {mode!r} is not recognised; "
+            f"legal values are {list(X_PRED_MODES)}."
+        )
+    return mode
+
+
+def _prediction_cache_key(chains: dict[str, str], dataset: str) -> str:
+    """Cache key for a structure prediction, keyed on both dataset and chains.
+
+    Uses the same ``_chain_cache_key`` digest as featurisation, plus the
+    dataset label, so a cached prediction cannot be reused across complexes.
+    """
+    return f"{dataset}_{_chain_cache_key(chains)}"
+
+
+def predict_structure_coords(
+    model,
+    feats: dict,
+    cache_dir: Path,
+    chains: dict[str, str],
+    dataset: str,
+    recycling_steps: int = 1,
+    sampling_steps: int | None = None,
+    diffusion_samples: int = 1,
+):
+    """Run boltz's structure prediction and return predicted atom coordinates.
+
+    The confidence head was trained on the model's own predictions, not on
+    crystal structures, so the on-manifold ``x_pred`` is the one the model
+    itself produces.
+
+    Returns a tensor of shape ``(1, N_atoms, 3)`` (squeezed from the
+    diffusion output's multiplicity dimension when ``diffusion_samples=1``).
+
+    Results are cached on disk at ``cache_dir / "predicted_coords" / key``,
+    keyed on dataset identity and chain sequences, so re-runs do not
+    re-predict.  The cache validates that the stored tensor has the expected
+    atom count, matching ``feats["atom_pad_mask"]``.
+    """
+    import torch
+
+    cache_key = _prediction_cache_key(chains, dataset)
+    pred_dir = Path(cache_dir) / "predicted_coords" / cache_key
+    cached_path = pred_dir / "x_pred.pt"
+
+    expected_n_atoms = int(feats["atom_pad_mask"].shape[-1])
+
+    if cached_path.exists():
+        log.info("Loading cached predicted coords from %s", cached_path)
+        x_pred = torch.load(cached_path, map_location=feats["coords"].device,
+                            weights_only=True)
+        if x_pred.shape[-2] != expected_n_atoms:
+            log.warning(
+                "Cached x_pred has %d atoms but feats expects %d; "
+                "re-predicting.",
+                x_pred.shape[-2], expected_n_atoms,
+            )
+        else:
+            log.info(
+                "Cached x_pred validated: shape %s, abs max %.6g",
+                list(x_pred.shape), float(x_pred.abs().max()),
+            )
+            return x_pred
+
+    log.info("Running structure prediction (this takes ~45s on A100)...")
+    with torch.no_grad():
+        out = model(
+            feats,
+            recycling_steps=recycling_steps,
+            num_sampling_steps=sampling_steps,
+            diffusion_samples=diffusion_samples,
+            run_confidence_sequentially=False,
+        )
+
+    x_pred = out["sample_atom_coords"].detach()
+    if x_pred.shape[0] > 1:
+        x_pred = x_pred[:1]
+
+    log.info(
+        "Structure prediction complete: x_pred shape %s, abs max %.6g",
+        list(x_pred.shape), float(x_pred.abs().max()),
+    )
+
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(x_pred, cached_path)
+    log.info("Cached predicted coords at %s", cached_path)
+
+    return x_pred
+
+
+# ---------------------------------------------------------------------------
 # Forward functions
 # ---------------------------------------------------------------------------
 

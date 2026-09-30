@@ -582,5 +582,60 @@ class TestIsSingleChain:
         assert gate_a._is_single_chain("A,B,C") is False
 
 
+# ---------------------------------------------------------------------------
+# 9. --compare-x-pred argument parsing
+# ---------------------------------------------------------------------------
+
+
+class TestCompareXPredArg:
+    def test_default_off(self):
+        args = gate_a.build_parser().parse_args([])
+        assert args.compare_x_pred is False
+
+    def test_flag_on(self):
+        args = gate_a.build_parser().parse_args(["--compare-x-pred"])
+        assert args.compare_x_pred is True
+
+    def test_dry_run_with_compare(self):
+        result = subprocess.run(
+            [sys.executable, str(_SCRIPT), "--dry-run", "--compare-x-pred"],
+            capture_output=True, text=True, cwd=str(_ROOT),
+        )
+        assert result.returncode == 0, f"stderr:\n{result.stderr}"
+        assert "compare-x-pred" in result.stdout or "structure prediction" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# 10. format_x_pred_comparison
+# ---------------------------------------------------------------------------
+
+
+class TestFormatXPredComparison:
+    def test_near_identical(self):
+        block = gate_a.format_x_pred_comparison("complex_pde", 2.620000, 2.620050)
+        assert "complex_pde" in block
+        assert "zeros" in block
+        assert "predicted" in block
+        assert "nearly identical" in block
+
+    def test_meaningful_difference(self):
+        block = gate_a.format_x_pred_comparison("complex_pde", 2.62, 3.15)
+        assert "changes meaningfully" in block
+        assert "difference" in block
+
+    def test_difference_values(self):
+        block = gate_a.format_x_pred_comparison("complex_pde", 2.0, 3.0)
+        assert "+1.000000" in block
+        assert "+50.0000%" in block
+
+    def test_zero_score_does_not_crash(self):
+        block = gate_a.format_x_pred_comparison("complex_pde", 0.0, 1.0)
+        assert "inf" in block.lower() or "complex_pde" in block
+
+    def test_negative_difference(self):
+        block = gate_a.format_x_pred_comparison("complex_pde", 3.0, 2.5)
+        assert "-0.500000" in block
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

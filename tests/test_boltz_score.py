@@ -77,7 +77,9 @@ from igv.boltz_score import (  # noqa: E402
     _canonical_letter,
     _chain_cache_key,
     _check_featurised_sequences,
+    _prediction_cache_key,
     _residue_letter_table,
+    X_PRED_MODES,
     chunk_profile,
     featurised_sequences,
     resolve_assert_feat_seq,
@@ -85,6 +87,7 @@ from igv.boltz_score import (  # noqa: E402
     resolve_msa_spec,
     resolve_tri_attn_ckpt,
     resolve_use_kernels,
+    resolve_x_pred_mode,
     select_chunk_profile,
 )
 
@@ -1098,3 +1101,58 @@ def test_sequence_check_catches_cross_complex_substitution():
     }
     with pytest.raises(RuntimeError, match="Featurised sequence does not match"):
         _check_featurised_sequences(requested, actual_feats, token_map)
+
+
+# ---------------------------------------------------------------------------
+# x_pred mode resolution
+# ---------------------------------------------------------------------------
+
+
+def test_x_pred_mode_defaults_to_zeros():
+    assert resolve_x_pred_mode(env={}) == "zeros"
+
+
+def test_x_pred_mode_accepts_predicted():
+    assert resolve_x_pred_mode("predicted") == "predicted"
+    assert resolve_x_pred_mode(env={"IGV_X_PRED": "predicted"}) == "predicted"
+
+
+def test_x_pred_mode_rejects_unknown():
+    with pytest.raises(ValueError, match="x_pred mode"):
+        resolve_x_pred_mode("crystal")
+
+
+def test_x_pred_mode_explicit_beats_env():
+    assert resolve_x_pred_mode("zeros", env={"IGV_X_PRED": "predicted"}) == "zeros"
+
+
+def test_x_pred_modes_constant():
+    assert "zeros" in X_PRED_MODES
+    assert "predicted" in X_PRED_MODES
+
+
+# ---------------------------------------------------------------------------
+# Prediction cache key
+# ---------------------------------------------------------------------------
+
+
+def test_prediction_cache_key_includes_dataset():
+    chains = {"A": "MKV", "B": "QVQ"}
+    key = _prediction_cache_key(chains, "1VFB")
+    assert "1VFB" in key
+
+
+def test_prediction_cache_key_differs_across_datasets():
+    chains = {"A": "MKV", "B": "QVQ"}
+    assert _prediction_cache_key(chains, "1VFB") != _prediction_cache_key(chains, "1JTG")
+
+
+def test_prediction_cache_key_differs_across_complexes():
+    chains_a = {"A": "MKV", "B": "QVQ"}
+    chains_b = {"A": "AAA", "B": "CCC"}
+    assert _prediction_cache_key(chains_a, "1VFB") != _prediction_cache_key(chains_b, "1VFB")
+
+
+def test_prediction_cache_key_is_deterministic():
+    chains = {"A": "MKV", "B": "QVQ"}
+    assert _prediction_cache_key(chains, "X") == _prediction_cache_key(chains, "X")

@@ -108,6 +108,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="MSA mode. Default: use MSA server (production path). "
              "Pass --msa empty for a fast fallback without the server.",
     )
+    p.add_argument(
+        "--compare-x-pred", action="store_true",
+        help="Run Gate A twice (zeros and predicted x_pred) and print a "
+             "side-by-side comparison. Measures how sensitive the score is "
+             "to real atom coordinates. Adds ~45s for the structure "
+             "prediction step. Exit code follows the original (zeros) run.",
+    )
     return p
 
 
@@ -272,6 +279,47 @@ def resolve_l(args) -> tuple[dict[str, str] | None, int | None, str]:
     return struct_chains, n_tokens, label
 
 
+def format_x_pred_comparison(
+    score_name: str,
+    score_zeros: float,
+    score_predicted: float,
+) -> str:
+    """Format a side-by-side x_pred comparison block. Pure function."""
+    diff = score_predicted - score_zeros
+    rel = diff / abs(score_zeros) if score_zeros != 0 else float("inf")
+    lines = [
+        "",
+        "=" * 60,
+        "x_pred sensitivity comparison",
+        "=" * 60,
+        f"  score:                {score_name}",
+        f"  {score_name} (x_pred=zeros):      {score_zeros:.6f}",
+        f"  {score_name} (x_pred=predicted):   {score_predicted:.6f}",
+        f"  difference:           {diff:+.6f}",
+        f"  relative difference:  {rel:+.4%}",
+        "",
+    ]
+    if abs(diff) < 1e-4:
+        lines.append(
+            "  ** The score is nearly identical under zeros and predicted "
+            "coordinates. **"
+        )
+        lines.append(
+            "  This means x_pred=zeros may be adequate for this score, or "
+            "that the distance embedding is insensitive at this complex size."
+        )
+    else:
+        lines.append(
+            "  ** The score changes meaningfully with real coordinates. **"
+        )
+        lines.append(
+            "  The confidence head's distance embedding carries real "
+            "information; x_pred=zeros is off-manifold."
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _is_single_chain(chain_subset: str) -> bool:
     return "," not in chain_subset
 
@@ -365,6 +413,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  PDB not found:        {pdb} (will resolve on VM)")
         print(f"  z_baseline:           {args.z_baseline}")
         print(f"  msa:                  {msa_mode}")
+        print(f"  compare_x_pred:       {args.compare_x_pred}")
         print(f"  completeness thr:     abs < {args.completeness_threshold}")
         print(f"  output:               {out_json}")
         print(f"  device:               {args.device}")
@@ -413,7 +462,14 @@ def main(argv: list[str] | None = None) -> int:
             cmd += f" --z-baseline {args.z_baseline}"
         if args.msa is not None:
             cmd += f" --msa {args.msa}"
+        if args.compare_x_pred:
+            cmd += " --compare-x-pred"
         print(f"  {cmd}")
+        if args.compare_x_pred:
+            print()
+            print("  --compare-x-pred is set: will also run structure prediction")
+            print("  (~45s on A100) and re-score with predicted coordinates.")
+            print("  Prints a side-by-side comparison of zeros vs predicted x_pred.")
         return 0
 
     # ------------------------------------------------------------------
@@ -434,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
         enable_confidence_checkpointing,
         load_model,
         numerics_arm,
+        predict_structure_coords,
     )
     from igv.provenance import write as prov_write  # noqa: E402
 
@@ -692,9 +749,95 @@ def main(argv: list[str] | None = None) -> int:
     all_pass = print_checks(checks)
 
     gate_result = "PASS" if all_pass else "FAIL"
-    print(f"\n  z_baseline: {args.z_baseline}")
+    print("\n  x_pred mode: zeros (from feats['coords'])")
+    print(f"  z_baseline: {args.z_baseline}")
     print(f"  msa: {msa_mode}")
     print(f"  Gate A: {gate_result}")
+
+    # ---- compare-x-pred ----
+    x_pred_comparison = None
+    compare_predicted_results = None
+    if args.compare_x_pred:
+        print(f"\n{'=' * 60}")
+        print("Running --compare-x-pred: structure prediction + re-scoring")
+        print(f"{'=' * 60}")
+
+        x_pred_real = predict_structure_coords(
+            model, feats, cache_dir, struct_chains, args.dataset,
+            recycling_steps=args.recycling_steps,
+        )
+        log.info(
+            "Predicted x_pred: shape %s, abs max %.6g",
+            list(x_pred_real.shape), float(x_pred_real.abs().max()),
+        )
+
+        score_zeros = f_x
+
+        def score_fn_predicted(z):
+            return confidence_head_forward(
+                model, s_inputs.detach(), s.detach(), z, x_pred_real, feats,
+                args.score,
+            )
+
+        with torch.no_grad():
+            score_predicted = float(score_fn_predicted(z_x))
+
+        x_pred_comparison = format_x_pred_comparison(
+            args.score, score_zeros, score_predicted,
+        )
+        print(x_pred_comparison)
+
+        print("\n--- Gate A with predicted x_pred ---")
+        print(f"  Re-running pair_layer_ig (m_steps={args.m_steps}) with "
+              f"predicted x_pred...")
+        with torch.no_grad():
+            f_baseline_pred = float(score_fn_predicted(z_baseline))
+
+        result_pred = pair_layer_ig(
+            score_fn_predicted, z_baseline, z_x,
+            m_steps=args.m_steps,
+            log_progress=True,
+        )
+        rel_err_pred = pair_completeness_error(
+            result_pred, score_predicted, f_baseline_pred,
+        )
+        f_diff_pred = score_predicted - f_baseline_pred
+        ig_sum_pred = float(result_pred.interaction_map.sum())
+        abs_err_pred = abs(ig_sum_pred - f_diff_pred)
+
+        checks_pred = evaluate_checks(
+            z_grad_not_none=z_grad_not_none,
+            z_grad_max_abs=z_grad_max_abs,
+            z_grad_zero_frac=z_grad_zero_frac,
+            z_grad_shape=z_grad_shape,
+            expected_shape=expected_shape,
+            z_grad_n_nan=z_grad_n_nan,
+            z_grad_n_inf=z_grad_n_inf,
+            completeness_abs_err=abs_err_pred,
+            completeness_rel_err=rel_err_pred,
+            ig_sum=ig_sum_pred,
+            f_diff=f_diff_pred,
+            threshold=args.completeness_threshold,
+        )
+        all_pass_pred = print_checks(checks_pred)
+        gate_result_pred = "PASS" if all_pass_pred else "FAIL"
+        print(f"\n  Gate A (predicted x_pred): {gate_result_pred}")
+        print(f"  completeness (zeros):     abs_err={abs_err:.6f}")
+        print(f"  completeness (predicted): abs_err={abs_err_pred:.6f}")
+
+        compare_predicted_results = {
+            "score_zeros": score_zeros,
+            "score_predicted": score_predicted,
+            "score_diff": score_predicted - score_zeros,
+            "f_baseline_pred": f_baseline_pred,
+            "f_diff_pred": f_diff_pred,
+            "ig_sum_pred": ig_sum_pred,
+            "completeness_abs_err_pred": abs_err_pred,
+            "completeness_rel_err_pred": rel_err_pred,
+            "gate_result_pred": gate_result_pred,
+            "checks_pred": checks_pred,
+            "x_pred_abs_max": float(x_pred_real.abs().max()),
+        }
 
     # ---- Write JSON ----
     summary = {
@@ -705,6 +848,7 @@ def main(argv: list[str] | None = None) -> int:
         "L": L,
         "m_steps": args.m_steps,
         "chains": chain_info,
+        "x_pred_mode": "zeros",
         "f_x": f_x,
         "f_baseline": f_baseline,
         "f_diff": f_diff,
@@ -732,6 +876,8 @@ def main(argv: list[str] | None = None) -> int:
         "msa_mode": msa_mode,
         "checks": checks,
     }
+    if compare_predicted_results is not None:
+        summary["compare_x_pred"] = compare_predicted_results
 
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_json.write_text(json.dumps(summary, indent=2, default=str) + "\n")
@@ -747,6 +893,7 @@ def main(argv: list[str] | None = None) -> int:
             "completeness_threshold": args.completeness_threshold,
             "z_baseline": args.z_baseline,
             "msa": msa_mode,
+            "compare_x_pred": args.compare_x_pred,
         },
         arm={
             "score": args.score,
@@ -754,6 +901,7 @@ def main(argv: list[str] | None = None) -> int:
             "chain": args.chain,
             "chain_subset": list(struct_chains),
             "n_tokens": n_tokens,
+            "x_pred_mode": "zeros",
             "method": "gate_a",
             **numerics_arm(),
         },
