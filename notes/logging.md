@@ -736,6 +736,77 @@ its own CI. Phase 5 asks a pair-level question at n=76 on data already on disk,
 and rides the same backward pass as item 1. Items 1 and 2 remain worth doing and
 are unchanged in cost; they are no longer the front of the queue.
 
+### Co-folding / pairformer interpretability — extended survey, 2026-10-01
+
+Seven papers added. Where a paper is already cited in this document, only the
+new detail is recorded here.
+
+**PairSAE**, Migliorini et al.,
+[arXiv:2606.27440](https://arxiv.org/abs/2606.27440). Already cited in
+section 12. New finding: SAEs do not transfer cleanly to pairformer
+architectures (quadratic feature blow-up; concepts distributed jointly across s
+and z). Uses N-mode SVD into token-wise interaction roles. Evaluated on Boltz-2
+over PLINDER. **Its affinity validation is against Boltz-2's own predicted
+affinity, not experimental Kd** — so it does not touch experimental ground
+truth, which widens rather than narrows the slot described at `PLAN.md:74-78`.
+
+**Two Stages of Folding**, Lu, Brinkmann, Huber, Mueller, Belinkov, Bau,
+Wendler, NeurIPS 2026,
+[arXiv:2602.06020](https://arxiv.org/abs/2602.06020). Causal interventions on
+ESMFold/OpenFold/Boltz-1. Charge linearly decodable from s at ROC-AUC ~1.0 by
+early blocks; distance probes on z reach R^2 ~0.9 in late blocks; seq2pair
+dominates blocks 0-10, pair2seq 25-48; in Boltz-1 the seq2pair write-in is
+confined to the MSA module (blocks 0-3). Cross-architecture transplant via
+whitened Procrustes: Boltz-1->ESMFold R^2 ~0.75. Cost ~1,000-1,500 GPU-hours.
+No PAE/ipTM analysis, no MSA ablation.
+
+**AlphaInterp**, Feldman & Skolnick,
+[PMC13131572](https://pmc.ncbi.nlm.nih.gov/articles/PMC13131572/). AF3
+checkpoint probing. pTM linearly decodable from the pair channel at R^2=0.86 at
+the final Pairformer pass vs 0.34 post-init; patching pair-representation PCs
+causally moves distogram entropy; transplanting a high-confidence representation
+drops entropy by -0.268. MSA ablation: TM 0.9363 -> 0.5388, and
+pair-representation effective dimensionality **rises** ~17 -> ~24. Mutational
+drift confined to Pairformer layers. **Most relevant published work to this
+project; nobody has done the equivalent for PDE.**
+
+**Jedryszek et al.**,
+[arXiv:2608.11475](https://arxiv.org/abs/2608.11475). Already cited in
+section 12. New detail: probes + SAEs + causal interventions across Boltz-1's
+trunk/diffusion boundary. Sequence chemistry strongly attenuated inside the
+diffusion module. Cautionary: a beta-strand-direction probe at F1=0.82 whose
+steering produced **no measurable structural change**. Decodable != causal.
+
+**Yao et al.**,
+[arXiv:2606.22181](https://arxiv.org/abs/2606.22181). Already cited in
+sections 7 and 11. New detail: IG on ESM-2 classifiers; residue-level overlap
+with annotated epitopes **no better than random** despite strong AUC; reliance
+on generic physicochemical/compositional features. Note the match to this
+repo's own 2026-09-24 numbers: gradient-vs-hydrophobicity -0.527
+(CI [-0.75,-0.18], excludes zero) against gradient-vs-ddG 0.357
+(CI [-0.002, 0.656], barely does).
+
+**Wan, Zhang, Xue, Coveney**,
+[arXiv:2603.05532](https://arxiv.org/html/2603.05532v1). Boltz-2 binding
+probability correlates only r=0.21-0.25 with its *own* predicted affinity;
+confidence saturated at mean >=0.944, ~90% above 0.90. **Caveat: these are
+protein-ligand affinity/binding-probability figures, not PPI `complex_pde`. Do
+not inherit them directly.**
+
+**Masters, Mahmoud et al.**, *Nat Commun* 2025,
+[s41467-025-63947-5](https://www.nature.com/articles/s41467-025-63947-5).
+Co-folding models are insensitive to significant binding-site modifications and
+largely memorise training poses.
+
+**Gap, as a targeted negative finding.** No systematic benchmark of
+IG/saliency attribution against masked-marginal or brute-force mutation scans,
+on PLMs or on folding models; and no attribution of a *confidence* head on any
+folding model.
+
+**UNVERIFIED, do not cite:** AF3 dipTM-vs-SKEMPI-ddG "Pearson R=0.102"; Mac1
+eLife reviewed-preprint claims; PairSAE's MLSB 2025 venue line; AbBiBench
+per-model Spearmans; ESMC-6B SAE release details; PLM-SAE "+0.138 mean".
+
 ---
 
 ## 12. Phase 5 — attribute to the pair representation, and predict residue coupling
@@ -1595,3 +1666,166 @@ the same session to break the tie.
   At a 43% base rate a perfect top-5 is a 1-in-125 event; on 3S9D it is
   1-in-300,000. Complex selection must be justified on positional coverage and
   base rate from here on, never on what is already featurised.
+
+---
+
+## 15. Boltz-2 affinity head cannot be the attribution target for PPI — 2026-10-01
+
+**Verdict: will not run as shipped on a protein-protein complex, and is not
+differentiable to `res_type` even if patched.** Upstream at
+`jwohlwend/boltz@b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc`. Extends entry 36,
+which established the parser gate; this section traces the full architecture.
+
+### The parser gate and its neighbours
+
+`src/boltz/data/parse/schema.py:1065-1070` raises
+`ValueError("Chain {binder} is not a ligand! Affinity is currently only
+supported for ligands.")`. Further guards: `:1075-1077` (one affinity ligand
+max), `:1103` (no multi-copy), `:1191-1192` (no multi-residue binder),
+`:1206-1211` (<=128 heavy atoms, warns >56).
+
+The token mask itself is `asym_id`-based only
+(`src/boltz/data/tokenize/boltz2.py:172-173`), and `AffinityInfo`
+(`src/boltz/data/types.py:565-569`) is just `(chain_id, mw)`, so pointing it at
+a protein chain is *structurally* legal — the schema guard is the only
+mol-type gate on the binder. But
+`src/boltz/data/feature/featurizerv2.py:2307-2308` reads
+`data.record.affinity.mw`, and `mw` is computed only in the RDKit ligand
+branches (`schema.py:1202`, `:1274`), so a MW would have to be injected
+manually.
+
+### Gradient is identically zero
+
+`src/boltz/model/models/boltz2.py:704-711` (and `:631-652` in the ensemble
+branch) calls `self.affinity_module(s_inputs=s_inputs.detach(),
+z=z_affinity.detach(), x_pred=coords_affinity, ...)`. `coords_affinity`
+(`:624`) is `dict_out["sample_atom_coords"].detach()[best_idx]`, a diffusion
+sample selected by `torch.argsort(dict_out["iptm"])[0].item()` (`:622-623`).
+
+Separately, `src/boltz/model/modules/affinity.py:105-108` bucketises distances
+(`cdist` -> `(d.unsqueeze(-1) > self.boundaries).sum(-1).long()` ->
+`nn.Embedding`), so `x_pred` is never differentiable — though under this
+repo's fixed-WT-geometry approach that is a constant, as in the confidence path.
+
+A differentiable entry point does exist: `boltz2.py:627`
+`s_inputs = self.input_embedder(feats, affinity=True)`, and
+`InputEmbedder.forward` (`trunkv2.py:173, 192-196`) does
+`res_type = feats["res_type"].float()` -> `self.res_type_encoding(res_type)` (a
+Linear). **But all three tensors passed to `affinity_module` carry `.detach()`,
+severing the graph between embedder and head.**
+
+### Crop discards most of the interface
+
+`src/boltz/data/crop/affinity.py` (`AffinityCropper`, `neighborhood_size=10`,
+`max_tokens_protein=200`), invoked at
+`src/boltz/data/module/inferencev2.py:238-244` with `max_tokens=256,
+max_atoms=2048`. Crop centre is `affinity.py:71`, keyed on `affinity_mask` not
+mol_type. `:89-93` uses `mol_type == NONPOLYMER` to define `ligand_ids`, which
+is exempted from the 200-protein-token budget — that set is empty for a
+protein binder, so the binder competes for the protein budget. 1JTG is 427
+tokens against a 256 cap.
+
+### Featurisation regime differs from confidence
+
+Affinity featurisation uses **MSA depth 1**
+(`featurizerv2.py:2294-2302`, `max_seqs=1`) and disables templates (`:2312`).
+
+### Outputs
+
+Both heads in one `AffinityHeadsTransformer`, `affinity.py:214-222`:
+`affinity_pred_value` = log10(IC50), IC50 in uM, lower = stronger
+(`docs/prediction.md:244`); `affinity_logits_binary` -> sigmoid ->
+`affinity_probability_binary` (`docs:242`). `boltz2.py:688-698` applies an MW
+correction `1.03526*v - 0.59993*mw**0.3 + 2.83288`, fit on small molecules and
+meaningless at protein mass.
+
+### Upstream confirms
+
+Maintainer, issue [#301](https://github.com/jwohlwend/boltz/issues/301): "Not
+at the moment! We only predict affinity for protein - small molecule ligands."
+Same in [#336](https://github.com/jwohlwend/boltz/issues/336).
+`docs/prediction.md:104` "must be a ligand chain (not a protein, DNA or RNA)";
+`:312` table marks Affinity protein-ligand only.
+
+### Fine-tuning does not help
+
+[arXiv:2512.06592](https://arxiv.org/abs/2512.06592) froze the trunk,
+**re-initialised and retrained the affinity module from scratch**, and widened
+its inputs to all inter/intra-chain representations. Results: TCR3d
+r=0.153/rho=0.091; PPB-Affinity r=0.338/rho=0.357 — below ESM2-650M (r=0.239)
+and ProtT5 (r=0.48/rho=0.51). No zero-shot numbers reported. Their conclusion:
+"current structure-based representations are not primed for performant affinity
+prediction."
+
+**UNVERIFIED:** `boltz2_aff.ckpt` hyperparameters (ensemble flag, module dims)
+— checkpoint not downloadable during the check.
+
+### Consequence
+
+`PLAN.md:68-72` pre-registered: "attribution on ipTM should fail, and
+attribution on Boltz-2's dense affinity head should work." The first half is
+confirmed by the measured 2026-09-24 run. The second half is **untestable in
+this model on PPI for architectural reasons** — not budget-limited. This
+completes the negative rather than leaving it open, and it reinforces (does not
+contradict) the Phase-5 post-mortem at section 14, lines 1411-1413.
+
+---
+
+## 16. MSA sensitivity — pin the wild-type MSA in stage 04, 2026-10-01
+
+### MSA re-query under point mutation
+
+New diagnostic `scripts/msa_sensitivity.py`, output
+`results/msa_sensitivity.json`. 1JTG chain B, WT plus 5 alanine mutants
+(E30A, Y52A, N88A, W111A, W149A), ColabFold API queried directly because
+`boltz` is not installed locally.
+
+Accession-level overlap (Jaccard) and profile L1 per position:
+
+| Mutation | %shared | L1/pos | L1@mut | L1@other | ratio |
+|---|---|---|---|---|---|
+| Y52A | 98.6% | 0.0147 | 0.0274 | 0.0147 | 1.9 |
+| N88A | 90.4% | 0.0689 | 0.0804 | 0.0689 | 1.2 |
+| W111A | 67.1% | 0.1213 | 0.1485 | 0.1211 | 1.2 |
+| W149A | 64.6% | 0.1681 | 0.1646 | 0.1682 | 1.0 |
+| E30A | 50.0% | 0.4540 | 0.8378 | 0.4517 | 1.9 |
+
+L1 rank-orders **perfectly** with homolog-set overlap. The L1@mut/L1@other
+ratio averages 1.4 (range 1.0-1.9), so **the profile shift is uniform across
+columns, not localised at the mutated position**. Mechanism: the profile moves
+because alignment membership changes (MMseqs2 scores against the query, so
+borderline hits fall below threshold), not because the mutated column changes.
+
+**The WT replicate control is INVALID.** Three repeat WT fetches returned 100%
+overlap, L1=0.000 — but the server reused the same ticket ID, so this measured
+*cache* determinism, not *search* determinism. It cannot separate mutation
+effect from server variance. Do not cite the "zero noise floor".
+
+**Decision is unaffected either way.** IG holds `profile` fixed by
+construction, so this variation is unrepresentable by the gradient under either
+explanation, and it carries no position-specific information IG could use. **Pin
+the WT MSA in stage 04** by passing `msa=msa_by_chain` as stage 02 already does
+(`scripts/02_embed_deltas.py:285,335`). `--no-msa-server` alone is NOT the fix
+— it supplies no MSA at all, a third condition.
+
+**Correction.** The first version of this diagnostic reported "92.6% homolog set
+difference, server nondeterminism dominates". That was an artifact of comparing
+full a3m header lines, which carry per-query bit scores and E-values (same
+accession `UniRef100_UPI001E2E0A3B` appears with scores 250/259/260 across
+queries). Corrected by comparing accessions only.
+
+### ColabFold `mode="all"` may cost two-thirds of MSA diversity
+
+`mode="all"` returns UniRef hits only: **71 homologs** for 1JTG chain B.
+`mode="env"` additionally returns ~137 BFD/Mgnify/MetaEuk/SMAG environmental
+hits in `bfd.mgnify30.metaeuk30.smag30.a3m`. The repo uses `mode="all"`.
+
+Relevance: AlphaInterp (Feldman & Skolnick, bioRxiv 2026,
+[PMC13131572](https://pmc.ncbi.nlm.nih.gov/articles/PMC13131572/)) finds MSA
+**diversity, not depth**, drives performance: >=80% identity homologs give
+near-zero benefit even at n=10; <=30% identity gives TM 0.88-0.92; 5-10
+appropriately diverged homologs approach full performance; fake MSAs give no
+benefit at any depth. Environmental databases are where diverged homologs live.
+
+**Unresolved.** This affects every Boltz-2 number produced so far, not only the
+pinning question. One run at `mode="env"` would settle it.

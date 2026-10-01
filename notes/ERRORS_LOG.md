@@ -1534,3 +1534,39 @@ mechanism, and this records it while the numbers are exact.
   hot-spot positions, making precision@5 arithmetically impossible, and
   dropped it. The check existed; it was applied to one quantity and not the
   other.
+
+---
+
+# 2026-10-01 — MSA sensitivity diagnostic
+
+## 42. ColabFold result endpoint returns tar.gz but the fetch path decodes it as text
+
+- **Stage:** MSA fetch
+- **Symptom:** `src/igv/skempi.py:824` does `a3m_text = resp.text` on the
+  ColabFold `/result/download/{ticket_id}` response, which returns **tar.gz**
+  (containing `uniref.a3m`, `pdb70.m8`, `msa.sh`). Binary through a text
+  decoder.
+- **Root cause:** `resp.text` applies the response's charset encoding to the raw
+  bytes. For a tar.gz payload this silently mangles the content rather than
+  raising.
+- **Verified:** 2026-10-01, by inspecting the response content-type and the
+  archive contents directly.
+- **Status:** not fixed. The hazard is live in any code path that fetches a3m
+  via the ColabFold result endpoint and reads `.text` instead of `.content`.
+
+## 43. Cached `.a3m` files carry trailing NUL byte from tar block padding
+
+- **Stage:** MSA parsing
+- **Symptom:** `file` reports cached a3m files as "data" rather than text.
+  **`grep` silently treats them as binary, returning no output and no error** —
+  any a3m parsing via grep sees zero sequences and reports success.
+- **Root cause:** tar block padding appends NUL bytes to fill the final 512-byte
+  block. When a3m content is extracted and written without stripping, the
+  trailing NUL persists. A single NUL byte is sufficient for `grep` to classify
+  the file as binary and suppress output.
+- **Detection:** `awk '/^>/'` and `grep -a` both work; plain `grep` does not.
+  `file` returning "data" rather than "ASCII text" is the tell.
+- **Fix:** stripped at write and parse time inside `scripts/msa_sensitivity.py`.
+  The hazard remains for any other parser reading these cached files.
+- **Status:** partially fixed (in the diagnostic script only). Any other code
+  path reading cached a3m files is exposed.
