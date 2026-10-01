@@ -1,4 +1,4 @@
-# Roadmap — gradient attribution on Boltz-2, measured against experiment
+# Logging — gradient attribution on Boltz-2, measured against experiment
 
 Two validation arms. **Alanine scanning** (SKEMPI, sections 1-8) asks which
 *positions* matter and is confounded by side-chain size; **saturation**

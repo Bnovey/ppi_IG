@@ -533,7 +533,7 @@ def pair_layer_ig(
     the C channels with a **dot product** (not an L2 norm), then symmetrised
     as ``(A + A^T) / 2``.  The halving is not cosmetic: ``A + A^T`` doubles the
     total, so only the averaged form keeps ``sum(map) = f(z_x) - f(z_b)``.
-    (ROADMAP section 12 writes the symmetrisation as ``A[i,j] + A[j,i]``;
+    (logging.md section 12 writes the symmetrisation as ``A[i,j] + A[j,i]``;
     completeness is the constraint it states as primary, so the /2 wins.)
     The dot product preserves sign and satisfies completeness;
     an L2 norm would be non-negative, discard sign, and flatten the map by

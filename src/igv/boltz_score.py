@@ -2095,7 +2095,7 @@ def confidence_head_forward(
     Does NOT wrap in the outer ``use_reentrant=True`` checkpoint that
     :func:`confidence_forward` uses at line 1832: the inner per-layer
     checkpoints are already ``use_reentrant=False``, and bypassing the outer
-    wrapper is exactly the intent (see ``notes/ROADMAP.md`` section 12).
+    wrapper is exactly the intent (see ``notes/logging.md`` section 12).
 
     ``z`` must be fp32; it is not cast even under autocast, so that its
     ``.grad`` stays fp32.

@@ -2,7 +2,7 @@
 
 How to start the VM, run the pipeline, and avoid known traps.
 
-For the research plan and science context, see `ROADMAP.md`. For the original
+For the research plan and science context, see `logging.md`. For the original
 proposal, see `PLAN.md` (must not be modified).
 
 ---
@@ -23,7 +23,7 @@ complexes, paired against the old L2 norm on the same artifacts:
 
 simplex mean +0.1143 (p=0.54); L2 mean +0.1888 (p=0.16); paired difference
 -0.0744 (p=0.70). Simplex won 1 of 4. **1 of 8 measurements cleared its own
-shuffled null.** Full detail in `ROADMAP.md` section 14 "VERDICT".
+shuffled null.** Full detail in `logging.md` section 14 "VERDICT".
 
 ### Read this before proposing anything
 
@@ -71,7 +71,7 @@ against a kill condition written before the data existed. The pair map encodes
 **contact geometry, not binding energetics**: `Spearman(|A[i,j]|, centroid
 distance) = -0.527` while the raw correlation against measured coupling is
 -0.0335 at permutation p=0.78. Section 12 predicted exactly this failure
-signature. Full detail in `ERRORS_LOG.md` entry 35 and `ROADMAP.md` section 13
+signature. Full detail in `ERRORS_LOG.md` entry 35 and `logging.md` section 13
 "STAGE 3 RESULT".
 
 **Artifacts (all local; `results/` is gitignored):**
@@ -127,7 +127,7 @@ reach this point. Stage 4 (1BRS plus four complexes) is correctly unspent.
 **GATE A PASSED 2026-09-29, ~$1.70, ~20 min of A100.** The z seam works:
 gradient reaches an externally supplied pair tensor through the real
 checkpointed confidence head. Artifact
-`results/gate_a_1VFB_complex_pde.json`, full detail in `ROADMAP.md`
+`results/gate_a_1VFB_complex_pde.json`, full detail in `logging.md`
 section 13 Stage 1. Headline: at L=352 on full 1VFB, `z.grad` is
 `(1, 352, 352, 128)`, fp32, zero-fraction 0.0000, all finite, and
 **completeness absolute error 0.003627 — 0.64% relative at m=5**. Peak VRAM
@@ -184,9 +184,14 @@ running:
 curl -sfL -o data/raw/1vfb.pdb https://files.rcsb.org/download/1VFB.pdb
 ```
 
-`notes/` is gitignored too, so **the corrected ROADMAP/ERRORS_LOG/MEMORY never
-reach the VM.** The code syncs; the reasoning does not. Do not rely on reading
-plan documents from the VM.
+**Corrected 2026-10-01: `notes/` is no longer gitignored** -- `logging.md`,
+`ERRORS_LOG.md`, `MEMORY.md`, `HANDOFF.md` and `PLAN.md` are now tracked and
+published, so a `git pull` or bundle fetch DOES carry them to the VM. The
+`results/*.npz` artifacts (96 MB) are still ignored and still do not travel.
+The original warning below held while `notes/` was excluded and is kept because
+any bundle built from a commit before `b06e4d1` still lacks them:
+~~`notes/` is gitignored too, so the corrected plan documents never reach the
+VM. The code syncs; the reasoning does not.~~
 
 ---
 
@@ -201,7 +206,7 @@ plan documents from the VM.
 ran 2026-09-29)**.** The 2026-09-27 session never ran a
 model. The VM was started once for a health check (A100-SXM4-80GB confirmed,
 429 GB free) and stopped again about 12 minutes later, roughly $1. The only
-measured science in the project remains the 1JTG chain B table in `ROADMAP.md`
+measured science in the project remains the 1JTG chain B table in `logging.md`
 section 8 — headline **IG m=32 with `mean_aa` = 0.357**, above a null p95 of
 0.313, with a CI of [-0.002, 0.656] that excludes zero by two thousandths. Do
 not describe that as replicated; it has not been.
@@ -211,7 +216,7 @@ not describe that as replicated; it has not been.
 1. **Rejected GB1, adopted Starr 2020 / 6M0J as the saturation arm.** GB1's
    floor lands on the hot spots (position 27 has all 19 substitutions pinned),
    it couples folding to binding by its own definition, and 1FCC is the wrong
-   protein G paralogue. Entries 25-27, `ROADMAP.md` sections 9-10.
+   protein G paralogue. Entries 25-27, `logging.md` sections 9-10.
 2. **Verified the within-position design removes the volume confound** —
    +0.44 pooled to -0.034 within position on Starr, with pooled-on-Starr at
    +0.027, which shows the +0.44 is a property of the alanine-scan *design*.
@@ -387,7 +392,7 @@ Env overrides: `SCORE` (default `complex_pde`), `METHOD` (default `ig`),
 | Job | Scope | Note |
 |---|---|---|
 | Pool 3HFM, 1VFB, 1JRH, 2JEL | 4 complexes | ~$12, ~2.5 h. Takes effective n from 28 to ~128. Do this **before** the scan: if 0.357 does not reproduce, it was noise and that is cheap to learn. |
-| 1JTG brute force | 28 positions x 19 = **532 mutants** | ~$13. `ROADMAP.md` said 931; the real number comes from `04_scan.py --dry-run`. |
+| 1JTG brute force | 28 positions x 19 = **532 mutants** | ~$13. `logging.md` said 931; the real number comes from `04_scan.py --dry-run`. |
 | 6M0J saturation | 791 tokens | ~1.5-3 h per 32-step IG run. One IG run covers **all 194 positions x 20**; only the scan scales, at 399 forward passes for the 5 A set. |
 
 **Stop the VM when done. It does not stop itself.**
@@ -511,7 +516,7 @@ investigation from guesswork into measurement.
   added. Fixing the first does not fix the second.
 - **`data/raw/` and `notes/` are gitignored**, so PDB files and every planning
   document are absent from the VM. Fetch structures with `curl` from RCSB
-  before a run; never expect to read `ROADMAP.md` on the box.
+  before a run; never expect to read `logging.md` on the box.
 - **The boltz featurisation cache substitutes silently across datasets, and has
   actually done so** (`ERRORS_LOG.md` entry 34). `process_inputs` skips any
   input whose YAML stem is already processed, the stem is always `input`, and
@@ -534,5 +539,5 @@ investigation from guesswork into measurement.
   at exactly 5.000 A — a `<=` to `<` mutation survives the suite. Measure-zero
   in practice, recorded rather than fixed.
 - **Every claim in this repo's docs should be traceable to a command.** The
-  Phase 3 estimate of 931 mutants sat in `ROADMAP.md` for days and was wrong;
+  Phase 3 estimate of 931 mutants sat in `logging.md` for days and was wrong;
   `04_scan.py --dry-run` says 532. Prefer printing the number to estimating it.

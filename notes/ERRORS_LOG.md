@@ -913,7 +913,7 @@ separate W->A measurements: +4.81, +4.66, +4.34, +4.25, +3.50.
   C/D. Dropping B to save tokens models a half-molecule that does not exist in
   solution. Use A+B+C = 468 tokens; drop only D.
 - **Status:** rejected in favour of Starr 2020 / 6M0J, which has real affinities
-  and a matched expression control in the same file. See ROADMAP section 10.
+  and a matched expression control in the same file. See logging.md section 10.
 
 ---
 
@@ -983,7 +983,7 @@ separate W->A measurements: +4.81, +4.66, +4.34, +4.25, +3.50.
   stage in the pipeline and writes `results/{dataset}_{score}_scan.csv`. No
   script in the repo read it. On the SKEMPI arm `05_predict.py`'s prediction CSV
   was orphaned too, because `10_skempi_hotspots.py` consumes the gradient `.npz`
-  directly. ROADMAP Phase 4 ("compare") had no implementation.
+  directly. logging.md Phase 4 ("compare") had no implementation.
 - **Consequence had it not been caught:** the 1JTG brute-force scan -- the job
   the roadmap calls mandatory for the headline claim -- would have run for hours
   and left its result on disk, uncompared. The project's central question, can
@@ -1100,7 +1100,7 @@ No GPU. The VM was not started. Everything below was measured from
 ## 33. The Phase 5 ground truth came from row order and a temperature it never had
 
 - **Symptom:** a fresh, independent implementation of double-mutant-cycle
-  extraction reproduced every *counting* statistic in `ROADMAP.md` section 12
+  extraction reproduced every *counting* statistic in `logging.md` section 12
   exactly (82 cycles, 76 pairs, 31 positions, 66 cross-chain, the 11-complex
   table) but none of the coupling *values*: std 1.30 against the recorded 1.84,
   range -4.02..+4.29 against -4.96..+7.40, 48 of 82 above 0.5 kcal/mol
@@ -1122,7 +1122,7 @@ No GPU. The VM was not started. Everything below was measured from
   error that cancels within one experimental series does not cancel across
   series -- it lands directly on the quantity of interest, and the subtraction
   removes the additive part that would otherwise dominate and hide it. Match
-  **within `Reference`**, breaking ties on temperature. Note that `ROADMAP.md`
+  **within `Reference`**, breaking ties on temperature. Note that `logging.md`
   section 13's own Stage 0c spec said to use "RT = 0.001987 * 298.15", so the
   plan instructed the bug.
 - **The corrected target is materially harder.** 1JTG: 80 cycles, 74 pairs,

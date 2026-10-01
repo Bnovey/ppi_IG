@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage 13 -- join pair-attribution map to SKEMPI double-mutant cycles.
 
-Runs the four controls from ROADMAP.md section 12:
+Runs the four controls from logging.md section 12:
 
   1. Inter-residue distance partial -- Cbeta-Cbeta distance predicts coupling
      on its own, so report partial correlation controlling for it.
