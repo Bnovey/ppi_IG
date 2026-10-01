@@ -1,0 +1,39 @@
+{
+  "dataset": "4fqi_h1",
+  "score": "complex_pde",
+  "chain": "H",
+  "checks": [
+    {
+      "name": "completeness",
+      "passed": false,
+      "value": 3.6387251532739855,
+      "threshold": "relative error < 0.05",
+      "detail": "f(x)=3.855304 f(baseline)=12.449280 sum(ig)=-39.865089",
+      "informational": false
+    },
+    {
+      "name": "frozen_vs_full",
+      "passed": false,
+      "value": null,
+      "threshold": "informational only, no pass/fail",
+      "detail": "raised OutOfMemoryError: CUDA out of memory. Tried to allocate 418.00 MiB. GPU 0 has a total capacity of 79.25 GiB of which 121.81 MiB is free. Including non-PyTorch memory, this process has 79.12 GiB memory in use. Of the allocated memory 78.55 GiB is allocated by PyTorch, and 67.09 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+      "informational": true
+    },
+    {
+      "name": "dead_target",
+      "passed": true,
+      "value": 0.0,
+      "threshold": "max|attribution| < 1e-8",
+      "detail": "max|grad| = 0.000e+00, f(x) = 3.855304",
+      "informational": false
+    },
+    {
+      "name": "arm_assertion",
+      "passed": true,
+      "value": [],
+      "threshold": "recorded arm matches intended arm",
+      "detail": "no artifacts present yet (run stages 02/03 first)",
+      "informational": false
+    }
+  ]
+}

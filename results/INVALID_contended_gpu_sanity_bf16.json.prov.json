@@ -1,0 +1,56 @@
+{
+  "argv": [
+    "scripts/07_sanity.py",
+    "--dataset",
+    "4fqi_h1",
+    "--score",
+    "complex_pde",
+    "--checks",
+    "completeness,frozen_vs_full,dead_target,arm_assertion",
+    "--out",
+    "results/sanity_bf16_{dataset}_{score}.json"
+  ],
+  "arm": {
+    "autocast": "bf16",
+    "chain": "H",
+    "chunk_profile": "auto",
+    "dataset": "4fqi_h1",
+    "dtype": "bf16",
+    "method": "sanity",
+    "pf_chunk": null,
+    "pf_group_size": 4,
+    "score": "complex_pde",
+    "tri_attn_ckpt": true,
+    "use_kernels": false
+  },
+  "created_utc": "2026-09-04T21:07:52+00:00",
+  "env": {
+    "boltz": "2.2.1",
+    "cuda_available": true,
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA A100-SXM4-80GB",
+    "gpu_total_gib": 79.2,
+    "hostname": "d067ef8258dc",
+    "platform": "Linux-6.8.0-1066-gcp-x86_64-with-glibc2.35",
+    "python": "3.11.15",
+    "torch": "2.7.1+cu126"
+  },
+  "git_commit": "808dd23eec63744856b4abfa745ac9a48ffbc8d2",
+  "git_dirty": true,
+  "inputs": {
+    "dataset": "4fqi_h1",
+    "structure": "data/raw/4fqi_hlab.pdb"
+  },
+  "notes": "Tier-0 gate. Non-informational failures make downstream numbers void.",
+  "output": "results/sanity_bf16_4fqi_h1_complex_pde.json",
+  "params": {
+    "checks": [
+      "completeness",
+      "frozen_vs_full",
+      "dead_target",
+      "arm_assertion"
+    ],
+    "n_sample": 30
+  },
+  "stage": "07_sanity"
+}

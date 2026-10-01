@@ -1,0 +1,46 @@
+{
+  "argv": [
+    "scripts/10_skempi_hotspots.py",
+    "--complex",
+    "3HFM",
+    "--chain",
+    "Y",
+    "--grad",
+    "/tmp/3hfm.npz",
+    "--reduction",
+    "simplex",
+    "--out",
+    "results/3HFM_hotspots_simplex.json"
+  ],
+  "arm": {
+    "chain": "Y",
+    "complex": "3HFM",
+    "stage": "skempi_hotspots"
+  },
+  "created_utc": "2026-10-01T16:57:27+00:00",
+  "env": {
+    "boltz": null,
+    "cuda_available": false,
+    "hostname": "wifi-10-44-30-115.wifi.berkeley.edu",
+    "platform": "macOS-15.5-arm64-arm-64bit-Mach-O",
+    "python": "3.13.2",
+    "torch": "2.5.1"
+  },
+  "git_commit": "0bf19ef879be320d1dfdeeb4b307916ba6a7c9d8",
+  "git_dirty": false,
+  "inputs": {
+    "grad": "/tmp/3hfm.npz",
+    "pdb": "data/raw/3hfm.pdb",
+    "skempi": "skempi_v2.csv"
+  },
+  "notes": null,
+  "output": "results/3HFM_hotspots_simplex.json",
+  "params": {
+    "allow_mismatch": false,
+    "chain": "Y",
+    "complex": "3HFM",
+    "hotspot_threshold": 2.0,
+    "reduction": "simplex"
+  },
+  "stage": "10_skempi_hotspots"
+}

@@ -1,0 +1,62 @@
+{
+  "argv": [
+    "scripts/08_memscale.py",
+    "--dataset",
+    "4fqi_h1",
+    "--score",
+    "complex_pde",
+    "--out",
+    "results/memscale_base.csv"
+  ],
+  "arm": {
+    "chunk_profile": "large",
+    "dataset": "4fqi_h1",
+    "measurement": "peak_vram",
+    "method": "plain_grad",
+    "score": "complex_pde",
+    "trunk": "full"
+  },
+  "created_utc": "2026-09-04T20:26:26+00:00",
+  "env": {
+    "boltz": "2.2.1",
+    "cuda_available": true,
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA A100-SXM4-80GB",
+    "gpu_total_gib": 79.2,
+    "hostname": "4acf3988d0f8",
+    "platform": "Linux-6.8.0-1066-gcp-x86_64-with-glibc2.35",
+    "python": "3.11.15",
+    "torch": "2.7.1+cu126"
+  },
+  "git_commit": "808dd23eec63744856b4abfa745ac9a48ffbc8d2",
+  "git_dirty": true,
+  "inputs": {
+    "dataset": "4fqi_h1",
+    "rows_csv": "results/memscale_base.csv"
+  },
+  "notes": "DIAGNOSTIC sweep, not a pipeline stage. peak_allocated_gib is torch.cuda.max_memory_allocated with peak stats reset per point. Rows with completed=False are TRUNCATED LOWER BOUNDS -- the allocator hit the wall, so the requirement is at least that and unknown above. They are excluded from the fit and counted in fit.excluded_rows. max_memory_allocated does not see the ~0.78 GiB of non-PyTorch CUDA context overhead (the recorded OOM shows 79.21 GiB in use by the process vs 78.43 GiB allocated by PyTorch), so both the measured peaks and the extrapolation UNDERSTATE the true requirement by roughly that much plus fragmentation. The nine peaks in ERRORS_LOG.md entry 12 are lower bounds from runs that never finished and must not be compared with these as if they were requirements. Literature expectation for the exponent is ~2.7 (MegaFold: AF3 EvoAttention activations 3.75 GB at L=96 -> 24.61 GB at L=192). UNCONFIRMED for this code path -- confirm against fit.exponent_b, do not assume it. Confound: chain count and MSA pairing change with the chain subset (boltz fetches paired MSAs only when there is more than one protein entity), so n_chains is a second variable alongside n_tokens. Recorded per row. msa_depth is recorded per point because MSA depth is unpadded and data-dependent (pad_to_max_seqs=False), making it a second uncontrolled variable that directly drives the checkpointed MSA term (3.25 GiB at L=730 per ERRORS_LOG.md).",
+  "output": "results/memscale_base.json",
+  "params": {
+    "gradient_checkpointing": true,
+    "ladder": "chain-subset",
+    "msa_spec": "server",
+    "pinned_env": {
+      "IGV_AUTOCAST": null,
+      "IGV_CHUNK_PROFILE": "large",
+      "IGV_PF_CHUNK": "128",
+      "IGV_PF_GROUP_SIZE": 4,
+      "IGV_TRI_ATTN_CKPT": null,
+      "IGV_USE_KERNELS": null
+    },
+    "recycling_steps": 1,
+    "sizes": [
+      230,
+      406,
+      500,
+      554,
+      730
+    ],
+    "target_tokens": 730
+  },
+  "stage": "08_memscale"
+}

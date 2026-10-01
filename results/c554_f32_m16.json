@@ -1,0 +1,23 @@
+{
+  "dataset": "4fqi_h1",
+  "score": "complex_pde",
+  "chain": "H",
+  "chain_subset": [
+    "A",
+    "H",
+    "L"
+  ],
+  "n_tokens": 554,
+  "n_tokens_pdb": 554,
+  "m_steps": 16,
+  "checks": [
+    {
+      "name": "completeness",
+      "passed": false,
+      "value": 1.7204547132075994,
+      "threshold": "relative error < 0.05",
+      "detail": "m_steps=16 f(x)=3.651461 f(baseline)=11.749341 sum(ig)=-22.029915",
+      "informational": false
+    }
+  ]
+}

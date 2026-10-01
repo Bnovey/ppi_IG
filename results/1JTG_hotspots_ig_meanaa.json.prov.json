@@ -1,0 +1,43 @@
+{
+  "argv": [
+    "scripts/10_skempi_hotspots.py",
+    "--complex",
+    "1JTG",
+    "--grad",
+    "results/1JTG_complex_pde_ig_meanaa_grad.npz",
+    "--chain",
+    "B",
+    "--out",
+    "results/1JTG_hotspots_ig_meanaa.json"
+  ],
+  "arm": {
+    "chain": "B",
+    "complex": "1JTG",
+    "stage": "skempi_hotspots"
+  },
+  "created_utc": "2026-09-25T01:51:52+00:00",
+  "env": {
+    "boltz": "2.2.1",
+    "cuda_available": false,
+    "hostname": "339a1d6b15f2",
+    "platform": "Linux-6.8.0-1066-gcp-x86_64-with-glibc2.35",
+    "python": "3.11.15",
+    "torch": "2.7.1+cu126"
+  },
+  "git_commit": "b3d37635a3b0737b839b6f4e348133bfe8c813ba",
+  "git_dirty": false,
+  "inputs": {
+    "grad": "results/1JTG_complex_pde_ig_meanaa_grad.npz",
+    "pdb": "data/raw/1jtg.pdb",
+    "skempi": "skempi_v2.csv"
+  },
+  "notes": null,
+  "output": "results/1JTG_hotspots_ig_meanaa.json",
+  "params": {
+    "allow_mismatch": false,
+    "chain": "B",
+    "complex": "1JTG",
+    "hotspot_threshold": 2.0
+  },
+  "stage": "10_skempi_hotspots"
+}

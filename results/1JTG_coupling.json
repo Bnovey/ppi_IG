@@ -1,0 +1,55 @@
+{
+  "complex": "1JTG_A_B",
+  "pdb_id": "1JTG",
+  "n_cycles": 80,
+  "n_distinct_pairs": 74,
+  "n_distinct_positions": 31,
+  "n_cross_chain": 66,
+  "coupling_range": [
+    -3.534030813873118,
+    1.960690295601329
+  ],
+  "coupling_std": 0.9173786560327359,
+  "n_abs_coupling_gt_05": 33,
+  "mean_abs_coupling_cross": 0.6385704156633286,
+  "mean_abs_coupling_same": 0.5685620272986056,
+  "cross_same_gap": 0.070008388364723,
+  "cross_same_mannwhitney_p": 0.7469024486733276,
+  "cross_same_welch_p": 0.6542032831930533,
+  "n_repeated_pairs": 6,
+  "replicate_spread_median": 0.41559769627045706,
+  "replicate_spread_max": 2.150868880826386,
+  "controls": {
+    "distance_partial": {
+      "rho_raw": -0.03349879567524458,
+      "rho_distance_coupling": 0.400532136394142,
+      "rho_partial": 0.176355101374993
+    },
+    "singles_partial_gate_c": {
+      "rho_pair_coupling": -0.03349879567524458,
+      "rho_single_i_coupling": -0.06093031598414889,
+      "rho_single_j_coupling": -0.14445852492801098,
+      "rho_partial_pair_given_singles": 0.0018870467718345339
+    },
+    "permutation_null": {
+      "n_permutations": 1000,
+      "observed_rho": -0.03349879567524458,
+      "null_mean": 0.0029402811895436133,
+      "null_p95_abs": 0.22564978648051862,
+      "p_value_two_sided": 0.782
+    },
+    "cluster_bootstrap": {
+      "n_clusters": 31,
+      "n_pairs": 80,
+      "rho": -0.03349879567524458,
+      "ci_95_cluster": [
+        -0.15581535384873607,
+        0.0624453165239341
+      ],
+      "ci_95_naive": [
+        -0.2750355715058133,
+        0.20630060305480408
+      ]
+    }
+  }
+}

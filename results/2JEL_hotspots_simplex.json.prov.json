@@ -1,0 +1,46 @@
+{
+  "argv": [
+    "scripts/10_skempi_hotspots.py",
+    "--complex",
+    "2JEL",
+    "--chain",
+    "P",
+    "--grad",
+    "/tmp/2jel.npz",
+    "--reduction",
+    "simplex",
+    "--out",
+    "results/2JEL_hotspots_simplex.json"
+  ],
+  "arm": {
+    "chain": "P",
+    "complex": "2JEL",
+    "stage": "skempi_hotspots"
+  },
+  "created_utc": "2026-09-30T23:15:30+00:00",
+  "env": {
+    "boltz": null,
+    "cuda_available": false,
+    "hostname": "Bowmans-MacBook-Air.local",
+    "platform": "macOS-15.5-arm64-arm-64bit-Mach-O",
+    "python": "3.13.2",
+    "torch": "2.5.1"
+  },
+  "git_commit": "0bf19ef879be320d1dfdeeb4b307916ba6a7c9d8",
+  "git_dirty": false,
+  "inputs": {
+    "grad": "/tmp/2jel.npz",
+    "pdb": "data/raw/2jel.pdb",
+    "skempi": "skempi_v2.csv"
+  },
+  "notes": null,
+  "output": "results/2JEL_hotspots_simplex.json",
+  "params": {
+    "allow_mismatch": false,
+    "chain": "P",
+    "complex": "2JEL",
+    "hotspot_threshold": 2.0,
+    "reduction": "simplex"
+  },
+  "stage": "10_skempi_hotspots"
+}

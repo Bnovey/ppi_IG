@@ -1,0 +1,70 @@
+{
+  "argv": [
+    "scripts/07_sanity.py",
+    "--dataset",
+    "4fqi_h1",
+    "--score",
+    "complex_pde",
+    "--chain-subset",
+    "H,L,A",
+    "--checks",
+    "completeness",
+    "--m-steps",
+    "16",
+    "--out",
+    "results/c554_bf16_m16.json"
+  ],
+  "arm": {
+    "autocast": "bf16",
+    "chain": "H",
+    "chain_subset": [
+      "A",
+      "H",
+      "L"
+    ],
+    "chunk_profile": "auto",
+    "dataset": "4fqi_h1",
+    "dtype": "bf16",
+    "m_steps": 16,
+    "method": "sanity",
+    "n_tokens": 554,
+    "n_tokens_pdb": 554,
+    "pf_chunk": null,
+    "pf_group_size": 4,
+    "score": "complex_pde",
+    "tri_attn_ckpt": true,
+    "use_kernels": false
+  },
+  "created_utc": "2026-09-09T19:41:45+00:00",
+  "env": {
+    "boltz": "2.2.1",
+    "cuda_available": true,
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA A100-SXM4-80GB",
+    "gpu_total_gib": 79.2,
+    "hostname": "b2f6462a20d3",
+    "platform": "Linux-6.8.0-1066-gcp-x86_64-with-glibc2.35",
+    "python": "3.11.15",
+    "torch": "2.7.1+cu126"
+  },
+  "git_commit": "a8e65b49325c66794e27b863df1ebe9ff5a0a0de",
+  "git_dirty": false,
+  "inputs": {
+    "dataset": "4fqi_h1",
+    "structure": "data/raw/4fqi_hlab.pdb"
+  },
+  "notes": "Tier-0 gate. Non-informational failures make downstream numbers void.",
+  "output": "results/c554_bf16_m16.json",
+  "params": {
+    "chain_subset": [
+      "A",
+      "H",
+      "L"
+    ],
+    "checks": [
+      "completeness"
+    ],
+    "n_sample": 30
+  },
+  "stage": "07_sanity"
+}

@@ -1,0 +1,32 @@
+{
+  "dataset": "4fqi_h1",
+  "score": "complex_pde",
+  "chain": "H",
+  "chain_subset": [
+    "A",
+    "H",
+    "L"
+  ],
+  "n_tokens": 554,
+  "n_tokens_pdb": 554,
+  "m_steps": 16,
+  "baseline_scale": 0.0,
+  "checks": [
+    {
+      "name": "random_weights",
+      "passed": true,
+      "value": 0.07670505321650047,
+      "threshold": "|Spearman vs trained| < 0.3",
+      "detail": "reinitialised 5035 parameter tensors (3058 xavier, 1079 zeroed biases, 898 unit norms). PASS: randomising the model destroys the attribution, so the signal depends on learned weights.",
+      "informational": false
+    },
+    {
+      "name": "dead_target",
+      "passed": true,
+      "value": 0.0,
+      "threshold": "max|attribution| < 1e-8",
+      "detail": "max|grad| = 0.000e+00, f(x) = 3.657238",
+      "informational": false
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "argv": [
+    "scripts/07_sanity.py",
+    "--dataset",
+    "4fqi_h1",
+    "--score",
+    "complex_pde"
+  ],
+  "arm": {
+    "chain": "H",
+    "dataset": "4fqi_h1",
+    "method": "sanity",
+    "score": "complex_pde"
+  },
+  "created_utc": "2026-09-02T23:40:00+00:00",
+  "env": {
+    "boltz": "2.2.1",
+    "cuda_available": true,
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA A100-SXM4-80GB",
+    "gpu_total_gib": 79.2,
+    "hostname": "2553a16e1ad8",
+    "platform": "Linux-6.8.0-1066-gcp-x86_64-with-glibc2.35",
+    "python": "3.11.15",
+    "torch": "2.7.1+cu126"
+  },
+  "git_commit": "079b110fd4f97d7503272530918f841b27f23e4a",
+  "git_dirty": false,
+  "inputs": {
+    "dataset": "4fqi_h1",
+    "structure": "data/raw/4fqi_hlab.pdb"
+  },
+  "notes": "Tier-0 gate. Non-informational failures make downstream numbers void.",
+  "output": "results/sanity_4fqi_h1_complex_pde.json",
+  "params": {
+    "checks": [
+      "completeness",
+      "m_sweep",
+      "random_weights",
+      "dead_target",
+      "signal_control",
+      "frozen_vs_full",
+      "arm_assertion"
+    ],
+    "n_sample": 30
+  },
+  "stage": "07_sanity"
+}

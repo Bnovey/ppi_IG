@@ -1,0 +1,617 @@
+{
+  "complex": "1JTG",
+  "chain": "B",
+  "reduction": "l2norm",
+  "n_residues_compared": 28,
+  "n_mutations_used": 96,
+  "n_excluded_mismatch": 0,
+  "hotspot_threshold_kcal_mol": 2.0,
+  "n_hotspots_max_agg": 11,
+  "n_hotspots_mean_agg": 11,
+  "spearman_abs_ddg_max_agg": 0.29455243370285034,
+  "spearman_abs_ddg_mean_agg": 0.20914317783362238,
+  "spearman_signed_ddg_max_agg": 0.33068711887829305,
+  "spearman_signed_ddg_mean_agg": 0.28634000525388614,
+  "topk_overlap_at_5_max": 0.2,
+  "topk_overlap_at_5_mean": 0.2,
+  "topk_overlap_at_5_chance": 0.17857142857142858,
+  "hotspot_precision_at_5_max": 0.6,
+  "hotspot_precision_at_5_mean": 0.6,
+  "hotspot_precision_at_5_chance_max": 0.39285714285714285,
+  "hotspot_precision_at_5_chance_mean": 0.39285714285714285,
+  "topk_overlap_at_10_max": 0.6,
+  "topk_overlap_at_10_mean": 0.6,
+  "topk_overlap_at_10_chance": 0.35714285714285715,
+  "hotspot_precision_at_10_max": 0.7,
+  "hotspot_precision_at_10_mean": 0.7,
+  "hotspot_precision_at_10_chance_max": 0.39285714285714285,
+  "hotspot_precision_at_10_chance_mean": 0.39285714285714285,
+  "topk_overlap_at_20_max": 0.75,
+  "topk_overlap_at_20_mean": 0.75,
+  "topk_overlap_at_20_chance": 0.7142857142857143,
+  "hotspot_precision_at_20_max": 0.5,
+  "hotspot_precision_at_20_mean": 0.5,
+  "hotspot_precision_at_20_chance_max": 0.39285714285714285,
+  "hotspot_precision_at_20_chance_mean": 0.39285714285714285,
+  "confound_correlations": {
+    "burial": {
+      "rho_vs_abs_ddg": 0.4360799506400006,
+      "rho_vs_abs_ddg_ci": [
+        0.14326878373004615,
+        0.6495354522997511
+      ],
+      "rho_vs_grad": 0.5446086480569239,
+      "rho_vs_grad_ci": [
+        0.23219482694087623,
+        0.7467844058145555
+      ]
+    },
+    "delta_rsa": {
+      "rho_vs_abs_ddg": 0.17173377801115644,
+      "rho_vs_abs_ddg_ci": [
+        -0.19512058667971463,
+        0.5264299281515862
+      ],
+      "rho_vs_grad": 0.2212486640651045,
+      "rho_vs_grad_ci": [
+        -0.1387820324343617,
+        0.5773107999452184
+      ]
+    },
+    "distance_to_partner": {
+      "rho_vs_abs_ddg": -0.11606898874536112,
+      "rho_vs_abs_ddg_ci": [
+        -0.4728906512368388,
+        0.28552580919978343
+      ],
+      "rho_vs_grad": -0.3404488232074439,
+      "rho_vs_grad_ci": [
+        -0.6058593879431389,
+        -0.0071673518332886375
+      ]
+    },
+    "hydrophobicity": {
+      "rho_vs_abs_ddg": -0.17362910655349006,
+      "rho_vs_abs_ddg_ci": [
+        -0.5599242015537534,
+        0.2295344310144531
+      ],
+      "rho_vs_grad": -0.07136131725220775,
+      "rho_vs_grad_ci": [
+        -0.4604987643265839,
+        0.3702761512787744
+      ]
+    },
+    "norm_position": {
+      "rho_vs_abs_ddg": 0.24527786300906498,
+      "rho_vs_abs_ddg_ci": [
+        -0.16095916549022912,
+        0.5668715663904859
+      ],
+      "rho_vs_grad": 0.2692939244663382,
+      "rho_vs_grad_ci": [
+        -0.18401285008237236,
+        0.6193609045990434
+      ]
+    },
+    "residue_volume": {
+      "rho_vs_abs_ddg": 0.4439897818579364,
+      "rho_vs_abs_ddg_ci": [
+        0.06978392163969432,
+        0.7251189964790339
+      ],
+      "rho_vs_grad": 0.12257909769538552,
+      "rho_vs_grad_ci": [
+        -0.28114756094676935,
+        0.46228091875173105
+      ]
+    },
+    "rsa_complex": {
+      "rho_vs_abs_ddg": -0.4582098817218535,
+      "rho_vs_abs_ddg_ci": [
+        -0.677884226256851,
+        -0.12416617027740358
+      ],
+      "rho_vs_grad": -0.45694424233987935,
+      "rho_vs_grad_ci": [
+        -0.7293842463456899,
+        -0.09218456298026383
+      ]
+    },
+    "rsa_monomer": {
+      "rho_vs_abs_ddg": -0.20640570168396766,
+      "rho_vs_abs_ddg_ci": [
+        -0.5734851240918609,
+        0.21082368082682268
+      ],
+      "rho_vs_grad": -0.20963327859879585,
+      "rho_vs_grad_ci": [
+        -0.538509060955519,
+        0.2034806847346918
+      ]
+    }
+  },
+  "partial_spearman_abs_ddg_max_agg": 0.0782703886152162,
+  "partial_spearman_abs_ddg_mean_agg": 0.04159824849480022,
+  "auroc_max_agg": 0.7379679144385026,
+  "auroc_mean_agg": 0.7379679144385026,
+  "auprc_max_agg": 0.6399771524771525,
+  "auprc_mean_agg": 0.6399771524771525,
+  "shuffled_null": {
+    "n_permutations": 1000,
+    "spearman_mean": -0.0064486725657416765,
+    "spearman_p95": 0.3131809589012509,
+    "auroc_mean": 0.49347593582887705,
+    "auroc_p95": 0.6898395721925134,
+    "auprc_mean": 0.45637906098351855,
+    "auprc_p95": 0.6327722908404726
+  },
+  "bootstrap_ci_95": {
+    "spearman_abs_ddg_max": [
+      -0.08080245272337688,
+      0.6018086520172208
+    ],
+    "partial_spearman_abs_ddg_max": [
+      -0.45178785809566147,
+      0.6305828401364815
+    ],
+    "auroc_max": [
+      0.516628787878788,
+      0.9222435897435897
+    ],
+    "auprc_max": [
+      0.33206986531986527,
+      0.908257981465702
+    ]
+  },
+  "per_position": [
+    {
+      "residue_id": "31",
+      "seq_index": 30,
+      "grad_norm": 0.008429089561104774,
+      "ddg_max": 0.820945317476249,
+      "ddg_mean": 0.820945317476249,
+      "n_mutations": 1,
+      "burial": 228.0,
+      "distance_to_partner": 3.9143064519784367,
+      "hydrophobicity": -3.5,
+      "residue_volume": 138.4,
+      "norm_position": 0.18292682926829268,
+      "rsa_complex": 0.15024871139754964,
+      "rsa_monomer": 0.21271044822631807,
+      "delta_rsa": 0.06246173682876843
+    },
+    {
+      "residue_id": "32",
+      "seq_index": 31,
+      "grad_norm": 0.008697966113686562,
+      "ddg_max": 0.19925444037138115,
+      "ddg_mean": 0.19925444037138115,
+      "n_mutations": 1,
+      "burial": 155.0,
+      "distance_to_partner": 7.742623715511431,
+      "hydrophobicity": -0.7,
+      "residue_volume": 116.1,
+      "norm_position": 0.18902439024390244,
+      "rsa_complex": 0.4225369058784002,
+      "rsa_monomer": 0.4225369058784002,
+      "delta_rsa": 0.0
+    },
+    {
+      "residue_id": "35",
+      "seq_index": 34,
+      "grad_norm": 0.011653360910713673,
+      "ddg_max": 0.0,
+      "ddg_mean": 0.0,
+      "n_mutations": 1,
+      "burial": 199.0,
+      "distance_to_partner": 2.823374930823041,
+      "hydrophobicity": -0.8,
+      "residue_volume": 89.0,
+      "norm_position": 0.2073170731707317,
+      "rsa_complex": 0.12086424437585334,
+      "rsa_monomer": 0.5707022078912747,
+      "delta_rsa": 0.4498379635154213
+    },
+    {
+      "residue_id": "36",
+      "seq_index": 35,
+      "grad_norm": 0.008104530163109303,
+      "ddg_max": 3.1999870871315106,
+      "ddg_mean": 3.1999870871315106,
+      "n_mutations": 5,
+      "burial": 260.0,
+      "distance_to_partner": 3.0163617157098415,
+      "hydrophobicity": 2.8,
+      "residue_volume": 189.9,
+      "norm_position": 0.21341463414634146,
+      "rsa_complex": 0.005031784233499651,
+      "rsa_monomer": 0.2576811787093137,
+      "delta_rsa": 0.252649394475814
+    },
+    {
+      "residue_id": "39",
+      "seq_index": 38,
+      "grad_norm": 0.008537841029465199,
+      "ddg_max": -0.3025042268359243,
+      "ddg_mean": -0.3025042268359243,
+      "n_mutations": 2,
+      "burial": 224.0,
+      "distance_to_partner": 3.1890089369583148,
+      "hydrophobicity": -0.8,
+      "residue_volume": 89.0,
+      "norm_position": 0.23170731707317074,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.0630922607002689,
+      "delta_rsa": 0.0630922607002689
+    },
+    {
+      "residue_id": "41",
+      "seq_index": 40,
+      "grad_norm": 0.012900610454380512,
+      "ddg_max": 3.24824619194486,
+      "ddg_mean": 3.2482461919448595,
+      "n_mutations": 5,
+      "burial": 311.0,
+      "distance_to_partner": 3.86161559454071,
+      "hydrophobicity": -3.2,
+      "residue_volume": 153.2,
+      "norm_position": 0.24390243902439024,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.010782394786070681,
+      "delta_rsa": 0.010782394786070681
+    },
+    {
+      "residue_id": "48",
+      "seq_index": 47,
+      "grad_norm": 0.019270533695816994,
+      "ddg_max": 0.19925444037138115,
+      "ddg_mean": 0.19925444037138115,
+      "n_mutations": 3,
+      "burial": 234.0,
+      "distance_to_partner": 3.2151320346138186,
+      "hydrophobicity": -0.4,
+      "residue_volume": 60.1,
+      "norm_position": 0.2865853658536585,
+      "rsa_complex": 0.021914300385602277,
+      "rsa_monomer": 0.3445077753755767,
+      "delta_rsa": 0.3225934749899744
+    },
+    {
+      "residue_id": "49",
+      "seq_index": 48,
+      "grad_norm": 0.015935560688376427,
+      "ddg_max": 2.5603379479658566,
+      "ddg_mean": 2.5603379479658566,
+      "n_mutations": 8,
+      "burial": 296.0,
+      "distance_to_partner": 2.569913811784355,
+      "hydrophobicity": -3.5,
+      "residue_volume": 111.1,
+      "norm_position": 0.2926829268292683,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.597849118843309,
+      "delta_rsa": 0.597849118843309
+    },
+    {
+      "residue_id": "50",
+      "seq_index": 49,
+      "grad_norm": 0.013074412941932678,
+      "ddg_max": -0.4067598762366207,
+      "ddg_mean": -0.4067598762366207,
+      "n_mutations": 4,
+      "burial": 321.0,
+      "distance_to_partner": 3.361951962774007,
+      "hydrophobicity": -1.3,
+      "residue_volume": 193.6,
+      "norm_position": 0.29878048780487804,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.28009627824499955,
+      "delta_rsa": 0.28009627824499955
+    },
+    {
+      "residue_id": "51",
+      "seq_index": 50,
+      "grad_norm": 0.01136025134474039,
+      "ddg_max": 0.0,
+      "ddg_mean": 0.0,
+      "n_mutations": 4,
+      "burial": 278.0,
+      "distance_to_partner": 4.4134253137444155,
+      "hydrophobicity": -1.3,
+      "residue_volume": 193.6,
+      "norm_position": 0.3048780487804878,
+      "rsa_complex": 0.15746837789362814,
+      "rsa_monomer": 0.30420001050964635,
+      "delta_rsa": 0.1467316326160182
+    },
+    {
+      "residue_id": "53",
+      "seq_index": 52,
+      "grad_norm": 0.019674448296427727,
+      "ddg_max": 2.076537542819337,
+      "ddg_mean": 2.076537542819337,
+      "n_mutations": 5,
+      "burial": 363.0,
+      "distance_to_partner": 3.2670587689847292,
+      "hydrophobicity": -1.3,
+      "residue_volume": 193.6,
+      "norm_position": 0.3170731707317073,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.1045065249931895,
+      "delta_rsa": 0.1045065249931895
+    },
+    {
+      "residue_id": "71",
+      "seq_index": 70,
+      "grad_norm": 0.012395608238875866,
+      "ddg_max": 0.35792903374739915,
+      "ddg_mean": 0.3579290337473992,
+      "n_mutations": 3,
+      "burial": 291.0,
+      "distance_to_partner": 2.6190003818250935,
+      "hydrophobicity": -0.8,
+      "residue_volume": 89.0,
+      "norm_position": 0.4268292682926829,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.062213749784286995,
+      "delta_rsa": 0.062213749784286995
+    },
+    {
+      "residue_id": "73",
+      "seq_index": 72,
+      "grad_norm": 0.019319726154208183,
+      "ddg_max": 0.506089080615733,
+      "ddg_mean": 0.08060123951796774,
+      "n_mutations": 3,
+      "burial": 371.0,
+      "distance_to_partner": 2.841750164951168,
+      "hydrophobicity": -3.5,
+      "residue_volume": 138.4,
+      "norm_position": 0.43902439024390244,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.1838017098580169,
+      "delta_rsa": 0.1838017098580169
+    },
+    {
+      "residue_id": "74",
+      "seq_index": 73,
+      "grad_norm": 0.01865815743803978,
+      "ddg_max": 3.5579161208789096,
+      "ddg_mean": 3.5579161208789096,
+      "n_mutations": 6,
+      "burial": 307.0,
+      "distance_to_partner": 2.676353676179591,
+      "hydrophobicity": -3.9,
+      "residue_volume": 168.6,
+      "norm_position": 0.4451219512195122,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.10649200385672723,
+      "delta_rsa": 0.10649200385672723
+    },
+    {
+      "residue_id": "89",
+      "seq_index": 88,
+      "grad_norm": 0.009977690875530243,
+      "ddg_max": -0.4547229616140727,
+      "ddg_mean": -0.4547229616140727,
+      "n_mutations": 1,
+      "burial": 131.0,
+      "distance_to_partner": 12.581737161457475,
+      "hydrophobicity": -3.5,
+      "residue_volume": 114.1,
+      "norm_position": 0.5365853658536586,
+      "rsa_complex": 0.29875012393994715,
+      "rsa_monomer": 0.29875012393994715,
+      "delta_rsa": 0.0
+    },
+    {
+      "residue_id": "93",
+      "seq_index": 92,
+      "grad_norm": 0.013354290276765823,
+      "ddg_max": -0.475503580428573,
+      "ddg_mean": -0.475503580428573,
+      "n_mutations": 1,
+      "burial": 136.0,
+      "distance_to_partner": 9.598153207779088,
+      "hydrophobicity": 4.2,
+      "residue_volume": 140.0,
+      "norm_position": 0.5609756097560976,
+      "rsa_complex": 0.31983493164542326,
+      "rsa_monomer": 0.31983493164542326,
+      "delta_rsa": 0.0
+    },
+    {
+      "residue_id": "112",
+      "seq_index": 111,
+      "grad_norm": 0.0171509999781847,
+      "ddg_max": 3.00916407469929,
+      "ddg_mean": 3.00916407469929,
+      "n_mutations": 5,
+      "burial": 376.0,
+      "distance_to_partner": 3.791205744878534,
+      "hydrophobicity": -0.9,
+      "residue_volume": 227.8,
+      "norm_position": 0.676829268292683,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.17332883173442545,
+      "delta_rsa": 0.17332883173442545
+    },
+    {
+      "residue_id": "113",
+      "seq_index": 112,
+      "grad_norm": 0.01614612340927124,
+      "ddg_max": -0.16829601574028163,
+      "ddg_mean": -0.16829601574028163,
+      "n_mutations": 3,
+      "burial": 268.0,
+      "distance_to_partner": 2.895494949054482,
+      "hydrophobicity": -0.8,
+      "residue_volume": 89.0,
+      "norm_position": 0.6829268292682927,
+      "rsa_complex": 0.051024004802391165,
+      "rsa_monomer": 0.1374897148453681,
+      "delta_rsa": 0.08646571004297693
+    },
+    {
+      "residue_id": "140",
+      "seq_index": 139,
+      "grad_norm": 0.01437268778681755,
+      "ddg_max": -0.01438581355646342,
+      "ddg_mean": -0.01438581355646342,
+      "n_mutations": 1,
+      "burial": 237.0,
+      "distance_to_partner": 3.9989421101086213,
+      "hydrophobicity": -0.7,
+      "residue_volume": 116.1,
+      "norm_position": 0.8475609756097561,
+      "rsa_complex": 0.23069635415017645,
+      "rsa_monomer": 0.32424158596817443,
+      "delta_rsa": 0.09354523181799798
+    },
+    {
+      "residue_id": "141",
+      "seq_index": 140,
+      "grad_norm": 0.01359136588871479,
+      "ddg_max": 0.7585522035734397,
+      "ddg_mean": 0.7585522035734397,
+      "n_mutations": 2,
+      "burial": 201.0,
+      "distance_to_partner": 2.716635234991993,
+      "hydrophobicity": -0.4,
+      "residue_volume": 60.1,
+      "norm_position": 0.8536585365853658,
+      "rsa_complex": 0.04644723907845832,
+      "rsa_monomer": 0.12118331169762596,
+      "delta_rsa": 0.07473607261916765
+    },
+    {
+      "residue_id": "142",
+      "seq_index": 141,
+      "grad_norm": 0.012075001373887062,
+      "ddg_max": 3.377705086161816,
+      "ddg_mean": 3.377705086161817,
+      "n_mutations": 7,
+      "burial": 303.0,
+      "distance_to_partner": 3.213530924077129,
+      "hydrophobicity": 2.8,
+      "residue_volume": 189.9,
+      "norm_position": 0.8597560975609756,
+      "rsa_complex": 0.009496196833760987,
+      "rsa_monomer": 0.5844563994867013,
+      "delta_rsa": 0.5749602026529402
+    },
+    {
+      "residue_id": "143",
+      "seq_index": 142,
+      "grad_norm": 0.01200951263308525,
+      "ddg_max": 0.3818590317407964,
+      "ddg_mean": 0.3818590317407964,
+      "n_mutations": 4,
+      "burial": 338.0,
+      "distance_to_partner": 2.9426433694894123,
+      "hydrophobicity": -1.3,
+      "residue_volume": 193.6,
+      "norm_position": 0.8658536585365854,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.13387876786400238,
+      "delta_rsa": 0.13387876786400238
+    },
+    {
+      "residue_id": "144",
+      "seq_index": 143,
+      "grad_norm": 0.007211393676698208,
+      "ddg_max": 0.10796843190220018,
+      "ddg_mean": 0.10796843190220018,
+      "n_mutations": 2,
+      "burial": 223.0,
+      "distance_to_partner": 3.3459899880304462,
+      "hydrophobicity": -4.5,
+      "residue_volume": 173.4,
+      "norm_position": 0.8719512195121951,
+      "rsa_complex": 0.3723555494167374,
+      "rsa_monomer": 0.5781585323934162,
+      "delta_rsa": 0.20580298297667882
+    },
+    {
+      "residue_id": "148",
+      "seq_index": 147,
+      "grad_norm": 0.014122343622148037,
+      "ddg_max": 2.746659148233664,
+      "ddg_mean": 2.746659148233664,
+      "n_mutations": 5,
+      "burial": 309.0,
+      "distance_to_partner": 3.3837751107306158,
+      "hydrophobicity": -3.2,
+      "residue_volume": 153.2,
+      "norm_position": 0.8963414634146342,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.15766307131515633,
+      "delta_rsa": 0.15766307131515633
+    },
+    {
+      "residue_id": "150",
+      "seq_index": 149,
+      "grad_norm": 0.014660418033599854,
+      "ddg_max": 4.251658426196061,
+      "ddg_mean": 4.251658426196061,
+      "n_mutations": 5,
+      "burial": 269.0,
+      "distance_to_partner": 3.5235438126976613,
+      "hydrophobicity": -0.9,
+      "residue_volume": 227.8,
+      "norm_position": 0.9085365853658537,
+      "rsa_complex": 0.02542375191662982,
+      "rsa_monomer": 0.18947772028708879,
+      "delta_rsa": 0.16405396837045896
+    },
+    {
+      "residue_id": "160",
+      "seq_index": 159,
+      "grad_norm": 0.017758086323738098,
+      "ddg_max": 2.221209847170894,
+      "ddg_mean": 2.221209847170894,
+      "n_mutations": 5,
+      "burial": 276.0,
+      "distance_to_partner": 2.7966059786820203,
+      "hydrophobicity": -4.5,
+      "residue_volume": 173.4,
+      "norm_position": 0.9695121951219512,
+      "rsa_complex": 0.11549939268590068,
+      "rsa_monomer": 0.4338883424606073,
+      "delta_rsa": 0.31838894977470666
+    },
+    {
+      "residue_id": "162",
+      "seq_index": 161,
+      "grad_norm": 0.01698324643075466,
+      "ddg_max": 2.3397791407725355,
+      "ddg_mean": 2.3397791407725355,
+      "n_mutations": 2,
+      "burial": 306.0,
+      "distance_to_partner": 3.3325326705075193,
+      "hydrophobicity": -0.9,
+      "residue_volume": 227.8,
+      "norm_position": 0.9817073170731707,
+      "rsa_complex": 0.0,
+      "rsa_monomer": 0.23025008136462535,
+      "delta_rsa": 0.23025008136462535
+    },
+    {
+      "residue_id": "163",
+      "seq_index": 162,
+      "grad_norm": 0.009981503710150719,
+      "ddg_max": -1.3403346659159614,
+      "ddg_mean": -1.6611059534908534,
+      "n_mutations": 2,
+      "burial": 215.0,
+      "distance_to_partner": 4.369404650521623,
+      "hydrophobicity": -3.5,
+      "residue_volume": 111.1,
+      "norm_position": 0.9878048780487805,
+      "rsa_complex": 0.2932385371615713,
+      "rsa_monomer": 0.4819929766337604,
+      "delta_rsa": 0.18875443947218912
+    }
+  ]
+}

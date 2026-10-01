@@ -34,8 +34,11 @@ probe_msa.py
 probe_msa2.py
 probe_msa3.py
 
-# Author notes (not part of the public repo)
-notes/
+# Author notes -- PUBLISHED to the public repo as of 2026-10-01 at the
+# repo owner's explicit instruction. Previously excluded. Note that
+# results/*.json are force-added individually; results/ stays ignored so a
+# 93 MB .npz cannot be committed by accident.
+# notes/
 
 # Editor and OS detritus
 *.swp

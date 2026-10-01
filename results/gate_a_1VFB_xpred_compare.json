@@ -1,0 +1,114 @@
+{
+  "gate": "A",
+  "result": "PASS",
+  "dataset": "1VFB",
+  "score": "complex_pde",
+  "L": 352,
+  "m_steps": 5,
+  "chains": {
+    "A": 107,
+    "B": 116,
+    "C": 129
+  },
+  "x_pred_mode": "zeros",
+  "f_x": 1.9888134002685547,
+  "f_baseline": 2.5571200847625732,
+  "f_diff": -0.5683066844940186,
+  "f_diff_abs": 0.5683066844940186,
+  "ig_sum": -0.5719335675239563,
+  "completeness_abs_err": 0.003626883029937744,
+  "completeness_rel_err": 0.0063819116137387565,
+  "z_grad_not_none": true,
+  "z_grad_max_abs": 0.00046529140672646463,
+  "z_grad_zero_frac": 6.305284472318817e-08,
+  "z_grad_shape": [
+    1,
+    352,
+    352,
+    128
+  ],
+  "z_grad_dtype": "torch.float32",
+  "z_grad_n_nan": 0,
+  "z_grad_n_inf": 0,
+  "trainable_params": 25026048,
+  "frozen_params": 481698944,
+  "s_shape": [
+    1,
+    352,
+    384
+  ],
+  "param_grad_bytes": 19014656,
+  "param_grad_count": 315,
+  "peak_vram_single_bwd_gib": 8.54649829864502,
+  "peak_vram_pair_ig_gib": 8.681455612182617,
+  "wall_s": 4.996760845184326,
+  "boltz_version": "2.2.1",
+  "z_baseline_mode": "mean_aa",
+  "msa_mode": "server",
+  "checks": [
+    {
+      "name": "z.grad is not None",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "z.grad not uniformly zero",
+      "passed": true,
+      "detail": "max|z.grad|=4.652914e-04, zero_frac=0.0000"
+    },
+    {
+      "name": "z.grad shape (1, 352, 352, 128)",
+      "passed": true,
+      "detail": "actual=(1, 352, 352, 128), expected=(1, 352, 352, 128)"
+    },
+    {
+      "name": "z.grad all finite",
+      "passed": true,
+      "detail": "NaN=0, Inf=0"
+    },
+    {
+      "name": "completeness abs error < 0.1",
+      "passed": true,
+      "detail": "abs_err=0.003627, rel_err=0.0064, ig_sum=-0.571934, f(x)-f(b)=-0.568307, span=0.568307"
+    }
+  ],
+  "compare_x_pred": {
+    "score_zeros": 1.9888134002685547,
+    "score_predicted": 1.0293084383010864,
+    "score_diff": -0.9595049619674683,
+    "f_baseline_pred": 1.9867136478424072,
+    "f_diff_pred": -0.9574052095413208,
+    "ig_sum_pred": -0.9726521968841553,
+    "completeness_abs_err_pred": 0.015246987342834473,
+    "completeness_rel_err_pred": 0.01592532314519062,
+    "gate_result_pred": "PASS",
+    "checks_pred": [
+      {
+        "name": "z.grad is not None",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "z.grad not uniformly zero",
+        "passed": true,
+        "detail": "max|z.grad|=4.652914e-04, zero_frac=0.0000"
+      },
+      {
+        "name": "z.grad shape (1, 352, 352, 128)",
+        "passed": true,
+        "detail": "actual=(1, 352, 352, 128), expected=(1, 352, 352, 128)"
+      },
+      {
+        "name": "z.grad all finite",
+        "passed": true,
+        "detail": "NaN=0, Inf=0"
+      },
+      {
+        "name": "completeness abs error < 0.1",
+        "passed": true,
+        "detail": "abs_err=0.015247, rel_err=0.0159, ig_sum=-0.972652, f(x)-f(b)=-0.957405, span=0.957405"
+      }
+    ],
+    "x_pred_abs_max": 36.232669830322266
+  }
+}

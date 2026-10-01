@@ -1,0 +1,57 @@
+{
+  "argv": [
+    "scripts/03_attribute.py",
+    "--dataset",
+    "4fqi_h1",
+    "--score",
+    "complex_pde",
+    "--method",
+    "plain_grad"
+  ],
+  "arm": {
+    "autocast": "bf16",
+    "chain": "H",
+    "chunk_profile": "auto",
+    "coords_abs_max": 0.0,
+    "dataset": "4fqi_h1",
+    "dtype": "bf16",
+    "m_steps": 1,
+    "method": "plain_grad",
+    "pf_chunk": null,
+    "pf_group_size": 4,
+    "score": "complex_pde",
+    "tri_attn_ckpt": true,
+    "trunk": "full",
+    "use_kernels": false
+  },
+  "created_utc": "2026-09-09T23:02:40+00:00",
+  "env": {
+    "boltz": "2.2.1",
+    "cuda_available": true,
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA A100-SXM4-80GB",
+    "gpu_total_gib": 79.2,
+    "hostname": "bcc949dcdbca",
+    "platform": "Linux-6.8.0-1066-gcp-x86_64-with-glibc2.35",
+    "python": "3.11.15",
+    "torch": "2.7.1+cu126"
+  },
+  "git_commit": "4ee21a25e1af2ae2012ac6185d67d81ffe8f42e3",
+  "git_dirty": false,
+  "inputs": {
+    "cache_dir": "data/raw",
+    "checkpoint_dir": "/root/.boltz",
+    "dataset": "4fqi_h1",
+    "structure": "4fqi_hlab"
+  },
+  "notes": null,
+  "output": "results/4fqi_h1_complex_pde_plain_grad_grad.npz",
+  "params": {
+    "baseline": "zeros",
+    "chain": "H",
+    "m_steps": 15,
+    "method": "plain_grad",
+    "score": "complex_pde"
+  },
+  "stage": "03_attribute"
+}

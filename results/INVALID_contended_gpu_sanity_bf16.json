@@ -1,0 +1,39 @@
+{
+  "dataset": "4fqi_h1",
+  "score": "complex_pde",
+  "chain": "H",
+  "checks": [
+    {
+      "name": "completeness",
+      "passed": false,
+      "value": null,
+      "threshold": "relative error < 0.05",
+      "detail": "raised OutOfMemoryError: CUDA out of memory. Tried to allocate 834.00 MiB. GPU 0 has a total capacity of 79.25 GiB of which 109.00 MiB is free. Including non-PyTorch memory, this process has 22.15 GiB memory in use. Of the allocated memory 21.51 GiB is allocated by PyTorch, and 131.89 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+      "informational": false
+    },
+    {
+      "name": "frozen_vs_full",
+      "passed": false,
+      "value": null,
+      "threshold": "informational only, no pass/fail",
+      "detail": "raised OutOfMemoryError: CUDA out of memory. Tried to allocate 834.00 MiB. GPU 0 has a total capacity of 79.25 GiB of which 113.00 MiB is free. Including non-PyTorch memory, this process has 22.14 GiB memory in use. Of the allocated memory 21.51 GiB is allocated by PyTorch, and 130.03 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+      "informational": true
+    },
+    {
+      "name": "dead_target",
+      "passed": true,
+      "value": 0.0,
+      "threshold": "max|attribution| < 1e-8",
+      "detail": "max|grad| = 0.000e+00, f(x) = 3.916786",
+      "informational": false
+    },
+    {
+      "name": "arm_assertion",
+      "passed": true,
+      "value": [],
+      "threshold": "recorded arm matches intended arm",
+      "detail": "no artifacts present yet (run stages 02/03 first)",
+      "informational": false
+    }
+  ]
+}

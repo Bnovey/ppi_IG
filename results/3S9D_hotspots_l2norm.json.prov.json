@@ -1,0 +1,46 @@
+{
+  "argv": [
+    "scripts/10_skempi_hotspots.py",
+    "--complex",
+    "3S9D",
+    "--chain",
+    "A",
+    "--grad",
+    "/tmp/3s9d.npz",
+    "--reduction",
+    "l2norm",
+    "--out",
+    "results/3S9D_hotspots_l2norm.json"
+  ],
+  "arm": {
+    "chain": "A",
+    "complex": "3S9D",
+    "stage": "skempi_hotspots"
+  },
+  "created_utc": "2026-09-30T21:42:44+00:00",
+  "env": {
+    "boltz": null,
+    "cuda_available": false,
+    "hostname": "Bowmans-MacBook-Air.local",
+    "platform": "macOS-15.5-arm64-arm-64bit-Mach-O",
+    "python": "3.13.2",
+    "torch": "2.5.1"
+  },
+  "git_commit": "0bf19ef879be320d1dfdeeb4b307916ba6a7c9d8",
+  "git_dirty": false,
+  "inputs": {
+    "grad": "/tmp/3s9d.npz",
+    "pdb": "data/raw/3s9d.pdb",
+    "skempi": "skempi_v2.csv"
+  },
+  "notes": null,
+  "output": "results/3S9D_hotspots_l2norm.json",
+  "params": {
+    "allow_mismatch": false,
+    "chain": "A",
+    "complex": "3S9D",
+    "hotspot_threshold": 2.0,
+    "reduction": "l2norm"
+  },
+  "stage": "10_skempi_hotspots"
+}

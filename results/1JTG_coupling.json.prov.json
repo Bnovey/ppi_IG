@@ -1,0 +1,37 @@
+{
+  "argv": [
+    "scripts/13_coupling.py",
+    "--complex",
+    "1JTG",
+    "--pair-map",
+    "results/1JTG_complex_pde_pair_ig.npz"
+  ],
+  "arm": {
+    "complex": "1JTG",
+    "stage": "coupling"
+  },
+  "created_utc": "2026-09-30T05:30:23+00:00",
+  "env": {
+    "boltz": null,
+    "cuda_available": false,
+    "hostname": "Bowmans-MacBook-Air.local",
+    "platform": "macOS-15.5-arm64-arm-64bit-Mach-O",
+    "python": "3.13.2",
+    "torch": "2.5.1"
+  },
+  "git_commit": "529b14dbcabe36a9ccee4e6a3594dc9db608dd32",
+  "git_dirty": false,
+  "inputs": {
+    "pair_map": "results/1JTG_complex_pde_pair_ig.npz",
+    "pdb": "data/raw/1jtg.pdb",
+    "skempi": "data/raw/skempi_v2.csv"
+  },
+  "notes": null,
+  "output": "results/1JTG_coupling.json",
+  "params": {
+    "complex": "1JTG",
+    "n_permutations": 1000,
+    "seed": 42
+  },
+  "stage": "13_coupling"
+}

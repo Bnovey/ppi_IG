@@ -1,0 +1,46 @@
+{
+  "argv": [
+    "scripts/10_skempi_hotspots.py",
+    "--complex",
+    "1JTG",
+    "--chain",
+    "B",
+    "--grad",
+    "/tmp/new_ig_grad.npz",
+    "--reduction",
+    "l2norm",
+    "--out",
+    "results/1JTG_hotspots_l2_realgeom.json"
+  ],
+  "arm": {
+    "chain": "B",
+    "complex": "1JTG",
+    "stage": "skempi_hotspots"
+  },
+  "created_utc": "2026-09-30T20:53:03+00:00",
+  "env": {
+    "boltz": null,
+    "cuda_available": false,
+    "hostname": "Bowmans-MacBook-Air.local",
+    "platform": "macOS-15.5-arm64-arm-64bit-Mach-O",
+    "python": "3.13.2",
+    "torch": "2.5.1"
+  },
+  "git_commit": "0bf19ef879be320d1dfdeeb4b307916ba6a7c9d8",
+  "git_dirty": false,
+  "inputs": {
+    "grad": "/tmp/new_ig_grad.npz",
+    "pdb": "data/raw/1jtg.pdb",
+    "skempi": "skempi_v2.csv"
+  },
+  "notes": null,
+  "output": "results/1JTG_hotspots_l2_realgeom.json",
+  "params": {
+    "allow_mismatch": false,
+    "chain": "B",
+    "complex": "1JTG",
+    "hotspot_threshold": 2.0,
+    "reduction": "l2norm"
+  },
+  "stage": "10_skempi_hotspots"
+}

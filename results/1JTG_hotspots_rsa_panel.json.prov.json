@@ -1,0 +1,44 @@
+{
+  "argv": [
+    "scripts/10_skempi_hotspots.py",
+    "--complex",
+    "1JTG",
+    "--chain",
+    "B",
+    "--grad",
+    "results/1JTG_complex_pde_ig_meanaa_grad.npz",
+    "--out",
+    "results/1JTG_hotspots_rsa_panel.json"
+  ],
+  "arm": {
+    "chain": "B",
+    "complex": "1JTG",
+    "stage": "skempi_hotspots"
+  },
+  "created_utc": "2026-09-30T18:31:03+00:00",
+  "env": {
+    "boltz": null,
+    "cuda_available": false,
+    "hostname": "Bowmans-MacBook-Air.local",
+    "platform": "macOS-15.5-arm64-arm-64bit-Mach-O",
+    "python": "3.13.2",
+    "torch": "2.5.1"
+  },
+  "git_commit": "529b14dbcabe36a9ccee4e6a3594dc9db608dd32",
+  "git_dirty": true,
+  "inputs": {
+    "grad": "results/1JTG_complex_pde_ig_meanaa_grad.npz",
+    "pdb": "data/raw/1jtg.pdb",
+    "skempi": "skempi_v2.csv"
+  },
+  "notes": null,
+  "output": "results/1JTG_hotspots_rsa_panel.json",
+  "params": {
+    "allow_mismatch": false,
+    "chain": "B",
+    "complex": "1JTG",
+    "hotspot_threshold": 2.0,
+    "reduction": "l2norm"
+  },
+  "stage": "10_skempi_hotspots"
+}

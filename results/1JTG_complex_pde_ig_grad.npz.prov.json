@@ -1,0 +1,62 @@
+{
+  "argv": [
+    "scripts/03_attribute.py",
+    "--dataset",
+    "1JTG",
+    "--chain",
+    "B",
+    "--score",
+    "complex_pde",
+    "--method",
+    "ig",
+    "--m-steps",
+    "32"
+  ],
+  "arm": {
+    "autocast": "off",
+    "chain": "B",
+    "chunk_profile": "auto",
+    "coords_abs_max": 0.0,
+    "dataset": "1JTG",
+    "dtype": "fp32",
+    "m_steps": 32,
+    "method": "ig",
+    "pf_chunk": null,
+    "pf_group_size": 4,
+    "score": "complex_pde",
+    "tri_attn_ckpt": true,
+    "trunk": "full",
+    "use_kernels": false
+  },
+  "created_utc": "2026-09-24T23:30:24+00:00",
+  "env": {
+    "boltz": "2.2.1",
+    "cuda_available": true,
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA A100-SXM4-80GB",
+    "gpu_total_gib": 79.2,
+    "hostname": "c4e55067ebcf",
+    "platform": "Linux-6.8.0-1066-gcp-x86_64-with-glibc2.35",
+    "python": "3.11.15",
+    "torch": "2.7.1+cu126"
+  },
+  "git_commit": "6f1024f62027744d3a40132295efa61c8ba118ac",
+  "git_dirty": false,
+  "inputs": {
+    "cache_dir": "data/raw",
+    "checkpoint_dir": "/root/.boltz",
+    "data_source": "skempi",
+    "dataset": "1JTG",
+    "structure": "1jtg"
+  },
+  "notes": null,
+  "output": "results/1JTG_complex_pde_ig_grad.npz",
+  "params": {
+    "baseline": "zeros",
+    "chain": "B",
+    "m_steps": 32,
+    "method": "ig",
+    "score": "complex_pde"
+  },
+  "stage": "03_attribute"
+}
