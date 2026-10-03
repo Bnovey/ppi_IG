@@ -433,6 +433,29 @@ _register_score("protein_iptm", _protein_iptm)
 
 
 # ---------------------------------------------------------------------------
+# Affinity score registry
+# ---------------------------------------------------------------------------
+
+AFFINITY_SCORES: dict[str, Callable[[dict], Any]] = {}
+
+
+def _register_affinity_score(name: str, fn: Callable) -> None:
+    AFFINITY_SCORES[name] = fn
+
+
+def _affinity_pred_value(out_dict):
+    return out_dict["affinity_pred_value"]
+
+
+def _affinity_logits_binary(out_dict):
+    return out_dict["affinity_logits_binary"]
+
+
+_register_affinity_score("affinity_pred_value", _affinity_pred_value)
+_register_affinity_score("affinity_logits_binary", _affinity_logits_binary)
+
+
+# ---------------------------------------------------------------------------
 # Residue-token decoding tables
 #
 # Pinned copies of boltz 2.2.1 `boltz/data/const.py` (`canonical_tokens` at
@@ -502,6 +525,98 @@ def select_checkpoint(checkpoint_dir):
             [c.name for c in candidates], chosen.name,
         )
     return chosen
+
+
+def select_affinity_checkpoint(checkpoint_dir):
+    """Return the Boltz-2 *affinity* checkpoint inside *checkpoint_dir*.
+
+    Mirrors :func:`select_checkpoint` but picks ``boltz2_aff.ckpt`` instead
+    of ``boltz2_conf.ckpt``.  Kept torch-free so it is testable on CPU.
+    """
+    from pathlib import Path as _P
+
+    ckpt_dir = _P(checkpoint_dir)
+    candidates = sorted(ckpt_dir.glob("*.ckpt"))
+    if not candidates:
+        raise FileNotFoundError(f"No .ckpt files in {ckpt_dir}")
+
+    aff = [c for c in candidates if "aff" in c.name.lower()]
+    if not aff:
+        raise FileNotFoundError(
+            f"No affinity checkpoint found in {ckpt_dir} "
+            f"({[c.name for c in candidates]}). The affinity checkpoint "
+            f"(boltz2_aff.ckpt) is required."
+        )
+    chosen = aff[0]
+    if len(candidates) > 1:
+        log.info(
+            "Checkpoints present: %s -- selected affinity %s",
+            [c.name for c in candidates], chosen.name,
+        )
+    return chosen
+
+
+def load_affinity_model(checkpoint_dir, device):
+    """Load Boltz-2 with the affinity head from *checkpoint_dir*.
+
+    Returns ``(model, boltz_version)``.  The affinity checkpoint contains the
+    full model (trunk + affinity module); this loader ensures
+    ``affinity_prediction`` is True so the ``affinity_module`` attribute
+    exists.
+    """
+    import importlib.metadata as md
+
+    import torch
+    from boltz.main import BoltzSteeringParams
+    from boltz.model.models.boltz2 import Boltz2
+    from dataclasses import asdict
+
+    boltz_version = md.version("boltz")
+
+    ckpt_path = select_affinity_checkpoint(checkpoint_dir)
+    log.info("Loading Boltz-2 affinity from %s (boltz %s)", ckpt_path, boltz_version)
+
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+    if "hyper_parameters" in ckpt:
+        _scrub_hparams(ckpt["hyper_parameters"], {"mse_rotational_alignment"})
+        _ensure_pairformer_v2(ckpt["hyper_parameters"])
+        _ensure_affinity_prediction(ckpt["hyper_parameters"])
+
+    import os
+    import tempfile
+    fd, tmp_path = tempfile.mkstemp(suffix=".ckpt")
+    os.close(fd)
+    try:
+        torch.save(ckpt, tmp_path)
+        model = Boltz2.load_from_checkpoint(
+            tmp_path, map_location=device, strict=False, ema=False,
+        )
+    finally:
+        os.unlink(tmp_path)
+
+    model.affinity_prediction = True
+    if model.steering_args is None:
+        steering = BoltzSteeringParams()
+        steering.fk_steering = False
+        steering.physical_guidance_update = False
+        steering.contact_guidance_update = False
+        model.steering_args = asdict(steering)
+    model.eval()
+    model.to(device)
+
+    has_aff = (
+        hasattr(model, "affinity_module") and model.affinity_module is not None
+    )
+    has_ens = (
+        hasattr(model, "affinity_module1") and model.affinity_module1 is not None
+        and hasattr(model, "affinity_module2") and model.affinity_module2 is not None
+    )
+    log.info(
+        "Boltz-2 affinity loaded: affinity_module=%s, ensemble=%s",
+        has_aff, has_ens,
+    )
+    return model, boltz_version
 
 
 def load_model(checkpoint_dir, device):
@@ -603,6 +718,15 @@ def _ensure_confidence_prediction(obj):
             pass
 
 
+def _ensure_affinity_prediction(obj):
+    from collections.abc import Mapping
+    if isinstance(obj, Mapping) or hasattr(obj, "items"):
+        try:
+            obj["affinity_prediction"] = True
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Feature building
 # ---------------------------------------------------------------------------
@@ -660,6 +784,265 @@ def _build_yaml_sequences(
             entry["msa"] = resolved_msa
         sequences.append({"protein": entry})
     return sequences
+
+
+def build_affinity_yaml_spec(
+    protein_chains: dict[str, str],
+    ligand_id: str,
+    ligand_smiles: str | None = None,
+    ligand_ccd: str | None = None,
+    resolved_msa: str | dict | None = None,
+) -> dict:
+    """Build a Boltz YAML spec dict for a protein-ligand affinity prediction.
+
+    Pure function: no torch, no boltz, no I/O.
+
+    Parameters
+    ----------
+    protein_chains : dict[str, str]
+        Protein chain id -> amino-acid sequence.
+    ligand_id : str
+        Chain id for the ligand.
+    ligand_smiles : str or None
+        SMILES string. Exactly one of *ligand_smiles* / *ligand_ccd* required.
+    ligand_ccd : str or None
+        CCD code.  Exactly one of *ligand_smiles* / *ligand_ccd* required.
+    resolved_msa : str | dict | None
+        MSA spec for the protein chains (same semantics as
+        :func:`_build_yaml_sequences`).
+
+    Returns
+    -------
+    dict
+        A complete YAML-serialisable spec with ``version``, ``sequences``,
+        and ``properties: [{affinity: {binder: <ligand_id>}}]``.
+    """
+    if (ligand_smiles is None) == (ligand_ccd is None):
+        raise ValueError(
+            "Exactly one of ligand_smiles / ligand_ccd must be provided."
+        )
+    if ligand_id in protein_chains:
+        raise ValueError(
+            f"ligand_id {ligand_id!r} collides with a protein chain id."
+        )
+
+    sequences: list[dict] = []
+
+    if isinstance(resolved_msa, dict):
+        missing = set(protein_chains) - set(resolved_msa)
+        if missing:
+            raise ValueError(
+                f"Per-chain MSA dict is missing chains: {sorted(missing)}."
+            )
+
+    for chain_id, seq in protein_chains.items():
+        entry: dict[str, Any] = {"id": chain_id, "sequence": seq}
+        if isinstance(resolved_msa, dict):
+            entry["msa"] = str(resolved_msa[chain_id])
+        elif resolved_msa is not None:
+            entry["msa"] = resolved_msa
+        sequences.append({"protein": entry})
+
+    lig_entry: dict[str, Any] = {"id": ligand_id}
+    if ligand_smiles is not None:
+        lig_entry["smiles"] = ligand_smiles
+    else:
+        lig_entry["ccd"] = ligand_ccd
+    sequences.append({"ligand": lig_entry})
+
+    return {
+        "version": 1,
+        "sequences": sequences,
+        "properties": [{"affinity": {"binder": ligand_id}}],
+    }
+
+
+def build_affinity_feats(
+    protein_chains: dict[str, str],
+    ligand_id: str,
+    cache_dir,
+    device,
+    ligand_smiles: str | None = None,
+    ligand_ccd: str | None = None,
+    use_msa_server: bool = False,
+    msa: str | dict | None = None,
+    feat_seed: int | None = None,
+):
+    """Featurise a protein-ligand complex for affinity prediction.
+
+    Like :func:`build_complex_feats` but emits the ``properties: affinity``
+    YAML block and passes ``affinity=True`` to boltz's ``PredictionDataset``,
+    which triggers the affinity cropper (``max_tokens=256``,
+    ``max_tokens_protein=200``, ``neighborhood_size=10``) and MSA depth 1.
+
+    Returns ``(feats, token_map)`` where *token_map* maps
+    ``(chain_id, original_residue_index) -> crop_local_token_index``.
+
+    Crop determinism
+    ~~~~~~~~~~~~~~~~
+    ``AffinityCropper`` selects tokens by ascending distance to the ligand,
+    computed from ``center_coords`` in the tokenized structure -- the
+    reference PDB coordinates, not ``x_pred``.  There is no RNG call.
+    For a point mutation that changes only ``res_type`` (same PDB geometry),
+    the crop selects the identical residue set, so the embedding delta
+    ``E_mut - E_ref`` is taken in the same index space.
+
+    Ligand tokens share the same index space as protein tokens (both in
+    ``token_data["token_idx"]``).  After cropping, ``x_pred`` and the
+    distance bucketisation in the affinity module address the same
+    crop-local indices.
+    """
+    import yaml
+    from boltz.main import process_inputs
+
+    from igv.deterministic import deterministic_featurisation
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_msa_val = resolve_msa_spec(msa)
+    spec = build_affinity_yaml_spec(
+        protein_chains,
+        ligand_id,
+        ligand_smiles=ligand_smiles,
+        ligand_ccd=ligand_ccd,
+        resolved_msa=resolved_msa_val,
+    )
+    spec_path = cache_dir / "input.yaml"
+    spec_path.write_text(yaml.dump(spec))
+
+    proc_kwargs, cache_root = _boltz_process_inputs_kwargs(use_msa_server)
+
+    with deterministic_featurisation(seed=feat_seed):
+        process_inputs(data=[spec_path], out_dir=cache_dir, **proc_kwargs)
+        mol_dir = proc_kwargs.get("mol_dir", cache_root / "mols")
+        feats = _featurize_processed_affinity(cache_dir, mol_dir, device)
+
+    n_pad = int(feats["token_pad_mask"][0].sum().item())
+    log.info("Affinity feats: %d non-padding tokens (after crop)", n_pad)
+
+    token_map = _build_affinity_token_map(feats)
+    log.info("Affinity token map: %d entries", len(token_map))
+
+    return feats, token_map
+
+
+def _build_affinity_token_map(feats: dict) -> dict[tuple[str, int], int]:
+    """Build ``(chain_id, original_residue_index) -> crop_local_token_index``.
+
+    After the affinity cropper, the feats contain fewer tokens than the
+    original protein chain.  ``feats["residue_index"]`` carries the
+    **original** ``res_idx`` for each surviving token, and
+    ``feats["asym_id"]`` identifies the chain.  Together they give a
+    complete map from the original sequence numbering to the crop-local
+    index space.
+
+    Chain ids are integers (``asym_id``), not the string ids from the YAML.
+    The map uses integer chain ids; callers that need string ids must map
+    through the YAML's chain ordering (``asym_id`` 0 = first chain in YAML,
+    1 = second, etc.).
+    """
+    pad = feats["token_pad_mask"][0].bool().cpu()
+    asym = feats["asym_id"][0].cpu()[pad]
+    res_idx = feats["residue_index"][0].cpu()[pad]
+
+    token_map: dict[tuple[str, int], int] = {}
+    for local_idx in range(len(asym)):
+        chain = int(asym[local_idx])
+        resi = int(res_idx[local_idx])
+        key = (str(chain), resi)
+        if key not in token_map:
+            token_map[key] = local_idx
+    return token_map
+
+
+def check_crop_coverage(
+    token_map: dict[tuple[str, int], int],
+    chain_id: str,
+    sites: list[int],
+) -> dict:
+    """Check which mutation sites survived the affinity crop.
+
+    Pure function, no torch.
+
+    Parameters
+    ----------
+    token_map : dict[(chain_id, residue_index), token_index]
+        From :func:`_build_affinity_token_map` or :func:`_build_token_map`.
+    chain_id : str
+        The chain to check (string id or ``str(asym_id)``).
+    sites : list[int]
+        0-based residue indices to check.
+
+    Returns
+    -------
+    dict
+        ``n_requested``, ``n_surviving``, ``n_cropped``,
+        ``surviving`` (list of residue indices that survived),
+        ``cropped`` (list of residue indices that were cropped out),
+        ``surviving_token_indices`` (crop-local token indices),
+        ``fraction_surviving``.
+    """
+    surviving = []
+    cropped = []
+    surviving_token_indices = []
+
+    for site in sites:
+        key = (chain_id, site)
+        if key in token_map:
+            surviving.append(site)
+            surviving_token_indices.append(token_map[key])
+        else:
+            cropped.append(site)
+
+    n_req = len(sites)
+    n_surv = len(surviving)
+    return {
+        "n_requested": n_req,
+        "n_surviving": n_surv,
+        "n_cropped": n_req - n_surv,
+        "surviving": surviving,
+        "cropped": cropped,
+        "surviving_token_indices": surviving_token_indices,
+        "fraction_surviving": n_surv / n_req if n_req > 0 else 0.0,
+    }
+
+
+def _featurize_processed_affinity(proc_out_dir: Path, mol_dir: Path, device) -> dict:
+    """Like :func:`_featurize_processed` but with ``affinity=True``."""
+    import torch
+    from boltz.data.types import Manifest
+
+    manifest_path = proc_out_dir / "processed" / "manifest.json"
+    manifest = Manifest.load(manifest_path)
+    processed = proc_out_dir / "processed"
+    constraints_dir = processed / "constraints"
+    templates_dir = processed / "templates"
+    extra_mols_dir = processed / "mols"
+
+    from boltz.data.module.inferencev2 import PredictionDataset, collate
+    dataset = PredictionDataset(
+        manifest=manifest,
+        target_dir=processed / "structures",
+        msa_dir=processed / "msa",
+        mol_dir=mol_dir,
+        constraints_dir=constraints_dir if constraints_dir.exists() else None,
+        template_dir=templates_dir if templates_dir.exists() else None,
+        extra_mols_dir=extra_mols_dir if extra_mols_dir.exists() else None,
+        affinity=True,
+    )
+
+    sample = dataset[0]
+    if sample is None:
+        raise RuntimeError("Boltz PredictionDataset returned None for affinity")
+    sample.pop("record", None)
+    feats = collate([sample])
+    for key, val in feats.items():
+        if key in _FEATS_SKIP_DEVICE:
+            continue
+        if isinstance(val, torch.Tensor):
+            feats[key] = val.to(device)
+    return feats
 
 
 def build_complex_feats(
@@ -2145,6 +2528,463 @@ def confidence_head_forward(
         )
 
         scalar = SCORES[score_name](out_dict)
+        if scalar.dim() > 0:
+            scalar = scalar.squeeze()
+
+    return scalar
+
+
+# ---------------------------------------------------------------------------
+# Affinity head forward -- the differentiable seam
+# ---------------------------------------------------------------------------
+
+
+def affinity_forward(
+    model,
+    s_inputs,
+    feats,
+    x_pred,
+    score_name: str,
+    gradient_checkpointing: bool = True,
+    recycling_steps: int = 1,
+    autocast_dtype: str | None = None,
+    triangle_attention_chunk_checkpointing: bool | None = None,
+):
+    """Full-trunk forward ending at the affinity head, differentiable to ``s_inputs``.
+
+    This is the affinity analogue of :func:`confidence_forward`.  Gradient
+    flows ``res_type`` -> ``InputEmbedder`` -> trunk -> z -> affinity module,
+    with the same two-level gradient checkpointing scheme that makes the
+    confidence path fit in 80 GiB.
+
+    The outer ``checkpoint(..., use_reentrant=True)`` runs the trunk under
+    ``no_grad`` during the forward; during backward the trunk is recomputed
+    with grad, and the inner per-block ``use_reentrant=False`` checkpoints
+    bound peak memory.  See :func:`confidence_forward` for the detailed
+    explanation and the reason this nesting is load-bearing.
+
+    Memory estimate for the affinity path
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    The affinity cropper caps the complex at 256 tokens (``max_tokens=256``).
+    Trunk VRAM scales roughly as L^2 for the pair tensor.  At L=730 with
+    checkpointing the confidence path measured 55.2 GiB
+    (docs/MEMSCALE_RESULTS.md).  At L=256: ``(256/730)^2 * 55.2 ~ 6.8 GiB``.
+    With ``IGV_TRI_ATTN_CKPT=1`` and ``IGV_AUTOCAST=bf16`` this is
+    comfortably within 80 GiB.
+
+    Differences from the confidence path
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    * ``model.input_embedder(feats, affinity=True)`` selects
+      ``profile_affinity`` / ``deletion_mean_affinity`` (MSA depth 1).
+    * ``z_affinity = z * cross_pair_mask`` masks to protein-ligand pairs.
+    * ``x_pred`` enters via distance bucketisation (``cdist`` -> ``.long()``
+      -> ``Embedding``), which is non-differentiable.  It is held fixed.
+    * The MW correction is applied when the model has it enabled.
+    """
+    import torch
+    from torch.utils.checkpoint import checkpoint as _checkpoint
+    from boltz.data import const as _boltz_const
+
+    if score_name not in AFFINITY_SCORES:
+        raise ValueError(
+            f"Unknown affinity score {score_name!r}; "
+            f"available: {sorted(AFFINITY_SCORES)}"
+        )
+
+    _amp_dtype = resolve_autocast_dtype(autocast_dtype)
+    if _amp_dtype is not None:
+        log.warning(
+            "IGV_AUTOCAST=%s -- affinity scores are NOT comparable to fp32 "
+            "runs. Record the dtype in provenance.", _amp_dtype,
+        )
+    _use_kernels, _use_cuequiv_attn = resolve_use_kernels(model)
+    _tri_attn_ckpt = resolve_tri_attn_ckpt(triangle_attention_chunk_checkpointing)
+
+    if gradient_checkpointing:
+        enable_confidence_checkpointing(model)
+        if _tri_attn_ckpt:
+            _n_tri = enable_triangle_attention_chunk_checkpointing(model)
+            _n_live = count_tri_attn_chunk_ckpt(model)
+            if _n_live == 0:
+                log.warning(
+                    "IGV_TRI_ATTN_CKPT is on but no TriangleAttention module "
+                    "is instrumented."
+                )
+            elif _n_tri == 0:
+                log.info(
+                    "Triangle-attention chunk checkpointing already active on "
+                    "%d modules.", _n_live,
+                )
+    elif _tri_attn_ckpt:
+        log.warning(
+            "IGV_TRI_ATTN_CKPT ignored: requires gradient_checkpointing=True."
+        )
+
+    device = s_inputs.device
+    mask = feats["token_pad_mask"].float()
+    pair_mask = mask[:, :, None] * mask[:, None, :]
+
+    with torch.no_grad():
+        rel_pos = model.rel_pos(feats)
+        token_bonds_z = model.token_bonds(feats["token_bonds"].float())
+        contact_z = model.contact_conditioning(feats)
+
+    _n_tokens = int(mask.shape[1])
+    try:
+        _threshold = _boltz_const.chunk_size_threshold
+    except Exception:
+        _threshold = 384
+
+    _profile = select_chunk_profile(_n_tokens, _threshold)
+    log.info(
+        "affinity_forward chunk profile: %s (n_tokens=%d, pf_chunk=%d)",
+        _profile["profile"], _n_tokens, _profile["pf_chunk"],
+    )
+
+    _pf_group = max(1, int(os.environ.get("IGV_PF_GROUP_SIZE", _PF_GROUP_SIZE)))
+    _n_pf_blocks = len(model.pairformer_module.layers)
+    _n_msa_blocks = model.msa_module.msa_blocks
+
+    def _pairformer_group_fn(s_, z_, mask_, pair_mask_, span):
+        start, stop = int(span[0].item()), int(span[1].item())
+        for i in range(start, stop):
+            s_, z_ = model.pairformer_module.layers[i](
+                s_, z_, mask_, pair_mask_, _profile["pf_chunk"],
+                _use_kernels, False, _use_cuequiv_attn,
+            )
+        return s_, z_
+
+    def _msa_block_fn(z_, m_, token_mask_, msa_mask_, layer_idx_dummy):
+        idx = int(layer_idx_dummy.item())
+        return model.msa_module.layers[idx](
+            z_, m_, token_mask_, msa_mask_,
+            _profile["msa_chunk_heads_pwa"],
+            _profile["msa_chunk_trans_z"],
+            _profile["msa_chunk_trans_msa"],
+            _profile["msa_chunk_outer"],
+            _profile["msa_chunk_tri"],
+            _use_kernels,
+        )
+
+    def _msa_forward_checkpointed(z_, s_interp_):
+        try:
+            from boltz.data import const as _c
+            _num_tokens = _c.num_tokens
+        except Exception:
+            _num_tokens = 33
+
+        msa = feats["msa"]
+        msa_oh = torch.nn.functional.one_hot(msa, num_classes=_num_tokens)
+        has_deletion = feats["has_deletion"].unsqueeze(-1)
+        deletion_value = feats["deletion_value"].unsqueeze(-1)
+        msa_mask_ = feats["msa_mask"]
+        token_mask_ = feats["token_pad_mask"].float()
+        token_mask_ = token_mask_[:, :, None] * token_mask_[:, None, :]
+
+        if model.msa_module.use_paired_feature:
+            is_paired = feats["msa_paired"].unsqueeze(-1)
+            m = torch.cat([msa_oh, has_deletion, deletion_value, is_paired], dim=-1)
+        else:
+            m = torch.cat([msa_oh, has_deletion, deletion_value], dim=-1)
+
+        m = model.msa_module.msa_proj(m)
+        m = m + model.msa_module.s_proj(s_interp_).unsqueeze(1)
+
+        for blk_i in range(_n_msa_blocks):
+            idx_t = torch.tensor(blk_i, device=device)
+            z_, m = _checkpoint(
+                _msa_block_fn, z_, m, token_mask_, msa_mask_, idx_t,
+                use_reentrant=False,
+            )
+        return z_
+
+    def _full_trunk_and_affinity(s_interp):
+        s_init = model.s_init(s_interp)
+        z_init = (
+            model.z_init_1(s_interp)[:, :, None, :]
+            + model.z_init_2(s_interp)[:, None, :, :]
+            + rel_pos + token_bonds_z + contact_z
+        )
+
+        s_ = torch.zeros_like(s_init)
+        z_ = torch.zeros_like(z_init)
+
+        for _ in range(recycling_steps + 1):
+            s_ = s_init + model.s_recycle(model.s_norm(s_))
+            z_ = z_init + model.z_recycle(model.z_norm(z_))
+
+            if gradient_checkpointing:
+                z_ = z_ + _msa_forward_checkpointed(z_, s_interp)
+                for start in range(0, _n_pf_blocks, _pf_group):
+                    stop = min(start + _pf_group, _n_pf_blocks)
+                    span = torch.tensor([start, stop], device=device)
+                    s_, z_ = _checkpoint(
+                        _pairformer_group_fn, s_, z_, mask, pair_mask, span,
+                        use_reentrant=False,
+                    )
+            else:
+                z_ = z_ + model.msa_module(
+                    z_, s_interp, feats, use_kernels=_use_kernels
+                )
+                s_, z_ = model.pairformer_module(
+                    s_, z_, mask=mask, pair_mask=pair_mask,
+                    use_kernels=_use_kernels,
+                )
+
+        # Build z_affinity: mask to protein-ligand pairs.
+        pad_mask_1d = feats["token_pad_mask"][0]
+        mol_type = feats.get("mol_type")
+        aff_mask = feats.get("affinity_token_mask")
+
+        if mol_type is not None:
+            rec_mask_ = (mol_type[0] == 0).float() * pad_mask_1d.float()
+        else:
+            rec_mask_ = pad_mask_1d.float()
+
+        if aff_mask is not None:
+            lig_mask_ = aff_mask[0].float() * pad_mask_1d.float()
+        else:
+            lig_mask_ = torch.zeros_like(pad_mask_1d.float())
+
+        cross_pair_mask_ = (
+            lig_mask_[:, None] * rec_mask_[None, :]
+            + rec_mask_[:, None] * lig_mask_[None, :]
+            + lig_mask_[:, None] * lig_mask_[None, :]
+        )
+
+        z_affinity = z_ * cross_pair_mask_[None, :, :, None]
+
+        x_pred_local = x_pred.detach()
+        if x_pred_local.dim() == 3:
+            x_pred_local = x_pred_local.unsqueeze(1)
+
+        has_ensemble = (
+            hasattr(model, "affinity_ensemble") and model.affinity_ensemble
+            and hasattr(model, "affinity_module1")
+            and hasattr(model, "affinity_module2")
+        )
+
+        if has_ensemble:
+            out1 = model.affinity_module1(
+                s_inputs=s_interp,
+                z=z_affinity,
+                x_pred=x_pred_local,
+                feats=feats,
+                multiplicity=1,
+                use_kernels=_use_kernels,
+            )
+            out2 = model.affinity_module2(
+                s_inputs=s_interp,
+                z=z_affinity,
+                x_pred=x_pred_local,
+                feats=feats,
+                multiplicity=1,
+                use_kernels=_use_kernels,
+            )
+            out_dict = {
+                "affinity_pred_value": (
+                    out1["affinity_pred_value"] + out2["affinity_pred_value"]
+                ) / 2,
+                "affinity_logits_binary": (
+                    out1["affinity_logits_binary"] + out2["affinity_logits_binary"]
+                ) / 2,
+            }
+        else:
+            aff_out = model.affinity_module(
+                s_inputs=s_interp,
+                z=z_affinity,
+                x_pred=x_pred_local,
+                feats=feats,
+                multiplicity=1,
+                use_kernels=_use_kernels,
+            )
+            out_dict = {
+                "affinity_pred_value": aff_out["affinity_pred_value"],
+                "affinity_logits_binary": aff_out["affinity_logits_binary"],
+            }
+
+        if hasattr(model, "affinity_mw_correction") and model.affinity_mw_correction:
+            mw_val = feats.get("affinity_mw")
+            if mw_val is not None:
+                mw = mw_val[0] ** 0.3
+                out_dict["affinity_pred_value"] = (
+                    1.03525938 * out_dict["affinity_pred_value"]
+                    + (-0.59992683) * mw
+                    + 2.83288489
+                )
+
+        scalar = AFFINITY_SCORES[score_name](out_dict)
+        if scalar.dim() > 0:
+            scalar = scalar.squeeze()
+
+        return scalar
+
+    _amp_ctx = (
+        torch.autocast("cuda", dtype=_amp_dtype)
+        if _amp_dtype is not None
+        else contextlib.nullcontext()
+    )
+    with _amp_ctx:
+        if gradient_checkpointing:
+            from torch.utils.checkpoint import checkpoint as _ckpt
+            scalar = _ckpt(
+                _full_trunk_and_affinity, s_inputs, use_reentrant=True,
+            )
+        else:
+            scalar = _full_trunk_and_affinity(s_inputs)
+
+    if torch.is_grad_enabled():
+        assert scalar.requires_grad, (
+            f"Affinity score {score_name!r} does not require grad."
+        )
+    assert torch.isfinite(scalar).all(), (
+        f"Affinity score {score_name!r} is not finite: {scalar.item()}"
+    )
+
+    return scalar
+
+
+def affinity_head_forward(
+    model,
+    s_inputs,
+    z,
+    x_pred,
+    feats,
+    score_name: str,
+    flow_through_z: bool = False,
+    autocast_dtype=None,
+):
+    """Score from the affinity head with an externally supplied ``z``.
+
+    **DIAGNOSTIC ONLY** -- this path severs gradient from the trunk and
+    measures only how the affinity head responds to the residue-identity
+    one-hot at its input, holding the trunk's view of the protein fixed at
+    wild type.  It will produce a non-zero gradient that carries almost no
+    mutation signal.  Use :func:`affinity_forward` for real attribution.
+
+    This function exists for two purposes:
+    1. A fast smoke test that the affinity module itself is callable.
+    2. Measuring the s_inputs-only grad norm beside the full-trunk norm
+       to quantify the trunk's contribution.
+
+    For the full-trunk differentiable path (gradient through
+    ``res_type`` -> ``InputEmbedder`` -> trunk -> z -> affinity module),
+    use :func:`affinity_forward`, which has the same two-level
+    gradient-checkpointing scheme as :func:`confidence_forward`.
+
+    Bypasses the three ``.detach()`` calls at boltz 2.2.1
+    ``boltz2.py:632-633,646-647,705-706`` by calling the affinity module
+    directly.  ``x_pred`` is always held fixed (detached).  The affinity
+    module bucketises distances (``cdist`` -> ``.long()`` -> ``Embedding``),
+    so ``x_pred`` is non-differentiable by construction.
+
+    The *flow_through_z* flag controls whether ``z`` retains its gradient
+    state (True) or is detached (False, default).  When the caller sets
+    ``z.requires_grad_(True)`` this gives pair-layer attribution analogous
+    to the confidence path's ``confidence_head_forward``.
+    """
+    import torch
+
+    if score_name not in AFFINITY_SCORES:
+        raise ValueError(
+            f"Unknown affinity score: {score_name!r}. "
+            f"Available: {sorted(AFFINITY_SCORES)}"
+        )
+
+    _amp_dtype = resolve_autocast_dtype(autocast_dtype)
+    _use_kernels, _ = resolve_use_kernels(model)
+
+    _amp_ctx = (
+        torch.autocast("cuda", dtype=_amp_dtype)
+        if _amp_dtype is not None
+        else contextlib.nullcontext()
+    )
+
+    pad_mask = feats["token_pad_mask"][0]
+    mol_type = feats["mol_type"][0] if "mol_type" in feats else None
+    aff_mask = feats.get("affinity_token_mask")
+
+    if mol_type is not None:
+        rec_mask = (mol_type == 0).float() * pad_mask.float()
+    else:
+        rec_mask = pad_mask.float()
+
+    if aff_mask is not None:
+        lig_mask = aff_mask[0].float() * pad_mask.float()
+    else:
+        lig_mask = torch.zeros_like(pad_mask.float())
+
+    cross_pair_mask = (
+        lig_mask[:, None] * rec_mask[None, :]
+        + rec_mask[:, None] * lig_mask[None, :]
+        + lig_mask[:, None] * lig_mask[None, :]
+    )
+
+    z_affinity = z * cross_pair_mask[None, :, :, None]
+    if not flow_through_z:
+        z_affinity = z_affinity.detach()
+
+    x_pred_detached = x_pred.detach()
+    if x_pred_detached.dim() == 3:
+        x_pred_detached = x_pred_detached.unsqueeze(1)
+
+    with _amp_ctx:
+        has_ensemble = (
+            hasattr(model, "affinity_ensemble") and model.affinity_ensemble
+            and hasattr(model, "affinity_module1")
+            and hasattr(model, "affinity_module2")
+        )
+
+        if has_ensemble:
+            out1 = model.affinity_module1(
+                s_inputs=s_inputs,
+                z=z_affinity,
+                x_pred=x_pred_detached,
+                feats=feats,
+                multiplicity=1,
+                use_kernels=_use_kernels,
+            )
+            out2 = model.affinity_module2(
+                s_inputs=s_inputs,
+                z=z_affinity,
+                x_pred=x_pred_detached,
+                feats=feats,
+                multiplicity=1,
+                use_kernels=_use_kernels,
+            )
+            out_dict = {
+                "affinity_pred_value": (
+                    out1["affinity_pred_value"] + out2["affinity_pred_value"]
+                ) / 2,
+                "affinity_logits_binary": (
+                    out1["affinity_logits_binary"] + out2["affinity_logits_binary"]
+                ) / 2,
+            }
+        else:
+            aff_out = model.affinity_module(
+                s_inputs=s_inputs,
+                z=z_affinity,
+                x_pred=x_pred_detached,
+                feats=feats,
+                multiplicity=1,
+                use_kernels=_use_kernels,
+            )
+            out_dict = {
+                "affinity_pred_value": aff_out["affinity_pred_value"],
+                "affinity_logits_binary": aff_out["affinity_logits_binary"],
+            }
+
+        if hasattr(model, "affinity_mw_correction") and model.affinity_mw_correction:
+            mw_val = feats.get("affinity_mw")
+            if mw_val is not None:
+                mw = mw_val[0] ** 0.3
+                out_dict["affinity_pred_value"] = (
+                    1.03525938 * out_dict["affinity_pred_value"]
+                    + (-0.59992683) * mw
+                    + 2.83288489
+                )
+
+        scalar = AFFINITY_SCORES[score_name](out_dict)
         if scalar.dim() > 0:
             scalar = scalar.squeeze()
 
