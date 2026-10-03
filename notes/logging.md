@@ -2101,3 +2101,124 @@ above) against a panel of 8-10 covariates. A 200-residue crop containing only
 matters for a different reason -- whether each measured site is visible to the
 model at all -- and `check_crop_coverage` now answers that. Keep the two
 questions separate.
+
+### Run parameters for the first protein-ligand IG, decided 2026-10-02
+
+**Baseline: `mean_aa`. Decided by the user, and it is the one parameter that
+must not be wrong before spending.** `scripts/18_gate_affinity.py` shipped with
+a hardcoded zeros baseline (`torch.zeros_like(res_type_orig)`), and
+`build_mean_aa_baseline` (`attrib.py:52`) was never wired into the affinity
+path. The precedent is in the README: the all-zeros baseline scores 11.43 where
+the real complex scores 2.62, pushing the integral off-manifold, and on 1JTG
+chain B the measured Spearman against ddG was 0.238 with zeros against **0.357
+with `mean_aa`** -- the difference between this project's only positive result
+and a null. A zeros-baseline affinity run would have reproduced a null for a
+cause already diagnosed and already fixed once.
+
+**One run yields every mutation, so there is no affinity stage-02.** The
+artifact is the `(1, L, vocab)` `res_type` attribution. Because `res_type` is
+one-hot, the prediction for `w -> m` at position `i` is `grad[i][m] -
+grad[i][w]` (the TISM identity), so the single gradient already contains all 20
+substitutions at every position. The earlier audit listed "build a new stage 02
+for affinity embedding deltas" as a blocker; it is not one. Consequence for
+cost: **the GPU produces one artifact and every correlation is computed locally
+for free**, so a disappointing number never requires re-renting a card.
+
+**Defaults chosen, with reasons:**
+
+| parameter | value | why |
+|---|---|---|
+| baseline | `mean_aa` | above |
+| m (completeness ladder) | up to **64** | HANDOFF item 5: real geometry tripled the `f(x) - f(baseline)` span and m=32 failed completeness on 3 of 4 runs. Anything final needs 64. |
+| geometry | **real structure, not zeros** | Gate A logged `coords.abs().max() = 0` from sequence-only YAML. Fine for a flow test, wrong for a capture. |
+| structure for imatinib | **2HYY** (proposed) | Hauser used 1OPJ, which is *mouse* ABL1 adjusted to the human reference. We hold geometry fixed, so a species mismatch at the pocket is a live confound. Departs from the paper's setup -- recorded as a deliberate deviation, not an oversight. |
+| first target | imatinib alone | ~21 mutations, shakes out a path that has never executed. All six TKIs unlocks the within-mutation across-inhibitor design but is six runs. |
+
+**Infrastructure facts verified 2026-10-02, against stale documentation:**
+`igv-gpu` already exists in `us-central1-a` as `a2-ultragpu-1g` (A100-80GB),
+status TERMINATED -- so this is a restart, not a provision, and the boot disk
+already carries the Boltz-2 weights. Regional `NVIDIA_A100_80GB_GPUS` quota is
+now **1**, not the 0 that `docs/CLOUD.md` recorded (table corrected). Also
+available and unused: `NVIDIA_L4_GPUS` = 8, `NVIDIA_A100_GPUS` (40 GB) = 1.
+
+**The 80 GB card is probably unnecessary for this arm.** The measured 55.2 GiB
+was the confidence path at L=730 with a full MSA. The affinity path caps at
+L=256 with MSA depth 1 and templates off, which extrapolates to ~7 GiB on
+pair-tensor L^2 scaling. If that holds, subsequent runs belong on an L4 at a
+fraction of $5.07/hr. The extrapolation is crude, so the first run stays on the
+already-provisioned A100 rather than debugging a new instance type while also
+debugging code that has never run.
+
+### The ABL1 + imatinib run, fully specified from real geometry -- 2026-10-02
+
+All of the following was derived locally and free, from the 2HYY PDB and
+UniProt. No GPU involved.
+
+**Numbering frame, and a label correction that matters.** UniProt **P00519 is
+1130 residues**, which is isoform **1a**, and 2HYY chain A's author numbering
+matches it with shift **exactly 0** (verified: the only shift in [-40, +40] for
+which UniProt agrees with all 263 resolved 2HYY residues is 0). The gatekeeper
+is T at 315 in that frame, which is the clinical T315I convention.
+
+So `src/igv/abl.py`'s docstring calling the frame "isoform 1b" is
+**mislabelled** -- the numbers are right and were empirically verified 31/31
+against 4WA9, but the isoform NAME is wrong. 1b is the 1149-residue form, +19.
+This matters because a future reader who "corrects" for an 18 or 19 offset
+would silently misalign every mutation. Fix the label, keep the numbers.
+
+**Ground truth sits entirely inside 2HYY.** All 31 measured mutations match
+their wild-type residue at a resolved position in chain A, and all 20 distinct
+positions are present and resolved -- `31 of 31` and `20 of 20`, zero
+exceptions. Chain A spans 235-498 with **one gap, residue 275**.
+
+**Crop survival, predicted from real geometry: 19 of 20.** Minimum heavy-atom
+distance from each residue to imatinib (`STI`, 37 heavy atoms in chain A), rank
+each residue, keep the nearest 200 as an approximation of the cropper's budget:
+
+| surviving | lost |
+|---|---|
+| **19 of 20** measured positions | **E459 only**, at 27.2 A, rank 254 of 263 |
+
+The pocket positions are unambiguous: T315 at 3.0 A (rank 5), V299 3.3, F317
+3.3, L248 3.6, Y253 3.7, F359 4.2. This is the number that gates whether the
+run is worth buying, and it clears. (Approximation caveat: the real cropper
+does a greedy +-10 neighbourhood expansion rather than a pure distance rank, so
+treat 19 as indicative, not exact. `check_crop_coverage` reports the truth at
+runtime.)
+
+**The additive offset was broken by the gap, and the fix is a continuous
+construct.** `--resnum-offset 229` was wrong twice over: 2HYY chain A starts at
+**235**, not 229; and an additive index->resnum offset is only valid if the
+construct is contiguous. With residue 275 absent, everything from 276 onward
+shifts by one -- which is **14 of the 20 measured positions** (276, 279, 292,
+299, 315, 317, 343, 351, 355, 359, 384, 396, 459, 486). That misalignment is
+silent and would still produce a correlation, against the wrong residues.
+
+Fix: pass a **continuous** 235-498 construct, 264 residues, with position 275
+filled from UniProt (it is **E**). Then `index + 235 == residue number` holds
+exactly and `--resnum-offset 235` is correct. Verified: index 0 -> W235,
+index 80 -> T315, index 251 -> F486.
+
+Construct (264 aa, ABL1 235-498, P00519 frame):
+
+```
+WEMERTDITMKHKLGGGQYGEVYEGVWKKYSLTVAVKTLKEDTMEVEEFLKEAAVMKEIKHPNLVQLLGVCTREPPFYIITEFMTYGNLLDYLRECNRQEVNAVVLLYMATQISSAMEYLEKKNFIHRDLAARNCLVGENHLVKVADFGLSRLMTGDTYTAHAGAKFPIKWTAPESLAYNKFSIKSDVWAFGVLLWEIATYGMSPYPGIDLSQVYELLEKDYRMERPEGCPEKVYELMRACWQWNPSDRPSFAEIHQAFETMFQ
+```
+
+**Known landmine:** residue 275 (E) has no coordinates in 2HYY, so coordinate
+injection leaves it at the origin. It will read as very distant from the ligand
+and be cropped, which is harmless since 275 is not a measured position -- but
+the injection must REPORT unmatched residues rather than pass silently, because
+a larger unmatched set would corrupt the crop geometry without any visible
+symptom.
+
+**Also settled:** 2HYY is human wild-type ABL1 kinase domain with imatinib
+(RCSB: "Human Abl kinase domain in complex with imatinib (STI571, Glivec)",
+*Homo sapiens*). It is NOT the T315I mutant -- an agent claimed that and it is
+false. 1IEP, proposed as a human alternative, is *Mus musculus*; so is 1OPJ,
+which is what Hauser used. Choosing 2HYY is therefore a deliberate upgrade to
+human wild-type geometry and a deliberate deviation from the paper.
+
+Diffusion sampling in `predict_structure_coords` is **not seeded**, so
+`--x-pred predicted` is not reproducible across fresh runs. `--x-pred pdb` is
+deterministic and is the right mode here.

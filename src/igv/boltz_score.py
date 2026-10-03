@@ -857,6 +857,181 @@ def build_affinity_yaml_spec(
     }
 
 
+def _inject_pdb_coords_into_processed_structure(
+    proc_out_dir: Path,
+    pdb_path: Path,
+) -> int:
+    """Patch the processed structure's atom coordinates from a PDB file.
+
+    After ``process_inputs`` writes a processed structure with (0,0,0)
+    coordinates (because the YAML is sequence-only), this function reads a
+    real PDB, maps its ATOM records onto the processed structure's atom
+    array by (chain_index, residue_index, atom_name), and writes the real
+    coordinates back.  The ``AffinityCropper`` then sees real geometry and
+    selects the pocket neighbourhood rather than the first ~200 tokens in
+    sequence order.
+
+    Returns the number of atoms whose coordinates were injected.
+    """
+    import numpy as np
+
+    struct_dir = proc_out_dir / "processed" / "structures"
+    npz_files = sorted(struct_dir.glob("*.npz"))
+    if not npz_files:
+        raise FileNotFoundError(f"No structure npz in {struct_dir}")
+    struct_path = npz_files[0]
+
+    data = dict(np.load(str(struct_path), allow_pickle=True))
+    atoms = data["atoms"].copy()
+    residues = data["residues"]
+    chains = data["chains"]
+
+    pdb_coords: dict[tuple[int, int, str], tuple[float, float, float]] = {}
+    with open(pdb_path) as f:
+        for line in f:
+            if not line.startswith("ATOM") and not line.startswith("HETATM"):
+                continue
+            atom_name = line[12:16].strip()
+            chain_letter = line[21]
+            resseq = line[22:26].strip()
+            x = float(line[30:38])
+            y = float(line[38:46])
+            z = float(line[46:54])
+            pdb_coords[(chain_letter, int(resseq), atom_name)] = (x, y, z)
+
+    chain_letters = []
+    for c in chains:
+        chain_letters.append(str(c["name"]).strip())
+
+    n_injected = 0
+    n_total_atoms = 0
+    unmatched_residues: list[str] = []
+    for chain_idx, chain in enumerate(chains):
+        chain_letter = chain_letters[chain_idx]
+        res_start = int(chain["res_idx"])
+        res_count = int(chain["res_num"])
+
+        for ri in range(res_start, res_start + res_count):
+            res = residues[ri]
+            atom_start = int(res["atom_idx"])
+            atom_count = int(res["atom_num"])
+            pdb_resnum = int(res["res_idx"]) + 1
+            res_matched = False
+
+            for ai in range(atom_start, atom_start + atom_count):
+                n_total_atoms += 1
+                atom = atoms[ai]
+                name_bytes = atom["name"]
+                if hasattr(name_bytes, "tolist"):
+                    name_bytes = name_bytes.tolist()
+                aname = "".join(chr(b) if b > 0 else "" for b in name_bytes).strip()
+
+                key = (chain_letter, pdb_resnum, aname)
+                if key in pdb_coords:
+                    atoms[ai]["coords"] = np.array(
+                        pdb_coords[key], dtype=np.float32
+                    )
+                    n_injected += 1
+                    res_matched = True
+
+            if not res_matched and atom_count > 0:
+                unmatched_residues.append(f"{chain_letter}:{pdb_resnum}")
+
+    data["atoms"] = atoms
+    np.savez_compressed(str(struct_path), **data)
+
+    frac_matched = n_injected / n_total_atoms if n_total_atoms > 0 else 0.0
+    log.info(
+        "Coordinate injection: %d/%d atoms matched (%.1f%%), "
+        "%d unmatched residues: %s",
+        n_injected, n_total_atoms, frac_matched * 100,
+        len(unmatched_residues),
+        ", ".join(unmatched_residues[:10]) if unmatched_residues else "none",
+    )
+
+    if n_total_atoms > 0 and frac_matched < 0.5:
+        raise RuntimeError(
+            f"Coordinate injection matched only {n_injected}/{n_total_atoms} "
+            f"atoms ({frac_matched:.1%}). The PDB chain letters or residue "
+            f"numbering likely do not match the processed structure. "
+            f"Unmatched residues: {', '.join(unmatched_residues[:10])}"
+        )
+
+    return n_injected
+
+
+def _verify_token_map_identity(
+    token_map: dict[tuple[str, int], int],
+    pdb_path: Path,
+    protein_chain_asym_str: str,
+    protein_sequence: str,
+    resnum_offset: int,
+    pdb_chain: str = "A",
+) -> None:
+    """Assert the token map's residue numbers match the PDB's amino acids.
+
+    For every protein token in the map, verifies that the residue number
+    (with the applied offset) corresponds to the correct amino acid in
+    both the construct sequence and the PDB. Raises on any mismatch,
+    converting the entire class of offset/isoform/gap errors from
+    silent-wrong into a crash.
+    """
+    _THREE = {
+        "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+        "GLU": "E", "GLN": "Q", "GLY": "G", "HIS": "H", "ILE": "I",
+        "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+        "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    }
+    pdb_residues: dict[int, str] = {}
+    with open(pdb_path) as f:
+        seen: set[int] = set()
+        for line in f:
+            if not line.startswith("ATOM"):
+                continue
+            if line[21] != pdb_chain:
+                continue
+            resseq = int(line[22:26].strip())
+            if resseq in seen:
+                continue
+            seen.add(resseq)
+            resname = line[17:20].strip()
+            pdb_residues[resseq] = _THREE.get(resname, "X")
+
+    mismatches: list[str] = []
+    checked = 0
+    for (chain_str, resnum), _tok_idx in token_map.items():
+        if chain_str != protein_chain_asym_str:
+            continue
+        seq_idx = resnum - resnum_offset
+        if seq_idx < 0 or seq_idx >= len(protein_sequence):
+            mismatches.append(
+                f"resnum {resnum} (index {seq_idx}) out of range for "
+                f"sequence length {len(protein_sequence)}"
+            )
+            continue
+        construct_aa = protein_sequence[seq_idx]
+        pdb_aa = pdb_residues.get(resnum)
+        if pdb_aa is not None and pdb_aa != construct_aa:
+            mismatches.append(
+                f"resnum {resnum}: construct has {construct_aa}, "
+                f"PDB has {pdb_aa}"
+            )
+        checked += 1
+
+    if mismatches:
+        sample = "; ".join(mismatches[:5])
+        raise RuntimeError(
+            f"Token-map identity check FAILED: {len(mismatches)} mismatch(es) "
+            f"out of {checked} checked. First: {sample}. "
+            f"The resnum_offset ({resnum_offset}) or the construct sequence "
+            f"does not match the PDB."
+        )
+    log.info(
+        "Token-map identity check passed: %d protein residues verified "
+        "against %s chain %s", checked, pdb_path, pdb_chain,
+    )
+
+
 def build_affinity_feats(
     protein_chains: dict[str, str],
     ligand_id: str,
@@ -867,6 +1042,8 @@ def build_affinity_feats(
     use_msa_server: bool = False,
     msa: str | dict | None = None,
     feat_seed: int | None = None,
+    structure_pdb: "Path | str | None" = None,
+    resnum_offset: int = 0,
 ):
     """Featurise a protein-ligand complex for affinity prediction.
 
@@ -876,7 +1053,25 @@ def build_affinity_feats(
     ``max_tokens_protein=200``, ``neighborhood_size=10``) and MSA depth 1.
 
     Returns ``(feats, token_map)`` where *token_map* maps
-    ``(chain_id, original_residue_index) -> crop_local_token_index``.
+    ``(chain_id, residue_number) -> crop_local_token_index``.
+
+    Parameters
+    ----------
+    structure_pdb : Path or str or None
+        PDB file with real atom coordinates for the protein-ligand complex.
+        When provided, the coordinates are injected into the processed
+        structure AFTER ``process_inputs`` and BEFORE the
+        ``PredictionDataset`` creates the affinity crop.  This makes the
+        ``AffinityCropper`` pocket-selective (by distance to the ligand)
+        rather than geometry-blind (first ~200 tokens in sequence order).
+        Without this, sequence-only YAML sets every coordinate to (0,0,0)
+        and the crop is effectively random.
+    resnum_offset : int
+        Added to the 0-based ``res_idx`` for the protein chain in the
+        token map.  For ABL1 with a kinase-domain construct starting at
+        W235 (2HYY), pass ``resnum_offset=235`` so that the token map keys
+        are P00519 residue numbers (e.g. 315 for T315).  The construct
+        must be contiguous (no gaps); fill any PDB gaps from UniProt.
 
     Crop determinism
     ~~~~~~~~~~~~~~~~
@@ -915,20 +1110,50 @@ def build_affinity_feats(
 
     with deterministic_featurisation(seed=feat_seed):
         process_inputs(data=[spec_path], out_dir=cache_dir, **proc_kwargs)
+
+        if structure_pdb is not None:
+            n_inj = _inject_pdb_coords_into_processed_structure(
+                cache_dir, Path(structure_pdb),
+            )
+            log.info("Coordinate injection: %d atoms patched", n_inj)
+            if n_inj == 0:
+                log.warning(
+                    "No coordinates were injected from %s. The crop will be "
+                    "geometry-blind. Check that the PDB chain letters and "
+                    "residue numbering match the processed structure.",
+                    structure_pdb,
+                )
+
         mol_dir = proc_kwargs.get("mol_dir", cache_root / "mols")
         feats = _featurize_processed_affinity(cache_dir, mol_dir, device)
 
     n_pad = int(feats["token_pad_mask"][0].sum().item())
     log.info("Affinity feats: %d non-padding tokens (after crop)", n_pad)
 
-    token_map = _build_affinity_token_map(feats)
-    log.info("Affinity token map: %d entries", len(token_map))
+    token_map = _build_affinity_token_map(
+        feats,
+        protein_chain_asym=0,
+        resnum_offset=resnum_offset,
+    )
+    log.info("Affinity token map: %d entries (resnum_offset=%d)", len(token_map), resnum_offset)
+
+    if structure_pdb is not None and resnum_offset != 0:
+        _verify_token_map_identity(
+            token_map, Path(structure_pdb),
+            protein_chain_asym_str="0",
+            protein_sequence=next(iter(protein_chains.values())),
+            resnum_offset=resnum_offset,
+        )
 
     return feats, token_map
 
 
-def _build_affinity_token_map(feats: dict) -> dict[tuple[str, int], int]:
-    """Build ``(chain_id, original_residue_index) -> crop_local_token_index``.
+def _build_affinity_token_map(
+    feats: dict,
+    protein_chain_asym: int = 0,
+    resnum_offset: int = 0,
+) -> dict[tuple[str, int], int]:
+    """Build ``(chain_id, residue_number) -> crop_local_token_index``.
 
     After the affinity cropper, the feats contain fewer tokens than the
     original protein chain.  ``feats["residue_index"]`` carries the
@@ -941,6 +1166,18 @@ def _build_affinity_token_map(feats: dict) -> dict[tuple[str, int], int]:
     The map uses integer chain ids; callers that need string ids must map
     through the YAML's chain ordering (``asym_id`` 0 = first chain in YAML,
     1 = second, etc.).
+
+    Parameters
+    ----------
+    feats : dict
+        Collated feature dict.
+    protein_chain_asym : int
+        The asym_id of the protein chain to apply the offset to.
+    resnum_offset : int
+        Added to the 0-based ``res_idx`` for the protein chain to produce
+        the residue numbers stored in the token map. Use this to emit
+        PDB author numbering (e.g. ABL1 1b) rather than 0-based indices.
+        Non-protein chains are not offset.
     """
     pad = feats["token_pad_mask"][0].bool().cpu()
     asym = feats["asym_id"][0].cpu()[pad]
@@ -950,6 +1187,8 @@ def _build_affinity_token_map(feats: dict) -> dict[tuple[str, int], int]:
     for local_idx in range(len(asym)):
         chain = int(asym[local_idx])
         resi = int(res_idx[local_idx])
+        if chain == protein_chain_asym and resnum_offset != 0:
+            resi = resi + resnum_offset
         key = (str(chain), resi)
         if key not in token_map:
             token_map[key] = local_idx
@@ -1006,6 +1245,37 @@ def check_crop_coverage(
         "surviving_token_indices": surviving_token_indices,
         "fraction_surviving": n_surv / n_req if n_req > 0 else 0.0,
     }
+
+
+def build_mean_aa_res_type_baseline(res_type, feats):
+    """Mean-AA baseline for the res_type one-hot in the affinity path.
+
+    At protein positions: uniform 1/20 over the 20 canonical amino acid columns.
+    At non-protein positions (ligand, padding): keep the original res_type
+    so that attribution there is zero by construction.
+
+    The baseline operates on the CROPPED token set: after AffinityCropper, the
+    token indices are crop-local, and this function addresses them in that space.
+    """
+    import torch
+
+    aa_indices = canonical_aa_token_indices()
+    baseline = res_type.detach().clone().float()
+
+    pad_mask = feats["token_pad_mask"][0].bool()
+    mol_type = feats.get("mol_type")
+    if mol_type is not None:
+        protein_mask = (mol_type[0] == 0) & pad_mask
+    else:
+        protein_mask = pad_mask
+
+    num_tokens = res_type.shape[-1]
+    uniform = torch.zeros(num_tokens, device=res_type.device, dtype=baseline.dtype)
+    for idx in aa_indices:
+        uniform[int(idx)] = 1.0 / len(aa_indices)
+
+    baseline[0, protein_mask] = uniform
+    return baseline
 
 
 def _featurize_processed_affinity(proc_out_dir: Path, mol_dir: Path, device) -> dict:
@@ -3069,6 +3339,36 @@ def canonical_aa_token_indices(
             f"changed; update the mapping."
         )
     return indices
+
+
+def build_vocab_order(
+    tokens: tuple[str, ...] | None = None,
+    token_to_letter: dict[str, str] | None = None,
+):
+    """Build a (num_tokens,) array of one-letter codes for the token vocabulary.
+
+    Protein tokens map to their one-letter amino acid codes. Non-protein tokens
+    (pad, gap, RNA, DNA) map to empty strings. The result is suitable for
+    serialisation as ``vocab_order`` in gradient artifacts, so consumers can
+    locate amino acid columns without importing boltz.
+    """
+    import numpy as np
+
+    if tokens is None or token_to_letter is None:
+        try:
+            from boltz.data import const as _c
+        except ImportError:
+            tokens = _BOLTZ_TOKENS_2_2_1
+            token_to_letter = dict(_PROT_TOKEN_TO_LETTER_2_2_1)
+        else:
+            tokens = tuple(_c.tokens)
+            token_to_letter = dict(_c.prot_token_to_letter)
+
+    vocab = np.array(
+        [token_to_letter.get(tok, "") for tok in tokens],
+        dtype=object,
+    )
+    return vocab
 
 
 def res_type_gradient_forward(

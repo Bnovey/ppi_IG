@@ -20,18 +20,21 @@ measurements (``structure_type="xtal"``).
 
 Numbering convention
 --------------------
-Mutations use **ABL1 isoform 1b** numbering -- the standard in clinical
-oncology. T315 is the gatekeeper residue. ABL1 isoform 1a adds 18 residues
-at the N-terminus, so the same residue is T333 in 1a (UniProt P00519
-canonical numbering). All six ABL co-crystal PDB structures use 1b numbering
-directly; the authors confirmed they adjusted 1OPJ and 4XEY to match
-P00519-1.
+Mutations use the **P00519 / UniProt isoform 1a** numbering frame
+(1130 residues). T315 is the gatekeeper residue. This is the standard
+frame in clinical oncology and in all six ABL co-crystal PDB structures;
+the authors confirmed they adjusted 1OPJ and 4XEY to match P00519.
+2HYY chain A's author numbering matches this frame at shift exactly 0
+(verified against all 263 resolved residues).
 
-Verification of 1b numbering: all 31 measured mutations were mapped against
-PDB 4WA9 chain B (the axitinib co-crystal, human ABL1). 31/31 wild-type
-amino acids match with zero mismatches, confirming the mutation residue
-numbers are 1b. Under 1a numbering (+18), position 244 would map to 262,
-which is glycine in 4WA9, not methionine -- the mismatch is immediate.
+WARNING: do NOT apply a +18 or +19 "1a-to-1b" conversion to these numbers.
+An earlier version of this docstring called the frame "isoform 1b"; the
+numbers were always correct and verified 31/31, but the isoform name was
+wrong. Isoform 1b (P00519-2) is the 1149-residue form.
+
+Verification: all 31 measured mutations were mapped against PDB 4WA9
+chain B (the axitinib co-crystal, human ABL1). 31/31 wild-type amino acids
+match with zero mismatches, confirming the residue numbers are P00519.
 
 Sign convention
 ---------------
@@ -207,7 +210,7 @@ IC50_CONSISTENCY_TOL_LOG10 = 0.1
 
 @dataclass(frozen=True)
 class AblMutation:
-    """A single-point mutation in ABL1 kinase domain (isoform 1b numbering)."""
+    """A single-point mutation in ABL1 kinase domain (P00519 numbering)."""
 
     wt_aa: str
     resnum: int

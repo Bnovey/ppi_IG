@@ -53,7 +53,7 @@ account. GPU quota in common regions:
 
 | Metric | Limit | Usable here? |
 |---|---|---|
-| `NVIDIA_A100_80GB_GPUS` | **0** | this is the one we need |
+| `NVIDIA_A100_80GB_GPUS` | **1** | this is the one we need -- **granted**, verified 2026-10-02 |
 | `PREEMPTIBLE_NVIDIA_A100_80GB_GPUS` | **0** | |
 | `NVIDIA_A100_GPUS` (40 GB) | 1 | no -- 40 GB OOMs at stage 03 |
 | `PREEMPTIBLE_NVIDIA_A100_GPUS` (40 GB) | 16 | no -- same reason |

@@ -50,6 +50,8 @@ COLLAPSED_SPAN_THRESHOLD = 1e-6
 
 M_STEPS_LADDER = [16, 32, 64]
 
+BASELINE_CHOICES = ("zeros", "mean_aa")
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers (CPU, no torch, no boltz -- testable and usable in --dry-run)
@@ -86,6 +88,26 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["affinity_pred_value", "affinity_logits_binary"],
     )
     p.add_argument(
+        "--baseline", default="mean_aa",
+        choices=BASELINE_CHOICES,
+        help="Baseline for IG. Default: mean_aa.",
+    )
+    p.add_argument(
+        "--pdb", default=None,
+        help="PDB file with real coordinates for the protein-ligand complex. "
+             "Required for a real run: without it, AffinityCropper is geometry-blind.",
+    )
+    p.add_argument(
+        "--resnum-offset", type=int, default=0,
+        help="Added to 0-based residue indices in the token map to emit "
+             "PDB author numbering (e.g. 235 for ABL1 kinase domain W235-Q498).",
+    )
+    p.add_argument(
+        "--x-pred", default="pdb",
+        choices=["zeros", "predicted", "pdb"],
+        help="x_pred mode. Default: pdb (use --pdb coordinates as x_pred).",
+    )
+    p.add_argument(
         "--m-steps", type=int, nargs="+", default=M_STEPS_LADDER,
         help="Quadrature steps for IG completeness ladder. Default: 16 32 64.",
     )
@@ -101,6 +123,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--out", default="results/gate_affinity_{score}.json",
+    )
+    p.add_argument(
+        "--out-npz", default="results/gate_affinity_{score}.npz",
     )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
@@ -260,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cache_dir = Path(args.cache_dir)
     out_json = Path(args.out.format(score=args.score))
+    out_npz = Path(args.out_npz.format(score=args.score))
 
     # ------------------------------------------------------------------
     # Dry run
@@ -271,6 +297,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  ligand_smiles:        {args.ligand_smiles}")
         print(f"  ligand_ccd:           {args.ligand_ccd}")
         print(f"  score:                {args.score}")
+        print(f"  baseline:             {args.baseline}")
+        print(f"  pdb:                  {args.pdb}")
+        print(f"  resnum_offset:        {args.resnum_offset}")
+        print(f"  x_pred:               {args.x_pred}")
         print(f"  m_steps:              {args.m_steps}")
         print(f"  completeness thr:     abs < {args.completeness_threshold}")
         print(f"  output:               {out_json}")
@@ -338,14 +368,20 @@ def main(argv: list[str] | None = None) -> int:
 
     import torch
 
+    import numpy as np
+
     from igv.boltz_score import (
         AFFINITY_SCORES,
         affinity_forward,
         affinity_head_forward,
         build_affinity_feats,
+        build_mean_aa_res_type_baseline,
+        build_vocab_order,
+        check_crop_coverage,
         enable_confidence_checkpointing,
         load_affinity_model,
         numerics_arm,
+        predict_structure_coords,
     )
     from igv.provenance import write as prov_write
 
@@ -375,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
     enable_confidence_checkpointing(model)
 
     # ---- Featurise ----
+    pdb_path = Path(args.pdb) if args.pdb else None
     cache_suffix = f"_gate_aff_{args.protein_chain_id}_{args.ligand_id}"
     feats, token_map = build_affinity_feats(
         protein_chains,
@@ -384,13 +421,43 @@ def main(argv: list[str] | None = None) -> int:
         ligand_smiles=args.ligand_smiles,
         ligand_ccd=args.ligand_ccd,
         use_msa_server=not args.no_msa_server,
+        structure_pdb=pdb_path,
+        resnum_offset=args.resnum_offset,
     )
 
     n_tokens = int(feats["token_pad_mask"][0].sum().item())
     print(f"  L (tokens after affinity crop): {n_tokens}")
     print(f"  token_map entries: {len(token_map)}")
+    if pdb_path is not None:
+        print(f"  structure_pdb: {pdb_path}")
+    else:
+        print("  structure_pdb: NONE (crop is geometry-blind)")
+    if args.resnum_offset:
+        print(f"  resnum_offset: {args.resnum_offset}")
 
-    x_pred = feats["coords"].detach()
+    x_pred_mode = args.x_pred
+    if x_pred_mode == "pdb":
+        if pdb_path is None:
+            log.warning("--x-pred pdb but no --pdb; falling back to feats['coords']")
+            x_pred_mode = "zeros"
+        else:
+            x_pred = feats["coords"].detach()
+    if x_pred_mode == "predicted":
+        x_pred = predict_structure_coords(
+            model, feats, cache_dir,
+            protein_chains,
+            f"affinity_{args.protein_chain_id}_{args.ligand_id}",
+            recycling_steps=args.recycling_steps,
+        )
+        log.info(
+            "Predicted x_pred: shape %s, abs max %.6g",
+            list(x_pred.shape), float(x_pred.abs().max()),
+        )
+    elif x_pred_mode == "zeros":
+        x_pred = feats["coords"].detach()
+
+    print(f"  x_pred mode: {x_pred_mode}")
+    print(f"  x_pred abs max: {float(x_pred.abs().max()):.6g}")
 
     # ---- Forward pass (no_grad) to get the affinity value ----
     with torch.no_grad():
@@ -429,18 +496,36 @@ def main(argv: list[str] | None = None) -> int:
     if args.score == "affinity_pred_value":
         print("  (log10 IC50 in uM; lower = stronger binding)")
 
-    # ---- Baseline: zeros res_type ----
+    # ---- Baselines: compute f(baseline) for BOTH zeros and mean_aa ----
     res_type_orig = feats["res_type"]
     num_tokens_vocab = int(res_type_orig.shape[2]) if res_type_orig.dim() == 3 else None
 
+    zeros_baseline_rt = torch.zeros_like(res_type_orig)
+    mean_aa_baseline_rt = build_mean_aa_res_type_baseline(res_type_orig, feats)
+
     with torch.no_grad():
-        baseline_feats = dict(feats)
-        baseline_feats["res_type"] = torch.zeros_like(res_type_orig)
-        s_bl = model.input_embedder(baseline_feats, affinity=True)
-        f_baseline_val = float(affinity_head_forward(
-            model, s_bl, z_nograd, x_pred, baseline_feats,
+        bl_feats_zeros = dict(feats)
+        bl_feats_zeros["res_type"] = zeros_baseline_rt
+        s_bl_zeros = model.input_embedder(bl_feats_zeros, affinity=True)
+        f_zeros_baseline = float(affinity_head_forward(
+            model, s_bl_zeros, z_nograd, x_pred, bl_feats_zeros,
             args.score, flow_through_z=False,
         ))
+
+        bl_feats_mean = dict(feats)
+        bl_feats_mean["res_type"] = mean_aa_baseline_rt
+        s_bl_mean = model.input_embedder(bl_feats_mean, affinity=True)
+        f_mean_aa_baseline = float(affinity_head_forward(
+            model, s_bl_mean, z_nograd, x_pred, bl_feats_mean,
+            args.score, flow_through_z=False,
+        ))
+
+    if args.baseline == "zeros":
+        baseline_res_type = zeros_baseline_rt
+        f_baseline_val = f_zeros_baseline
+    else:
+        baseline_res_type = mean_aa_baseline_rt
+        f_baseline_val = f_mean_aa_baseline
 
     # ---- INCONCLUSIVE pre-check ----
     inconclusive_reason = check_inconclusive(f_x_val, f_baseline_val)
@@ -450,21 +535,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{'=' * 60}")
         print(f"  Reason: {inconclusive_reason}")
         print(f"  f(input) = {f_x_val}")
-        print(f"  f(baseline) = {f_baseline_val}")
+        print(f"  f(baseline) [{args.baseline}] = {f_baseline_val}")
+        print(f"  f(baseline) [zeros] = {f_zeros_baseline}")
+        print(f"  f(baseline) [mean_aa] = {f_mean_aa_baseline}")
         out_json.parent.mkdir(parents=True, exist_ok=True)
         out_json.write_text(json.dumps({
             "gate": "affinity",
             "result": "INCONCLUSIVE",
             "reason": inconclusive_reason,
+            "baseline": args.baseline,
             "f_x": f_x_val,
             "f_baseline": f_baseline_val,
+            "f_baseline_zeros": f_zeros_baseline,
+            "f_baseline_mean_aa": f_mean_aa_baseline,
         }, indent=2) + "\n")
         return 2
 
     f_diff = f_x_val - f_baseline_val
-    print(f"  f(input)    = {f_x_val:.6f}")
-    print(f"  f(baseline) = {f_baseline_val:.6f}")
-    print(f"  span        = {abs(f_diff):.6f}")
+    print(f"  f(input)           = {f_x_val:.6f}")
+    print(f"  f(baseline) [{args.baseline:7s}] = {f_baseline_val:.6f}")
+    print(f"  span [{args.baseline:7s}]      = {abs(f_diff):.6f}")
+    print(f"  f(baseline) [zeros  ] = {f_zeros_baseline:.6f}  (span {abs(f_x_val - f_zeros_baseline):.6f})")
+    print(f"  f(baseline) [mean_aa] = {f_mean_aa_baseline:.6f}  (span {abs(f_x_val - f_mean_aa_baseline):.6f})")
 
     # ---- Full-trunk backward (the default, scientifically load-bearing path) ----
     print("\n--- Full-trunk backward (default path) ---")
@@ -542,11 +634,15 @@ def main(argv: list[str] | None = None) -> int:
     feats["res_type"] = res_type_orig
 
     # ---- IG completeness ladder (full-trunk path) ----
-    print("\n--- IG completeness ladder (full-trunk path) ---")
+    print(f"\n--- IG completeness ladder (full-trunk path, baseline={args.baseline}) ---")
     completeness_results = {}
+    rung_ig_maps: dict[int, np.ndarray] = {}
+    rung_grad_maps: dict[int, np.ndarray] = {}
     first_m_abs_err = None
     first_m_rel_err = None
     first_m_ig_sum = None
+
+    delta_rt = res_type_orig.detach().float() - baseline_res_type.float()
 
     for m in sorted(args.m_steps):
         print(f"\n  m={m}:")
@@ -557,8 +653,7 @@ def main(argv: list[str] | None = None) -> int:
         reset_peak()
         t0 = time.time()
 
-        ig_sum_val = 0.0
-        baseline_res_type = torch.zeros_like(res_type_orig)
+        accumulated_grad = torch.zeros_like(res_type_orig.float())
 
         for step in range(m):
             alpha = (step + 0.5) / m
@@ -577,19 +672,23 @@ def main(argv: list[str] | None = None) -> int:
 
             step_grad = res_type_interp.grad
             if step_grad is not None:
-                ig_sum_val += float(
-                    ((res_type_orig.detach().float() - baseline_res_type) * step_grad).sum()
-                ) / m
+                accumulated_grad = accumulated_grad + step_grad.detach() / m
 
             for p in model.parameters():
                 if p.grad is not None:
                     p.grad = None
+
+        ig_tensor = delta_rt * accumulated_grad
+        ig_sum_val = float(ig_tensor.sum())
 
         wall = time.time() - t0
         ig_peak = peak_allocated_gib()
 
         abs_err = abs(ig_sum_val - f_diff)
         rel_err = abs_err / abs(f_diff) if abs(f_diff) > 1e-12 else float("inf")
+
+        rung_ig_maps[m] = ig_tensor.detach().cpu().numpy().astype(np.float32)
+        rung_grad_maps[m] = accumulated_grad.detach().cpu().numpy().astype(np.float32)
 
         print(f"    ig_sum = {ig_sum_val:.6f}")
         print(f"    f(x) - f(b) = {f_diff:.6f}")
@@ -639,14 +738,57 @@ def main(argv: list[str] | None = None) -> int:
     gate_result = "PASS" if all_pass else "FAIL"
     print(f"\n  Gate Affinity: {gate_result}")
 
+    # ---- Crop coverage ----
+    all_sites = list(range(n_protein))
+    crop_coverage = check_crop_coverage(
+        token_map, chain_id="0", sites=all_sites,
+    )
+    print(f"\n  Crop coverage: {crop_coverage['n_surviving']}/{crop_coverage['n_requested']} "
+          f"({crop_coverage['fraction_surviving']:.2%})")
+
+    # ---- Write .npz artifact ----
+    ladder = sorted(args.m_steps)
+    final_m = ladder[-1]
+    save_dict: dict[str, np.ndarray] = {}
+
+    # Required keys per the 19_tism_hauser.py contract
+    save_dict["grad_res_type"] = rung_grad_maps[final_m]
+    save_dict["crop_coverage"] = np.array(
+        json.dumps(crop_coverage), dtype=object,
+    )
+    save_dict["vocab_order"] = build_vocab_order()
+
+    token_map_items = sorted(token_map.items(), key=lambda kv: kv[1])
+    save_dict["token_map_keys"] = np.array(
+        [(k[0], str(k[1])) for k, _ in token_map_items], dtype=object,
+    )
+    save_dict["token_map_values"] = np.array(
+        [v for _, v in token_map_items], dtype=np.int64,
+    )
+
+    # Per-rung attributions (extra, for completeness analysis)
+    save_dict["res_type_ig"] = rung_ig_maps[final_m]
+    for m in ladder:
+        save_dict[f"res_type_ig_m{m}"] = rung_ig_maps[m]
+        save_dict[f"res_type_grad_m{m}"] = rung_grad_maps[m]
+
+    out_npz.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(out_npz, **save_dict)
+    print(f"\nWrote {out_npz}")
+    print(f"  keys: {sorted(save_dict.keys())}")
+
     # ---- Write JSON ----
     summary = {
         "gate": "affinity",
         "result": gate_result,
         "path": "full_trunk",
         "score": args.score,
+        "baseline": args.baseline,
+        "x_pred_mode": x_pred_mode,
         "affinity_value": f_x_val,
         "f_baseline": f_baseline_val,
+        "f_baseline_zeros": f_zeros_baseline,
+        "f_baseline_mean_aa": f_mean_aa_baseline,
         "f_diff": f_diff,
         "n_protein_residues": n_protein,
         "n_tokens": n_tokens,
@@ -671,10 +813,15 @@ def main(argv: list[str] | None = None) -> int:
         "frozen_params": n_frozen,
         "boltz_version": boltz_version,
         "checks": checks,
+        "crop_coverage": crop_coverage,
         "protein_chain_id": args.protein_chain_id,
         "ligand_id": args.ligand_id,
         "ligand_smiles": args.ligand_smiles,
         "ligand_ccd": args.ligand_ccd,
+        "structure_pdb": str(pdb_path) if pdb_path else None,
+        "resnum_offset": args.resnum_offset,
+        "npz_path": str(out_npz),
+        "npz_keys": sorted(save_dict.keys()),
     }
 
     out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -688,9 +835,13 @@ def main(argv: list[str] | None = None) -> int:
             "ligand_id": args.ligand_id,
             "ligand_smiles": args.ligand_smiles,
             "ligand_ccd": args.ligand_ccd,
+            "structure_pdb": str(pdb_path) if pdb_path else None,
         },
         params={
             "score": args.score,
+            "baseline": args.baseline,
+            "x_pred_mode": x_pred_mode,
+            "resnum_offset": args.resnum_offset,
             "m_steps": args.m_steps,
             "completeness_threshold": args.completeness_threshold,
             "recycling_steps": args.recycling_steps,
@@ -699,12 +850,40 @@ def main(argv: list[str] | None = None) -> int:
             "score": args.score,
             "method": "gate_affinity",
             "path": "full_trunk",
+            "baseline": args.baseline,
+            "x_pred_mode": x_pred_mode,
+            "n_tokens": n_tokens,
+            **numerics_arm(),
+        },
+    )
+    prov_write(
+        out_npz,
+        stage="18_gate_affinity",
+        inputs={
+            "protein_chain_id": args.protein_chain_id,
+            "ligand_id": args.ligand_id,
+            "ligand_smiles": args.ligand_smiles,
+            "ligand_ccd": args.ligand_ccd,
+        },
+        params={
+            "score": args.score,
+            "baseline": args.baseline,
+            "x_pred_mode": x_pred_mode,
+            "m_steps": args.m_steps,
+        },
+        arm={
+            "score": args.score,
+            "method": "gate_affinity",
+            "path": "full_trunk",
+            "baseline": args.baseline,
+            "x_pred_mode": x_pred_mode,
             "n_tokens": n_tokens,
             **numerics_arm(),
         },
     )
 
     log.info("Wrote %s", out_json)
+    log.info("Wrote %s", out_npz)
     return 0 if all_pass else 1
 
 

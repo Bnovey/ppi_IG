@@ -498,5 +498,303 @@ class TestCheckCropCoverage:
         assert result["surviving_token_indices"] == [3, 7]
 
 
+# ---------------------------------------------------------------------------
+# 11. Baseline selection CLI
+# ---------------------------------------------------------------------------
+
+
+class TestBaselineSelection:
+    def test_default_is_mean_aa(self):
+        args = gate_affinity.build_parser().parse_args([])
+        assert args.baseline == "mean_aa"
+
+    def test_zeros_accepted(self):
+        args = gate_affinity.build_parser().parse_args(["--baseline", "zeros"])
+        assert args.baseline == "zeros"
+
+    def test_mean_aa_accepted(self):
+        args = gate_affinity.build_parser().parse_args(["--baseline", "mean_aa"])
+        assert args.baseline == "mean_aa"
+
+    def test_invalid_rejected(self):
+        with pytest.raises(SystemExit):
+            gate_affinity.build_parser().parse_args(["--baseline", "random"])
+
+
+# ---------------------------------------------------------------------------
+# 12. x_pred CLI
+# ---------------------------------------------------------------------------
+
+
+class TestXPredSelection:
+    def test_default_is_pdb(self):
+        args = gate_affinity.build_parser().parse_args([])
+        assert args.x_pred == "pdb"
+
+    def test_zeros_accepted(self):
+        args = gate_affinity.build_parser().parse_args(["--x-pred", "zeros"])
+        assert args.x_pred == "zeros"
+
+    def test_predicted_accepted(self):
+        args = gate_affinity.build_parser().parse_args(["--x-pred", "predicted"])
+        assert args.x_pred == "predicted"
+
+    def test_pdb_accepted(self):
+        args = gate_affinity.build_parser().parse_args(["--x-pred", "pdb"])
+        assert args.x_pred == "pdb"
+
+
+# ---------------------------------------------------------------------------
+# 12b. PDB and resnum-offset CLI
+# ---------------------------------------------------------------------------
+
+
+class TestPdbAndResnumOffset:
+    def test_pdb_default_none(self):
+        args = gate_affinity.build_parser().parse_args([])
+        assert args.pdb is None
+
+    def test_pdb_accepts_path(self):
+        args = gate_affinity.build_parser().parse_args(["--pdb", "/tmp/test.pdb"])
+        assert args.pdb == "/tmp/test.pdb"
+
+    def test_resnum_offset_default_zero(self):
+        args = gate_affinity.build_parser().parse_args([])
+        assert args.resnum_offset == 0
+
+    def test_resnum_offset_accepts_int(self):
+        args = gate_affinity.build_parser().parse_args(["--resnum-offset", "229"])
+        assert args.resnum_offset == 229
+
+
+# ---------------------------------------------------------------------------
+# 13. build_mean_aa_res_type_baseline
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMeanAaResTypeBaseline:
+    def _make_feats(self, n_protein, n_ligand):
+        import torch
+        L = n_protein + n_ligand
+        num_tokens = 33
+        res_type = torch.zeros(1, L, num_tokens)
+        for i in range(n_protein):
+            res_type[0, i, 2 + (i % 20)] = 1.0
+        for i in range(n_ligand):
+            res_type[0, n_protein + i, 0] = 1.0
+
+        pad_mask = torch.ones(1, L)
+        mol_type = torch.zeros(1, L, dtype=torch.long)
+        mol_type[0, n_protein:] = 2
+        return res_type, {
+            "token_pad_mask": pad_mask,
+            "mol_type": mol_type,
+        }
+
+    def test_shape_preserved(self):
+        from igv.boltz_score import build_mean_aa_res_type_baseline
+        res_type, feats = self._make_feats(10, 3)
+        baseline = build_mean_aa_res_type_baseline(res_type, feats)
+        assert baseline.shape == res_type.shape
+
+    def test_protein_positions_uniform(self):
+        from igv.boltz_score import build_mean_aa_res_type_baseline, canonical_aa_token_indices
+        res_type, feats = self._make_feats(10, 3)
+        baseline = build_mean_aa_res_type_baseline(res_type, feats)
+        aa_idx = canonical_aa_token_indices()
+        for i in range(10):
+            row = baseline[0, i]
+            for j in aa_idx:
+                assert row[j].item() == pytest.approx(1.0 / 20, abs=1e-6)
+            non_aa_sum = sum(row[k].item() for k in range(33) if k not in aa_idx)
+            assert non_aa_sum == pytest.approx(0.0, abs=1e-6)
+
+    def test_ligand_positions_unchanged(self):
+        import torch
+        from igv.boltz_score import build_mean_aa_res_type_baseline
+        res_type, feats = self._make_feats(10, 3)
+        baseline = build_mean_aa_res_type_baseline(res_type, feats)
+        for i in range(3):
+            assert torch.allclose(baseline[0, 10 + i], res_type[0, 10 + i].float())
+
+
+# ---------------------------------------------------------------------------
+# 14. Artifact schema (.npz key expectations)
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactSchema:
+    def test_required_keys_present(self):
+        required = {
+            "grad_res_type", "token_map_keys", "token_map_values",
+            "crop_coverage", "vocab_order",
+        }
+        ladder = [16, 32, 64]
+        expected = set(required)
+        expected.add("res_type_ig")
+        for m in ladder:
+            expected.add(f"res_type_ig_m{m}")
+            expected.add(f"res_type_grad_m{m}")
+        assert required.issubset(expected)
+
+    def test_vocab_order_has_all_canonical_aas(self):
+        from igv.attrib import CANONICAL_AMINO_ACIDS
+        from igv.boltz_score import build_vocab_order
+        vocab = build_vocab_order()
+        vocab_set = set(str(v) for v in vocab if str(v))
+        for aa in CANONICAL_AMINO_ACIDS:
+            assert aa in vocab_set, f"Missing amino acid: {aa}"
+
+    def test_vocab_order_length_matches_num_tokens(self):
+        from igv.boltz_score import build_vocab_order, _BOLTZ_TOKENS_2_2_1
+        vocab = build_vocab_order()
+        assert len(vocab) == len(_BOLTZ_TOKENS_2_2_1)
+
+
+# ---------------------------------------------------------------------------
+# 15. Token-map round trip
+# ---------------------------------------------------------------------------
+
+
+class TestTokenMapRoundTrip:
+    def test_round_trip(self):
+        import numpy as np
+        token_map = {("0", 5): 0, ("0", 10): 1, ("1", 0): 2}
+        items = sorted(token_map.items(), key=lambda kv: kv[1])
+        keys = np.array([(k[0], str(k[1])) for k, _ in items], dtype=object)
+        values = np.array([v for _, v in items], dtype=np.int64)
+
+        reconstructed = {
+            (str(k[0]), int(k[1])): int(v) for k, v in zip(keys, values)
+        }
+        assert reconstructed == token_map
+
+
+# ---------------------------------------------------------------------------
+# 16. Crop-coverage field in JSON output
+# ---------------------------------------------------------------------------
+
+
+class TestCropCoverageInOutput:
+    def test_crop_coverage_dict_structure(self):
+        result = check_crop_coverage(
+            {("0", 0): 0, ("0", 1): 1, ("0", 5): 2},
+            chain_id="0",
+            sites=[0, 1, 2, 3, 4, 5],
+        )
+        assert "n_requested" in result
+        assert "n_surviving" in result
+        assert "n_cropped" in result
+        assert "surviving" in result
+        assert "cropped" in result
+        assert "fraction_surviving" in result
+        assert result["n_requested"] == 6
+        assert result["n_surviving"] == 3
+        assert result["n_cropped"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 17. out-npz CLI argument
+# ---------------------------------------------------------------------------
+
+
+class TestOutNpzArg:
+    def test_default_npz_path(self):
+        args = gate_affinity.build_parser().parse_args([])
+        assert "npz" in args.out_npz
+
+    def test_custom_npz_path(self):
+        args = gate_affinity.build_parser().parse_args(["--out-npz", "custom.npz"])
+        assert args.out_npz == "custom.npz"
+
+
+# ---------------------------------------------------------------------------
+# 18. Token-map resnum_offset
+# ---------------------------------------------------------------------------
+
+
+class TestTokenMapResnumOffset:
+    def test_offset_applied_to_protein(self):
+        import torch
+        from igv.boltz_score import _build_affinity_token_map
+        feats = {
+            "token_pad_mask": torch.ones(1, 5),
+            "asym_id": torch.tensor([[0, 0, 0, 1, 1]]),
+            "residue_index": torch.tensor([[0, 1, 2, 0, 1]]),
+        }
+        tm = _build_affinity_token_map(feats, protein_chain_asym=0, resnum_offset=229)
+        assert ("0", 229) in tm
+        assert ("0", 230) in tm
+        assert ("0", 231) in tm
+        assert ("1", 0) in tm
+        assert ("1", 1) in tm
+
+    def test_zero_offset_is_identity(self):
+        import torch
+        from igv.boltz_score import _build_affinity_token_map
+        feats = {
+            "token_pad_mask": torch.ones(1, 3),
+            "asym_id": torch.tensor([[0, 0, 0]]),
+            "residue_index": torch.tensor([[0, 1, 2]]),
+        }
+        tm = _build_affinity_token_map(feats, protein_chain_asym=0, resnum_offset=0)
+        assert ("0", 0) in tm
+        assert ("0", 1) in tm
+        assert ("0", 2) in tm
+
+
+# ---------------------------------------------------------------------------
+# 19. Identity guard (_verify_token_map_identity)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyTokenMapIdentity:
+    def test_matching_passes(self, tmp_path):
+        from igv.boltz_score import _verify_token_map_identity
+        pdb = tmp_path / "test.pdb"
+        pdb.write_text(
+            "ATOM      1  CA  ALA A 235       1.0  2.0  3.0  1.00  0.00\n"
+            "ATOM      2  CA  GLY A 236       4.0  5.0  6.0  1.00  0.00\n"
+        )
+        token_map = {("0", 235): 0, ("0", 236): 1}
+        _verify_token_map_identity(
+            token_map, pdb,
+            protein_chain_asym_str="0",
+            protein_sequence="AG",
+            resnum_offset=235,
+        )
+
+    def test_mismatch_raises(self, tmp_path):
+        from igv.boltz_score import _verify_token_map_identity
+        pdb = tmp_path / "test.pdb"
+        pdb.write_text(
+            "ATOM      1  CA  ALA A 235       1.0  2.0  3.0  1.00  0.00\n"
+            "ATOM      2  CA  GLY A 236       4.0  5.0  6.0  1.00  0.00\n"
+        )
+        token_map = {("0", 235): 0, ("0", 236): 1}
+        with pytest.raises(RuntimeError, match="identity check FAILED"):
+            _verify_token_map_identity(
+                token_map, pdb,
+                protein_chain_asym_str="0",
+                protein_sequence="GG",
+                resnum_offset=235,
+            )
+
+    def test_gap_residue_not_in_pdb_passes(self, tmp_path):
+        from igv.boltz_score import _verify_token_map_identity
+        pdb = tmp_path / "test.pdb"
+        pdb.write_text(
+            "ATOM      1  CA  ALA A 235       1.0  2.0  3.0  1.00  0.00\n"
+            "ATOM      2  CA  GLY A 237       4.0  5.0  6.0  1.00  0.00\n"
+        )
+        token_map = {("0", 235): 0, ("0", 236): 1, ("0", 237): 2}
+        _verify_token_map_identity(
+            token_map, pdb,
+            protein_chain_asym_str="0",
+            protein_sequence="AEG",
+            resnum_offset=235,
+        )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
