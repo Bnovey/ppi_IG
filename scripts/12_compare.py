@@ -48,7 +48,13 @@ log = logging.getLogger("compare")
 # -- Score orientation --------------------------------------------------------
 # Scores where a LOWER value means better binding quality.
 # All others are higher-is-better.
-LOWER_IS_BETTER = {"complex_pde"}
+#
+# ``affinity_pred_value`` is log10(IC50) with IC50 in uM, so a lower value is a
+# stronger binder: an increase is destabilising, which is already the SKEMPI DDG
+# convention and must NOT be negated.  ``affinity_logits_binary`` is the
+# opposite -- a higher logit means more likely to bind -- so it stays out of
+# this set and is negated by ``_orient_for_experiment`` below.
+LOWER_IS_BETTER = {"complex_pde", "affinity_pred_value"}
 
 
 def _orient_for_experiment(values: np.ndarray, score: str) -> np.ndarray:

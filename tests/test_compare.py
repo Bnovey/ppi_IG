@@ -72,6 +72,16 @@ class TestOrientForExperiment:
         result = compare._orient_for_experiment(self._V, "protein_iptm")
         np.testing.assert_array_equal(result, -self._V)
 
+    def test_affinity_pred_value_lower_is_better_passes_through_unchanged(self):
+        # log10(IC50 in uM): rising = weaker binding = positive DDG, no flip.
+        result = compare._orient_for_experiment(self._V, "affinity_pred_value")
+        np.testing.assert_array_equal(result, self._V)
+
+    def test_affinity_logits_binary_higher_is_better_is_negated(self):
+        # Higher binary logit = more likely to bind = better, so it must flip.
+        result = compare._orient_for_experiment(self._V, "affinity_logits_binary")
+        np.testing.assert_array_equal(result, -self._V)
+
     def test_negation_does_not_mutate_input_array(self):
         v = np.array([1.0, 2.0, 3.0])
         original = v.copy()
