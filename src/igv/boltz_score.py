@@ -860,16 +860,29 @@ def build_affinity_yaml_spec(
 def _inject_pdb_coords_into_processed_structure(
     proc_out_dir: Path,
     pdb_path: Path,
+    resnum_offset: int = 0,
 ) -> int:
     """Patch the processed structure's atom coordinates from a PDB file.
 
     After ``process_inputs`` writes a processed structure with (0,0,0)
     coordinates (because the YAML is sequence-only), this function reads a
     real PDB, maps its ATOM records onto the processed structure's atom
-    array by (chain_index, residue_index, atom_name), and writes the real
+    array by (chain letter, residue number, atom name), and writes the real
     coordinates back.  The ``AffinityCropper`` then sees real geometry and
     selects the pocket neighbourhood rather than the first ~200 tokens in
     sequence order.
+
+    For protein chains (``mol_type == 0``), the PDB residue number is
+    computed as ``chain_relative_index + resnum_offset``.  For non-polymer
+    chains (ligands, ``mol_type == 3``), HETATM records are matched by
+    ``(resname, atom_name)`` regardless of chain letter, because the PDB
+    may place the ligand in the protein chain while boltz gives it a
+    separate chain.
+
+    Residues with **no** matching PDB atoms get ``is_present = False``,
+    which propagates through the tokenizer's ``is_present = res & center``
+    check and the cropper's ``resolved_mask``, correctly excluding them
+    from the crop rather than leaving them at the origin as phantom points.
 
     Returns the number of atoms whose coordinates were injected.
     """
@@ -883,31 +896,49 @@ def _inject_pdb_coords_into_processed_structure(
 
     data = dict(np.load(str(struct_path), allow_pickle=True))
     atoms = data["atoms"].copy()
-    residues = data["residues"]
+    residues = data["residues"].copy()
     chains = data["chains"]
 
-    pdb_coords: dict[tuple[int, int, str], tuple[float, float, float]] = {}
+    # -- Parse PDB: separate ATOM (protein) and HETATM (ligand) records ------
+    pdb_protein_coords: dict[tuple[str, int, str], tuple[float, float, float]] = {}
+    pdb_hetatm_coords: dict[tuple[str, str], tuple[float, float, float]] = {}
     with open(pdb_path) as f:
         for line in f:
-            if not line.startswith("ATOM") and not line.startswith("HETATM"):
-                continue
-            atom_name = line[12:16].strip()
-            chain_letter = line[21]
-            resseq = line[22:26].strip()
-            x = float(line[30:38])
-            y = float(line[38:46])
-            z = float(line[46:54])
-            pdb_coords[(chain_letter, int(resseq), atom_name)] = (x, y, z)
+            if line.startswith("ATOM"):
+                atom_name = line[12:16].strip()
+                chain_letter = line[21]
+                resseq = int(line[22:26].strip())
+                x = float(line[30:38])
+                y = float(line[38:46])
+                z = float(line[46:54])
+                pdb_protein_coords[(chain_letter, resseq, atom_name)] = (x, y, z)
+            elif line.startswith("HETATM"):
+                atom_name = line[12:16].strip()
+                resname = line[17:20].strip()
+                x = float(line[30:38])
+                y = float(line[38:46])
+                z = float(line[46:54])
+                pdb_hetatm_coords[(resname, atom_name)] = (x, y, z)
 
     chain_letters = []
     for c in chains:
         chain_letters.append(str(c["name"]).strip())
+
+    def _decode_atom_name(raw_name) -> str:
+        """Decode atom name from unicode string (boltz >=2.2) or byte array."""
+        if isinstance(raw_name, (str, np.str_)):
+            return str(raw_name).strip()
+        # Legacy byte-array form (boltz 2.0.3): dtype 4i1
+        if hasattr(raw_name, "tolist"):
+            raw_name = raw_name.tolist()
+        return "".join(chr(b) if b > 0 else "" for b in raw_name).strip()
 
     n_injected = 0
     n_total_atoms = 0
     unmatched_residues: list[str] = []
     for chain_idx, chain in enumerate(chains):
         chain_letter = chain_letters[chain_idx]
+        mol_type = int(chain["mol_type"])
         res_start = int(chain["res_idx"])
         res_count = int(chain["res_num"])
 
@@ -915,29 +946,50 @@ def _inject_pdb_coords_into_processed_structure(
             res = residues[ri]
             atom_start = int(res["atom_idx"])
             atom_count = int(res["atom_num"])
-            pdb_resnum = int(res["res_idx"]) + 1
             res_matched = False
+
+            # Protein: (chain_letter, chain_relative_index + offset, atom_name)
+            if mol_type == 0:
+                res_idx_within_chain = ri - res_start
+                pdb_resnum = res_idx_within_chain + resnum_offset
+
+            # Ligand / non-polymer: match HETATM by (resname, atom_name)
+            res_name = str(res["name"]).strip() if mol_type != 0 else None
 
             for ai in range(atom_start, atom_start + atom_count):
                 n_total_atoms += 1
-                atom = atoms[ai]
-                name_bytes = atom["name"]
-                if hasattr(name_bytes, "tolist"):
-                    name_bytes = name_bytes.tolist()
-                aname = "".join(chr(b) if b > 0 else "" for b in name_bytes).strip()
+                aname = _decode_atom_name(atoms[ai]["name"])
 
-                key = (chain_letter, pdb_resnum, aname)
-                if key in pdb_coords:
-                    atoms[ai]["coords"] = np.array(
-                        pdb_coords[key], dtype=np.float32
-                    )
+                if mol_type == 0:
+                    key = (chain_letter, pdb_resnum, aname)
+                    coords = pdb_protein_coords.get(key)
+                else:
+                    hkey = (res_name, aname)
+                    coords = pdb_hetatm_coords.get(hkey)
+
+                if coords is not None:
+                    atoms[ai]["coords"] = np.array(coords, dtype=np.float32)
+                    atoms[ai]["is_present"] = True
                     n_injected += 1
                     res_matched = True
 
             if not res_matched and atom_count > 0:
-                unmatched_residues.append(f"{chain_letter}:{pdb_resnum}")
+                label = (
+                    f"{chain_letter}:{pdb_resnum}"
+                    if mol_type == 0
+                    else f"{chain_letter}:{res_name}"
+                )
+                unmatched_residues.append(label)
+                residues[ri]["is_present"] = False
+
+    # -- Sync the top-level ``coords`` array (derived from atoms) ------------
+    if "coords" in data:
+        coords_arr = data["coords"].copy()
+        coords_arr["coords"] = atoms["coords"]
+        data["coords"] = coords_arr
 
     data["atoms"] = atoms
+    data["residues"] = residues
     np.savez_compressed(str(struct_path), **data)
 
     frac_matched = n_injected / n_total_atoms if n_total_atoms > 0 else 0.0
@@ -1114,6 +1166,7 @@ def build_affinity_feats(
         if structure_pdb is not None:
             n_inj = _inject_pdb_coords_into_processed_structure(
                 cache_dir, Path(structure_pdb),
+                resnum_offset=resnum_offset,
             )
             log.info("Coordinate injection: %d atoms patched", n_inj)
             if n_inj == 0:
