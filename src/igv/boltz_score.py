@@ -884,6 +884,30 @@ def _inject_pdb_coords_into_processed_structure(
     check and the cropper's ``resolved_mask``, correctly excluding them
     from the crop rather than leaving them at the origin as phantom points.
 
+    **Pre-affinity file synthesis.**  Boltz's affinity path
+    (``inferencev2.py:62-65``) loads the structure from
+    ``<structures>/<record_id>/pre_affinity_<record_id>.npz``.  That file
+    is normally produced by the WRITER (``writer.py:178-180``) during a
+    prediction run, containing the top-ranked diffusion sample's
+    coordinates.  Because this repo holds geometry fixed at a deposited PDB
+    rather than running structure prediction, we synthesise the file here
+    with the *experimental* coordinates that were just injected.  This is
+    deterministic (the diffusion sampler is not seeded) and matches this
+    repo's fixed-wild-type-geometry approach exactly.
+
+    The ``record_id`` is derived from the structure npz filename stem,
+    which ``process_inputs`` (``main.py:650``) sets to
+    ``target.record.id``, itself the YAML file stem
+    (``parse/yaml.py:67``).
+
+    **Non-polymer zero-coordinate guard.**  If any chain whose
+    ``mol_type`` marks it as a non-polymer (ligand) ends up with zero
+    injected atoms, the function raises ``RuntimeError``.  A ligand at the
+    origin would make every protein-to-ligand distance equal to the
+    protein atom's distance from the origin, causing the affinity crop to
+    select residues near an arbitrary point instead of the binding pocket.
+    This failure is silent downstream so a loud crash here is essential.
+
     Returns the number of atoms whose coordinates were injected.
     """
     import numpy as np
@@ -936,11 +960,14 @@ def _inject_pdb_coords_into_processed_structure(
     n_injected = 0
     n_total_atoms = 0
     unmatched_residues: list[str] = []
+    # Track per-chain injection counts for the non-polymer guard.
+    chain_injected: dict[int, int] = {}  # chain_idx -> count
     for chain_idx, chain in enumerate(chains):
         chain_letter = chain_letters[chain_idx]
         mol_type = int(chain["mol_type"])
         res_start = int(chain["res_idx"])
         res_count = int(chain["res_num"])
+        chain_inj = 0
 
         for ri in range(res_start, res_start + res_count):
             res = residues[ri]
@@ -971,6 +998,7 @@ def _inject_pdb_coords_into_processed_structure(
                     atoms[ai]["coords"] = np.array(coords, dtype=np.float32)
                     atoms[ai]["is_present"] = True
                     n_injected += 1
+                    chain_inj += 1
                     res_matched = True
 
             if not res_matched and atom_count > 0:
@@ -982,6 +1010,33 @@ def _inject_pdb_coords_into_processed_structure(
                 unmatched_residues.append(label)
                 residues[ri]["is_present"] = False
 
+        chain_injected[chain_idx] = chain_inj
+
+    # -- Non-polymer zero-coordinate guard ----------------------------------
+    # A ligand with zero injected atoms stays at the origin, making the
+    # affinity crop select residues near an arbitrary point.  This is
+    # silent downstream and must be caught here.
+    for chain_idx, chain in enumerate(chains):
+        mol_type = int(chain["mol_type"])
+        n_chain_atoms = int(chain["atom_num"])
+        if mol_type != 0 and n_chain_atoms > 0 and chain_injected[chain_idx] == 0:
+            chain_letter = chain_letters[chain_idx]
+            res_start = int(chain["res_idx"])
+            res_names = [
+                str(residues[ri]["name"]).strip()
+                for ri in range(res_start, res_start + int(chain["res_num"]))
+            ]
+            raise RuntimeError(
+                f"Non-polymer chain {chain_letter} (residues: {res_names}, "
+                f"{n_chain_atoms} atoms) received ZERO injected coordinates. "
+                f"The ligand would remain at the origin, causing the affinity "
+                f"crop to select residues near an arbitrary point instead of "
+                f"the binding pocket. This makes the run meaningless. "
+                f"Check that the PDB HETATM residue name matches the "
+                f"processed structure's residue name (use --ligand-ccd with "
+                f"the CCD code matching the PDB, not --ligand-smiles)."
+            )
+
     # -- Sync the top-level ``coords`` array (derived from atoms) ------------
     if "coords" in data:
         coords_arr = data["coords"].copy()
@@ -991,6 +1046,19 @@ def _inject_pdb_coords_into_processed_structure(
     data["atoms"] = atoms
     data["residues"] = residues
     np.savez_compressed(str(struct_path), **data)
+
+    # -- Write pre_affinity file for the affinity dataset path ---------------
+    # Boltz's affinity PredictionDataset (inferencev2.py:62-65) loads from
+    # <structures>/<record_id>/pre_affinity_<record_id>.npz.  Normally the
+    # writer (writer.py:178-180) creates this from the top-ranked diffusion
+    # sample.  We synthesise it with the injected experimental coordinates
+    # because this repo uses fixed wild-type geometry, not predicted coords.
+    record_id = struct_path.stem  # e.g. "input" from "input.npz"
+    pre_aff_dir = struct_dir / record_id
+    pre_aff_dir.mkdir(parents=True, exist_ok=True)
+    pre_aff_path = pre_aff_dir / f"pre_affinity_{record_id}.npz"
+    np.savez_compressed(str(pre_aff_path), **data)
+    log.info("Wrote pre_affinity file: %s", pre_aff_path)
 
     frac_matched = n_injected / n_total_atoms if n_total_atoms > 0 else 0.0
     log.info(

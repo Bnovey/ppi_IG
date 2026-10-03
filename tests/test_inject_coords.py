@@ -9,6 +9,9 @@ matching the boltz 2.2.1 processed-structure format and assert:
   - an unmatched residue gets is_present=False on the residue record
   - the top-level coords array stays in sync with atoms["coords"]
   - the <50% match guard raises RuntimeError
+  - the pre_affinity file is written to the correct per-id subdirectory
+  - a non-polymer chain with zero injected atoms raises RuntimeError
+  - CCD-named ligand residues (e.g. STI) match PDB HETATM records
 """
 
 import sys
@@ -335,3 +338,175 @@ class TestInjectPdbCoords:
         )
         # 1 matched residue * 3 atoms + 2 ligand atoms = 5
         assert n == 5
+
+    def test_pre_affinity_file_written(self, tmp_path):
+        """pre_affinity npz is written to <structures>/<record_id>/ subdir."""
+        proc_dir, pdb_path, _, _, offset = _build_fixture(tmp_path)
+        _inject_pdb_coords_into_processed_structure(
+            proc_dir, pdb_path, resnum_offset=offset,
+        )
+        struct_dir = proc_dir / "processed" / "structures"
+        # The fixture writes structure_0.npz, so record_id = "structure_0"
+        npz_files = sorted(struct_dir.glob("*.npz"))
+        record_id = npz_files[0].stem
+        pre_aff_path = struct_dir / record_id / f"pre_affinity_{record_id}.npz"
+        assert pre_aff_path.exists(), f"Expected {pre_aff_path} to exist"
+
+        # Content should be identical to the patched main npz
+        main_data = dict(np.load(str(npz_files[0]), allow_pickle=True))
+        pre_data = dict(np.load(str(pre_aff_path), allow_pickle=True))
+        assert set(main_data.keys()) == set(pre_data.keys())
+        for key in main_data:
+            np.testing.assert_array_equal(
+                main_data[key], pre_data[key],
+                err_msg=f"pre_affinity {key} differs from main npz",
+            )
+
+    def test_ligand_zero_coords_guard_raises(self, tmp_path):
+        """Non-polymer chain with zero injected atoms raises RuntimeError."""
+        # Build fixture with a ligand named "LIG" but PDB HETATM uses "STI"
+        # -- the resname mismatch means zero ligand atoms match.
+        proc_dir, pdb_path, _, _, offset = _build_fixture(
+            tmp_path, n_protein_residues=2, include_ligand=True,
+        )
+        # Rewrite the PDB with HETATM using a different resname ("STI")
+        # so the (resname, atom_name) lookup fails for the ligand.
+        pdb_lines = []
+        serial = 1
+        # Keep the protein ATOM records (1 residue matched)
+        resseq = 0 + offset
+        for aname in ["N", "CA", "C"]:
+            x, y, z = float(serial), float(serial * 2), float(serial * 3)
+            pdb_lines.append(
+                f"ATOM  {serial:5d}  {aname:<3s} ALA A{resseq:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00"
+            )
+            serial += 1
+        # Ligand HETATM with wrong resname ("STI" instead of "LIG")
+        for aname in ["C1", "N1"]:
+            x, y, z = float(serial * 10), float(serial * 20), float(serial * 30)
+            pdb_lines.append(
+                f"HETATM{serial:5d}  {aname:<3s} STI A  99    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00"
+            )
+            serial += 1
+        pdb_lines.append("END")
+        pdb_path.write_text("\n".join(pdb_lines) + "\n")
+
+        with pytest.raises(RuntimeError, match="ZERO injected coordinates"):
+            _inject_pdb_coords_into_processed_structure(
+                proc_dir, pdb_path, resnum_offset=offset,
+            )
+
+    def test_ccd_named_ligand_matches_hetatm(self, tmp_path):
+        """A CCD-named ligand residue (e.g. STI) matches PDB HETATM records."""
+        # Build a fixture where the ligand residue name is "STI" (as a CCD
+        # ligand would produce) and the PDB HETATM also uses "STI".
+        protein_atom_names = ["N", "CA", "C"]
+        ligand_atom_names = ["C1", "N1"]
+        n_prot_atoms = 2 * len(protein_atom_names)
+        n_lig_atoms = len(ligand_atom_names)
+        n_atoms = n_prot_atoms + n_lig_atoms
+
+        atoms = np.zeros(n_atoms, dtype=_ATOM_DT)
+        for ri in range(2):
+            for ai, name in enumerate(protein_atom_names):
+                idx = ri * len(protein_atom_names) + ai
+                atoms[idx]["name"] = name
+                atoms[idx]["is_present"] = True
+        for li, name in enumerate(ligand_atom_names):
+            idx = n_prot_atoms + li
+            atoms[idx]["name"] = name
+            atoms[idx]["is_present"] = True
+
+        n_residues = 3  # 2 protein + 1 ligand
+        residues = np.zeros(n_residues, dtype=_RESIDUE_DT)
+        for ri in range(2):
+            residues[ri]["name"] = "ALA"
+            residues[ri]["res_type"] = 0
+            residues[ri]["res_idx"] = ri
+            residues[ri]["atom_idx"] = ri * len(protein_atom_names)
+            residues[ri]["atom_num"] = len(protein_atom_names)
+            residues[ri]["atom_center"] = ri * len(protein_atom_names) + 1
+            residues[ri]["atom_disto"] = ri * len(protein_atom_names) + 2
+            residues[ri]["is_standard"] = True
+            residues[ri]["is_present"] = True
+        # Ligand residue with CCD name "STI"
+        residues[2]["name"] = "STI"
+        residues[2]["res_type"] = -1
+        residues[2]["res_idx"] = 2
+        residues[2]["atom_idx"] = n_prot_atoms
+        residues[2]["atom_num"] = n_lig_atoms
+        residues[2]["atom_center"] = n_prot_atoms
+        residues[2]["atom_disto"] = n_prot_atoms
+        residues[2]["is_standard"] = False
+        residues[2]["is_present"] = True
+
+        chains = np.zeros(2, dtype=_CHAIN_DT)
+        chains[0]["name"] = "A"
+        chains[0]["mol_type"] = 0
+        chains[0]["atom_idx"] = 0
+        chains[0]["atom_num"] = n_prot_atoms
+        chains[0]["res_idx"] = 0
+        chains[0]["res_num"] = 2
+        chains[1]["name"] = "B"
+        chains[1]["mol_type"] = 3
+        chains[1]["entity_id"] = 1
+        chains[1]["asym_id"] = 1
+        chains[1]["atom_idx"] = n_prot_atoms
+        chains[1]["atom_num"] = n_lig_atoms
+        chains[1]["res_idx"] = 2
+        chains[1]["res_num"] = 1
+
+        coords = np.zeros(n_atoms, dtype=_COORD_DT)
+
+        struct_dir = tmp_path / "processed" / "structures"
+        struct_dir.mkdir(parents=True)
+        np.savez_compressed(
+            str(struct_dir / "structure_0.npz"),
+            atoms=atoms, residues=residues, chains=chains, coords=coords,
+        )
+
+        # PDB with HETATM using "STI" resname and matching atom names
+        resnum_offset = 10
+        pdb_lines = []
+        serial = 1
+        # Protein: first residue only (second is unmatched)
+        resseq = 0 + resnum_offset
+        for aname in protein_atom_names:
+            x, y, z = float(serial), float(serial * 2), float(serial * 3)
+            pdb_lines.append(
+                f"ATOM  {serial:5d}  {aname:<3s} ALA A{resseq:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00"
+            )
+            serial += 1
+        # Ligand HETATM with "STI"
+        for aname in ligand_atom_names:
+            x = float(serial * 10.0)
+            y = float(serial * 20.0)
+            z = float(serial * 30.0)
+            pdb_lines.append(
+                f"HETATM{serial:5d}  {aname:<3s} STI A  99    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00"
+            )
+            serial += 1
+        pdb_lines.append("END")
+        pdb_path = tmp_path / "test.pdb"
+        pdb_path.write_text("\n".join(pdb_lines) + "\n")
+
+        n = _inject_pdb_coords_into_processed_structure(
+            tmp_path, pdb_path, resnum_offset=resnum_offset,
+        )
+
+        # 3 protein atoms (first residue) + 2 ligand atoms = 5
+        assert n == 5
+
+        # Verify ligand atoms got real coordinates
+        data = dict(np.load(
+            str(struct_dir / "structure_0.npz"), allow_pickle=True,
+        ))
+        lig_atoms = data["atoms"][n_prot_atoms:]
+        for li in range(n_lig_atoms):
+            assert not np.allclose(lig_atoms[li]["coords"], [0, 0, 0]), (
+                f"Ligand atom {li} should have been injected"
+            )
