@@ -2222,3 +2222,111 @@ human wild-type geometry and a deliberate deviation from the paper.
 Diffusion sampling in `predict_structure_coords` is **not seeded**, so
 `--x-pred predicted` is not reproducible across fresh runs. `--x-pred pdb` is
 deterministic and is the right mode here.
+
+## 18. FIRST PROTEIN-LIGAND RESULT -- the model-vs-lab gate FAILS, 2026-10-02
+
+**B-vs-C on ABL1 + imatinib. The pre-registered sign-flip kill condition fired.
+Do not buy the IG run on this system.**
+
+Run: `scripts/20_affinity_scan.py`, fp32, ABL1 kinase domain 235-498 (264 aa,
+contiguous, P00519 frame), ligand `STI` by CCD code, geometry fixed at **2HYY**
+chain A with experimental coordinates injected, single-sequence pinned MSA,
+forward passes only. **0.6 min of A100.**
+
+### Plumbing all verified good
+
+| check | result |
+|---|---|
+| coordinate injection | **2110 / 2189 atoms (96.4%)**, 1 unmatched residue: A:275 -- the crystal gap, exactly as predicted |
+| ligand coordinates | injected via CCD; the zero-coordinate guard did NOT fire |
+| tokens after crop | 237 non-padding, token map 201 entries |
+| crop coverage | **10 of 13** imatinib positions; lost **351, 355, 459** |
+| wild-type score | `affinity_pred_value` = **0.579723** = log10(IC50/uM) |
+
+Two corrections to my own earlier predictions:
+* I predicted 19 of 20 positions surviving from a nearest-200 distance rank.
+  The real cropper did worse: it dropped **M351 (8.5 A, rank 71)** and
+  **E355 (9.4 A, rank 82)**, which a pure distance rank says should survive
+  comfortably. The greedy +-10 neighbourhood expansion does not behave like a
+  distance rank. **Do not predict crop coverage by distance ranking.**
+* Imatinib covers only **13** distinct positions, not 20 -- the 20 is the union
+  across all six TKIs.
+
+### The result
+
+n = 18 scored mutations, one inhibitor.
+
+| statistic | value |
+|---|---|
+| **Spearman(delta_score, DDG_exp)** | **-0.1879** (p = 0.455) |
+| Pearson | -0.4295 |
+| permutation null (10k) | p5 -0.409, p95 +0.396 -- **does not clear its own null** |
+| two-sided permutation p | 0.4498 |
+| bootstrap 95% CI | **[-0.684, +0.359]** |
+| model dynamic range | 0.367 log10 against the lab's 1.574 log10 -- **4.3x compressed** |
+
+**The sign is negative, i.e. pointing the wrong way, and it is indistinguishable
+from noise.** But the decisive part is not the correlation, it is the
+pre-registered qualitative condition:
+
+| strongest measured resistance | DDG_exp | model delta | |
+|---|---|---|---|
+| L248R | +2.33 | -0.0006 | WRONG SIGN |
+| T315I | +2.32 | -0.0991 | WRONG SIGN |
+| E255V | +2.22 | -0.1772 | WRONG SIGN |
+| Y253F | +1.90 | -0.0672 | WRONG SIGN |
+| E255K | +1.50 | -0.0716 | WRONG SIGN |
+
+**All five strongest resistance mutations are predicted as STRONGER binders.**
+The stop condition named **T315I, E255K and Y253H** in advance, before any data
+existed, as mutations "every method in the literature gets right". Three of the
+five here are from that named list. E255V -- the second strongest measured
+resistance -- carries the single most negative delta in the entire set.
+
+**bf16 is exonerated as the cause.** A bf16 run gave T315I = -0.097656 against
+fp32's -0.099106, and the signs agree throughout on the five above. But bf16
+error of ~0.01-0.03 is a large fraction of a typical delta of ~0.1, so **fp32 is
+mandatory for any quoted number** -- bf16 deltas land on a 1/128 grid at the
+same magnitude as the effect being measured.
+
+**Absolute calibration is also off.** WT predicted IC50 = 10^0.5797 = **3.8 uM**
+against Hauser's inferred wild-type of **~0.20 uM** -- roughly 19x weak, about
+1.3 log10 units.
+
+### What this does and does NOT establish
+
+It does NOT cleanly establish "Boltz-2's affinity head cannot rank mutations",
+because the test confounds two things:
+
+1. Boltz-2's affinity skill, and
+2. **our perturbation model** -- `res_type` flipped while geometry stays fixed
+   at the wild-type crystal.
+
+T315I's resistance is steric: Ile's beta-branched side chain clashes with
+imatinib and removes the Thr315 hydrogen bond. Holding coordinates at a
+Thr-shaped pocket and flipping only the identity token may make that mechanism
+**structurally unrepresentable**, which is the same invalidity class as the
+conformational-resistance flag recorded earlier. A clean test of the model's
+mutation skill would let geometry relax, which this repo deliberately does not
+do -- fixed geometry is what makes the IG attribution well-posed in the first
+place. **That tension is now a measured finding, not a hypothesis.**
+
+### Consequence, per the standing priority
+
+The user's instruction was to not buy the shortcut-vs-scan comparison if the
+model already fails against real data. It fails. **The IG run on ABL1 +
+imatinib is therefore not worth buying**, and was not run.
+
+### Extending to six TKIs is NOT just compute
+
+Each inhibitor needs its OWN co-crystal, its own verified construct range, gap
+list, contiguity check and CCD code -- the full 2HYY workup repeated five times.
+It cannot reuse 2HYY: imatinib binds the **DFG-out inactive** conformation
+while dasatinib binds the **active** conformation, so scoring dasatinib in the
+imatinib-bound structure would be meaningless. I briefly started this and
+stopped; recording it so nobody mistakes it for a cheap win.
+
+### Spend
+
+~0.6 min of compute for the gate itself. Session total ~$10-12, nearly all of
+it SSH recovery and five rounds of first-contact debugging, not science.
