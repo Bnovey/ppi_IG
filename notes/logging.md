@@ -1829,3 +1829,275 @@ benefit at any depth. Environmental databases are where diverged homologs live.
 
 **Unresolved.** This affects every Boltz-2 number produced so far, not only the
 pinning question. One run at `mode="env"` would settle it.
+
+---
+
+## 17. Pivot to protein-ligand -- opened 2026-10-02
+
+Motivation: sections 13-15 closed PPI as a negative because every target was a
+structure-confidence score; Boltz-2's affinity head exists only for
+protein-small-molecule. Protein-ligand is where the pre-registered claim
+("attribution on the affinity head should work", `PLAN.md:68-72`) is testable.
+
+### Priority order -- decided by the user 2026-10-02
+
+**Model vs lab comes first; shortcut vs brute-force scan is conditional on it.**
+If Boltz-2's affinity output already correlates poorly with measured data on
+the chosen ground truth, do NOT spend GPU on the shortcut-vs-scan comparison --
+a faithful shortcut to a model that is wrong about biology is not a useful
+result for this project. Run the model-vs-lab check (forward passes only,
+cheap at <=256 tokens) before any attribution-vs-scan work, and state the
+threshold that counts as "sucks" before the number exists.
+
+This reverses the README's framing, which calls shortcut-vs-scan "the honest
+test of the shortcut". It still is the honest test of faithfulness; it is just
+no longer worth buying unless the model clears the lab bar.
+
+### Two cheap gates before any spend
+
+1. Gradient reachability: patch out the three `.detach()` calls feeding
+   `affinity_module` (`boltz2.py:704-711`, ensemble branch `:631-652`) and
+   confirm a finite non-zero gradient reaches `res_type`, with IG completeness.
+2. Ground-truth inventory: which mutation-vs-ligand or ligand-series datasets
+   have complexes that fit the 256-token affinity crop, with how many
+   measurements each -- checked against the confound panel's degrees of
+   freedom (the 3HFM lesson, HANDOFF item 6).
+
+### Metrology of the A-vs-C comparison, researched 2026-10-02
+
+A = `grad[i] . (E_mut[i] - E_wt[i])`, the one-pass prediction (`attrib.py:393`).
+B = `affinity_pred_value(mut) - affinity_pred_value(wt)` by actual re-run.
+C = the lab measurement.
+
+**A is exactly TISM** (Taylor in-silico mutagenesis, iScience PMC11404212).
+Because `res_type` is one-hot, `grad . (e_mut - e_wt) = grad[mut] - grad[wt]`,
+which is the published estimator. Two consequences:
+
+* Free correction. The one-hot *difference* form cancels the off-simplex
+  constant gradient component that Majdandzic & Koo (Genome Biology 2023,
+  10.1186/s13059-023-02956-3) show corrupts raw gradient maps. Raw
+  `grad[mut]` alone would not get this. Keep the difference form.
+* Expected ceiling. On genomic CNNs TISM-vs-true-ISM is mean Pearson 0.70
+  (median 0.73, n=741,798 maps), degrading to 0.61 on ReLU nets, and
+  concordance FALLS as a model trains (0.85 early -> 0.71 at best predictive
+  performance) as nonlinearity accumulates. **No protein-structure-model
+  equivalent exists (UNVERIFIED -- none found).** Boltz-2 is deeper, the
+  substitution is a 20-way discrete jump rather than a base swap, so expect
+  the low end. This is why A-vs-B must be measured and never assumed.
+
+**Hauser 2018 metrology.** 144 mutations, **8** TKIs (axitinib, bosutinib,
+dasatinib, imatinib, nilotinib, ponatinib, erlotinib, gefitinib) -- not 6.
+Tabulates dpIC50, reports ddG via `ddG = -RT ln(IC50_wt/IC50_mut)` at
+**T = 300 K, RT = 0.596** -- so 1 log10 unit = **1.373** kcal/mol here, not the
+298 K value of 1.364. Safer: convert Hauser back to dlog10(IC50) and compare in
+log units, using no RT at all. 131 of 144 come from **cell-viability** IC50,
+not biochemical; 13 (erlotinib/gefitinib) required docking.
+
+**Assay noise is inside C and is measured.** Hauser's own ddG-from-dpIC50 vs
+ddG-from-dKd check: **RMSE 0.81 [0.59-1.04] kcal/mol at n=27** (~0.6 log10),
+against inter-lab repeatability of 0.32 [0.28-0.36]. Mechanism is real for
+ABL1: T315I raises ATP affinity ~2x (PNAS 1919221117), which moves IC50 by up
+to ~0.3 log10 with Ki unchanged. This is a hard floor on B-vs-C -- noise, not
+invalidity.
+
+**Boltz-2 has NO published mutation-effect evaluation.** Every reported number
+is per-assay ligand-series Pearson: FEP+ 4-target r=0.66, CASP16 r~0.66, and
+r>0.55 on only 3 of 8 blinded Recursion assays. The paper's stated reason for
+pooling Ki/Kd/IC50 labels is that the Cheng-Prusoff term cancels "when
+comparing affinity values within the same assay" -- i.e. fixed protein, varying
+ligand. **A protein mutation changes the protein, so that cancellation argument
+does not transfer to our comparison.** BoltzOmics (PMC13401010) r=0.63-0.71 is
+across drugs within a fixed variant, NOT mutation deltas, and does not support
+mutation-delta skill. This is the honest structural cap on B-vs-C.
+
+**MW correction.** `boltz2.py:688-698` applies `1.03526*v - 0.59993*mw^0.3 +
+2.83288`. For a fixed ligand the offset cancels but the **1.03526 slope does
+not**, so a gradient on the raw head output is 3.5% small against the reported
+value. Rank correlations are unaffected; a calibration slope is not. Pick one
+surface and state which.
+
+### Reference scale -- the honest bar, PROPOSED not yet ratified
+
+| method | set | r |
+|---|---|---|
+| FEP+ alchemical (Hauser, the ceiling) | ABL1/TKI n=142 | RMSE 1.07, MUE 0.79 kcal/mol; accuracy 0.88 but **sensitivity 0.47** |
+| flexddg | external TKI n=116 | 0.49 |
+| mCSM-lig | external TKI n=116 | 0.43 |
+| PremPLI | external TKI n=116 | 0.43 |
+| mCSM-lig / PremPLI | Platinum n=586 | 0.76 / 0.75 -- **both trained on it; leaked, not a target** |
+
+Source: Brief Bioinform 2026, PMC12874888. **Pre-register against the 0.43-0.49
+external band, never against Platinum's 0.75.** Near 0.4 on B-vs-C matches the
+ML field; near 0.2 fires the stop condition above.
+
+### Invalidity flags -- distinct from noise
+
+1. **Distal / conformational-equilibrium mutations are unmodellable by
+   construction**, not merely noisy. Hauser notes mutations can shift kinase
+   conformational populations and modulate ATP affinity. This repo scores at
+   fixed WT geometry on a single argmax-ipTM diffusion sample (section 15), so
+   conformational-selection resistance cannot be represented. Exclude or report
+   separately; do not average them in.
+2. **A-vs-C alone is unfalsifiable.** It is the product of surrogate fidelity
+   (A-vs-B) and model biology (B-vs-C). A null in A-vs-C cannot be apportioned
+   between them. So B must be computed even though section 17 deprioritises the
+   scan comparison -- see the ordering note below.
+
+### Corrected ordering -- cheap-forward-first, and it preserves the priority
+
+The user's instruction (do not buy shortcut-vs-scan if the model already fails
+against lab data) survives intact, because the cost structure inverts here:
+
+1. **Crop determinism and coverage first, and it gates everything.** If
+   `AffinityCropper` keeps a different residue set for WT than for a mutant,
+   then B is a difference between scores computed on two different protein
+   subsets, which corrupts B as well as the embedding deltas. Free to check.
+2. **B vs C, forward passes only.** ~144 forwards at <=256 tokens. No backward
+   pass, no IG, no 80 GB requirement. This is "is the model right about
+   biology" and it is the gate.
+3. **Only if B-vs-C clears the bar: A.** IG with a differentiable trunk is the
+   expensive part. Gating it on step 2 means the cheap measurement decides
+   whether the expensive one is ever bought.
+
+Computing B is technically "the brute-force scan", but it is the prerequisite
+for the model-vs-lab number, not the shortcut-vs-scan comparison that was
+deprioritised. Both A-vs-B and A-vs-C stay behind gate 2.
+
+### ABL1 ground truth, counts verified independently 2026-10-02
+
+Source found: `Supplementary Data 3.xlsx` in the authors' repo
+`github.com/kehauser/Predicting-resistance-of-clinical-Abl-mutations-to-targeted-kinase-inhibitors-using-FEP`.
+Loader `src/igv/abl.py`, fetch `scripts/17_fetch_abl.py`. I re-derived every
+count from the downloaded CSV rather than trusting the agent's report; all
+matched exactly.
+
+| quantity | verified |
+|---|---|
+| total rows | 279 |
+| measured (IC50 and DDG_exp both present) | 144 |
+| ABL TKI measurements | 131 |
+| TKIs in file | 8 -- 6 ABL plus erlotinib/gefitinib as EGFR negative controls |
+| per-TKI | 21 each, axitinib 26 |
+| **distinct mutations** | **31** |
+| **distinct positions** | **20** |
+| **positions with >1 distinct mutant AA** | **6 of 20** |
+| T315I / imatinib DDG_exp | +2.32 kcal/mol |
+
+**`DDG_exp` is ddG in kcal/mol, NOT dpIC50.** Computed as
+`RT ln(IC50_mut / IC50_wt)`. Confirmed by back-computing the implied WT IC50
+per TKI: constant to +-0.005 in log10 across all mutations of a given TKI
+(imatinib WT 199.2 nM, dasatinib 2.0 nM). **Positive = resistance**, which is
+already the SKEMPI convention, so no negation is needed anywhere.
+
+**Numbering is ABL1 isoform 1b** (clinical standard, T315 the gatekeeper;
+isoform 1a would make it T333, a +18 offset). Verified by mapping all 31
+mutations onto PDB 4WA9 chain B: 31/31 wild-type residues match, zero
+mismatches. Note 1OPJ is *mouse* ABL1, adjusted by the authors to the human
+reference.
+
+**Corrected PDB/TKI mapping** (my brief to the agent had this wrong):
+3UE4 = bosutinib, 3CS9 = nilotinib, 4XEY = dasatinib.
+
+### The 144 is inflated by the inhibitor axis -- Hauser cannot carry the headline
+
+The mutation axis has only **31 variants across 20 positions**. The panel is
+8 covariates without an MSA, 10 with (`skempi.py:860-900`). 20 positions
+against 8-10 covariates is the **3HFM trap** verbatim (HANDOFF item 6: 15
+positions, 8 confounds, partial CI [-1.0, +1.0], unidentifiable, ~100 min of
+A100 to learn nothing). **Hauser cannot support a confound-controlled partial
+correlation** -- and controlling for burial/RSA is precisely what killed the
+protein-protein arm (entry 38), so it is not optional.
+
+Worse for the DMS-style route: only **6 of 20 positions have more than one
+mutant amino acid**, so `within_position_spearman` (`metrics.py:408-440`) has
+nothing to rank at 14 of 20 positions. The within-position trick that made the
+Starr arm clean does **not** transfer along the mutation axis here.
+
+### But the inhibitor axis is the clean design, and it is free
+
+Hauser is a 2D panel: ~31 mutations x 6 inhibitors. Flip the comparison to
+**within-mutation, across-inhibitor** -- for each mutation, rank the 6 TKIs by
+measured ddG and compare against the model's ranking. Two properties:
+
+1. **Burial, RSA, residue volume, conservation and position are all constant
+   within a mutation**, so every confound that absorbed the position-level
+   signal in entry 38 is cancelled *structurally*, not statistically. No
+   partial correlation needed, so the degrees-of-freedom problem disappears.
+2. **It is the one regime Boltz-2's own label-pooling argument covers.** The
+   paper justifies mixing Ki/Kd/IC50 by Cheng-Prusoff cancellation "when
+   comparing affinity values within the same assay" -- fixed protein, varying
+   ligand. Within-mutation across-inhibitor is exactly fixed protein, varying
+   ligand. The mutation axis is the direction the justification does NOT cover.
+
+It also has a strong qualitative anchor: ponatinib was designed to retain
+potency against T315I while imatinib fails on it. A model that cannot reproduce
+that ordering has no business being attributed.
+
+**Caveat before anyone gets excited:** this measures sensitivity to the
+*ligand*, while our attribution target is the *protein* `res_type` gradient.
+A good within-mutation number would validate the model's affinity output, not
+the protein-side attribution. It gates B-vs-C honestly; it does not stand in
+for the mutation-axis result we actually want.
+
+### Recommendation, pending ratification
+
+Promote the **imatinib DMS** (4,922 variants, ~270 positions, 19 AAs per
+position -- `pritchardlabatpsu/abl_dms`) from scale-up to **primary** for the
+mutation axis: it has the degrees of freedom and restores within-position
+ranking. Keep Hauser for (a) the within-mutation across-inhibitor gate above
+and (b) the T315I/ponatinib qualitative check. Unresolved for the DMS: it reads
+out cell growth under drug, so loss-of-function is confounded with resistance
+and it needs a folding-vs-binding control like the Starr arm's expression
+readout.
+
+### AffinityCropper is mutation-invariant -- VERIFIED INDEPENDENTLY 2026-10-02
+
+This was the open question that could have invalidated the whole affinity arm:
+if the crop kept a different residue set for wild-type than for a mutant, then
+`score(mut) - score(wt)` would be a difference across two different protein
+subsets, and `E_mut - E_ref` would be computed in two different index spaces.
+Not noisy -- invalid.
+
+**It is safe.** Verified by reading the actual pinned source, not a report:
+downloaded the `boltz-2.2.1` sdist from PyPI
+(`files.pythonhosted.org/.../boltz-2.2.1.tar.gz`) and read
+`src/boltz/data/crop/affinity.py` directly.
+
+1. The crop distance is computed from `valid_tokens["center_coords"]` -- the
+   **tokenised structure's reference coordinates**, i.e. the input PDB -- and
+   NOT from `x_pred`. So the diffusion sample cannot perturb the crop.
+2. Selection is `indices = np.argsort(dists)` followed by a greedy
+   neighbourhood expansion. Purely geometric.
+3. **No RNG anywhere.** The only occurrences of "random" in the file are in the
+   docstring, which still documents a `random : np.random.RandomState`
+   parameter that is *not in the signature* -- a stale doc, not a live call.
+   `grep -n "random\|rng\|seed\|shuffle\|permut"` returns only lines 47-48,
+   both docstring.
+
+**Therefore:** a point mutation changes only `res_type`, while `center_coords`
+come from the same PDB for WT and mutant, so `dists` is identical and the crop
+selects the identical residue set. The embedding delta is computed in one index
+space. Safe.
+
+**The condition this rests on, which must not be quietly dropped.** The
+invariance holds *because* we hold geometry fixed at one real structure. If
+anyone later switches to co-folding each mutant separately, `center_coords`
+becomes per-mutant, the crop can shift, and this guarantee is void. Any move to
+per-mutant structure prediction re-opens this question.
+
+Also confirmed: boltz 2.2.1 **is** on PyPI (wheel + sdist) so
+`docker/Dockerfile:22` is fine. An earlier `pip download --no-binary :all:`
+failure that appeared to show 2.0.3 as latest was a local requires-python
+filter, not a broken pin. Do not "fix" the Dockerfile on that basis.
+
+### CORRECTION -- crop size is not the degrees-of-freedom constraint
+
+The agent's report concluded "at 200 sites, the analysis is comfortably
+identifiable (200 >> 40)". **That is wrong and must not be read as settled.**
+It counts *residues surviving the crop*, but identifiability is bounded by the
+number of **measured ground-truth positions**, which is 20 for Hauser (section
+above) against a panel of 8-10 covariates. A 200-residue crop containing only
+20 measured positions is exactly as unidentifiable as 3HFM's 15. The crop
+matters for a different reason -- whether each measured site is visible to the
+model at all -- and `check_crop_coverage` now answers that. Keep the two
+questions separate.

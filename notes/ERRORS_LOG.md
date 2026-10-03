@@ -1570,3 +1570,62 @@ mechanism, and this records it while the numbers are exact.
   The hazard remains for any other parser reading these cached files.
 - **Status:** partially fixed (in the diagnostic script only). Any other code
   path reading cached a3m files is exposed.
+
+## 44. Hauser Supp Data 3 has one corrupted IC50 cell: ponatinib / G250E
+
+- **Stage:** ABL1 ground-truth load (`src/igv/abl.py`, `scripts/17_fetch_abl.py`)
+- **Symptom:** back-solving the implied wild-type IC50 from each row via
+  `ddG = RT ln(IC50_mut / IC50_wt)` is tight to std 0.002 log10 for 7 of the 8
+  TKIs, but **ponatinib gives std 0.506** with an implied WT spanning
+  log10 -1.896 to +0.481 (a factor of ~2.4 in log10, i.e. ~240x).
+- **Root cause:** a single row. Every ponatinib row implies log10(WT) = 0.477
+  (3.0 nM) to within +-0.003, except **G250E, which reports IC50 = 0.0210**
+  against a `DDG_exp` of 0.30. Every other ponatinib IC50 is 3-16 nM, so
+  0.0210 is ~140x below its neighbours. The `DDG_exp` value is the *consistent*
+  one: WT 3.0 nM with ddG 0.30 implies IC50 = 3.0 * 10^(0.30/1.373) = 4.94 nM,
+  which is in range. **So `DDG_exp` is right and the `IC50` cell is wrong**, and
+  it is not a simple unit slip -- 0.0210 uM = 21 nM would imply ddG 1.16, not
+  0.30.
+- **Consequence:** anything reading the raw `IC50` column is off by ~140x on
+  that one row. `DDG_exp` and the derived `dlog10_ic50` (which is
+  `DDG_exp / RT_LN10_300K`) are unaffected, so the primary path is safe.
+- **Not currently propagated:** `WT_IC50_NM["ponatinib"] = 3.0` in
+  `src/igv/abl.py:170` is the correct value, so the constant escaped
+  contamination. A naive mean over the implied values would have given 2.3 nM,
+  ~25% low.
+- **Status:** FIXED 2026-10-02 -- guarded, not repaired. `src/igv/abl.py`
+  now computes the implied WT per row, compares against the per-TKI **median**
+  (robust to this outlier), and sets an `ic50_suspect` boolean column on every
+  load; `validate_ic50_consistency(df)` returns the suspect rows with an
+  `ic50_deviation_log10` magnitude. Tolerance `IC50_CONSISTENCY_TOL_LOG10 =
+  0.1` sits well clear of both sides: max clean deviation ~0.003, G250E's
+  deviation **2.3745**. Verified on the real file: exactly 1 of 144 measured
+  rows flagged, and `dlog10_ic50 * RT_LN10_300K == DDG_exp` round-trips to
+  4.4e-16. The corrupt IC50 is deliberately NOT back-computed from `DDG_exp` --
+  that would fabricate a measurement. Two integration tests pin G250E as the
+  sole flagged row and 143 as clean, so a source re-fetch that changes the data
+  fails visibly.
+- **Second-order defect, also fixed:** the comment above `WT_IC50_NM` claimed
+  the constants were `10^mean(...)`, but the stored ponatinib value 3.0 nM is
+  the **median** -- the mean is 2.32 nM, dragged down by this same bad row.
+  Anyone recomputing per the stated formula would have concluded the table was
+  wrong and "corrected" it to the contaminated value. Comment fixed to say
+  median and to name the trap.
+- **Verified:** 2026-10-02 by recomputing the implied WT per row from the
+  downloaded CSV, independently of the loader.
+
+### Correction to a verification claim made about this data
+
+The loader agent reported "back-computing WT IC50 per TKI gives std(log10)
+~0.002 at T=300K vs ~0.005 at T=298K. The tighter fit at 300K confirms the
+paper's stated temperature." **The second sentence does not hold.** Measured
+over all 8 TKIs the mean spread is 0.0654 at 300 K against 0.0666 at 298 K --
+a 2% relative difference, which cannot discriminate a 2 K change. The ~0.002
+figure is real but applies per-TKI excluding ponatinib, and the 298/300
+comparison is far inside the noise either way.
+
+**T = 300 K is still correct** -- it is stated in the paper's Methods (Eq. 2,
+"T is taken to be room temperature (300 K)"), and that text is the evidence.
+The data does not independently confirm it and must not be cited as if it does.
+Practically the choice is immaterial: 1.3727 vs 1.3636 kcal/mol per log10 is
+0.7%, which no rank correlation can see and only a calibration slope would.
