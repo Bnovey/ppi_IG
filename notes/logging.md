@@ -2402,3 +2402,131 @@ producing it. Section 18's failed correlation is also a usable result for that
 paper: it is evidence that affinity-head representations are not aligned with
 binding energetics, which bears directly on the probing and SAE literature
 built on those representations.
+
+## 20. IG ON THE AFFINITY HEAD -- the gradient works, the function does not. 2026-10-04
+
+Run: `scripts/18_gate_affinity.py`, full-trunk path, fp32, `mean_aa` baseline,
+2HYY geometry injected, ligand `STI` by CCD, m = {16, 32, 64}. ~19 min of A100,
+**peak VRAM 16.80 GiB** (so the 80 GB card is unnecessary -- an L4 would do, and
+quota for 8 is already held). Artifacts
+`results/gate_affinity_abl1_imatinib.{json,npz}`, both local.
+
+### Mechanically the seam works
+
+| check | result |
+|---|---|
+| `res_type.grad` not None | PASS |
+| not uniformly zero | PASS, max abs 1.10, zero fraction 0.0000 |
+| shape | PASS, `(1, 237, 33)` |
+| all finite | PASS, 0 NaN, 0 Inf |
+| **trunk / s_inputs norm ratio** | **7.12x** (5.641 vs 0.792) |
+
+The 7.12x ratio is the check I rejected the first implementation over, and it
+clears comfortably: the trunk carries most of the gradient, so this is not the
+shallow embedder-only path that would have passed a reachability gate while
+meaning nothing.
+
+### But completeness fails catastrophically, and non-monotonically
+
+| m | ig_sum | f(x) - f(b) | rel err | wall |
+|---|---|---|---|---|
+| 16 | **-2.234** | -0.0847 | 25.38 | 152 s |
+| 32 | **+2.994** | -0.0847 | 36.35 | 304 s |
+| 64 | **+1.184** | -0.0847 | 14.98 | 607 s |
+
+This is not "needs more steps". **The sum flips sign between m=16 and m=32 and
+does not converge**, and it overshoots the quantity it must equal by 15-36x.
+Contrast the confidence path, which reached rel err 0.0442 at m=32 and 0.0036
+at m=5 on the pair layer. So `res_type_ig` is NOT arithmetically accountable
+here and should not be quoted; the raw gradient is the only defensible object,
+which is also what the TISM difference form uses.
+
+### THE HEADLINE: the affinity head barely uses the protein sequence
+
+| input | `affinity_pred_value` | implied IC50 |
+|---|---|---|
+| real ABL1 kinase domain | 0.5797 | **3.80 uM** |
+| `mean_aa` -- uniform 1/20 at EVERY position | 0.6644 | 4.62 uM |
+| all zeros | 0.8172 | 6.56 uM |
+
+**Replacing the entire 264-residue protein sequence with a uniform amino-acid
+distribution changes the predicted affinity by 0.085 log10 -- a factor of
+1.2.** Zeroing it entirely moves it 1.7x. The model's affinity output for this
+complex is essentially independent of the protein sequence; it is reading the
+structure (which we hold fixed) and the ligand.
+
+**And single point mutations move the score MORE than erasing the whole
+sequence.** From section 18, E255V gives -0.1772 and T315A +0.1899, both larger
+in magnitude than the 0.0847 full-sequence-erasure effect. A model with a
+coherent sequence-to-affinity mapping cannot behave this way. The per-mutation
+deltas are therefore better read as numerical roughness than as the model
+"believing" anything about those residues.
+
+This one fact explains everything else: if the function barely depends on the
+variable being differentiated, the gradient is dominated by noise -- hence the
+non-convergent completeness, and hence the faithfulness result below.
+
+### Faithfulness (A vs B) is ANTI-correlated
+
+Primary validation under section 19's reframe, computed locally at zero cost
+against section 18's 18 forward-pass deltas:
+
+| | value |
+|---|---|
+| Spearman(A, B) | **-0.4964** (p = 0.036) |
+| Pearson | -0.5384 |
+| permutation null p5 / p95 | -0.399 / +0.408 |
+| two-sided permutation p | 0.0383 |
+| scale | median abs A = 0.0093 vs median abs B = 0.0675 -- **7x too small** |
+
+The gradient prediction points the OPPOSITE way to what the model actually does
+when the residue is changed, and it clears its own null on the wrong side.
+**Honest caveat:** n = 18, this is one of several correlations computed on the
+same small set, and B itself is of noise-scale magnitude. Treat -0.50 as
+suggestive of systematic anti-correlation, NOT as established. The scale
+mismatch is the more robust half: a first-order term 7x smaller than the effect
+it approximates means the linearisation is simply not valid here.
+
+### The geometry confound did NOT fire this time
+
+| | value |
+|---|---|
+| Spearman(importance, distance to imatinib) | **-0.151** (p = 0.033) |
+| median distance, top-20 importance | 8.9 A |
+| median distance, all residues | 11.4 A |
+
+Both the L2 and simplex reductions agree (-0.151 vs -0.152), so section 14's
+reduction question is moot here. The top residue is **430 at 20.3 A**, and the
+top 12 include 407 (14.0 A), 408 (17.0 A), 409 (14.5 A) and 399 (12.5 A).
+
+So unlike Phase 5, this map is **not** just the binding pocket -- which is the
+trap section 19 named. But that is not good news: combined with the
+anti-correlated faithfulness, the map corresponds to neither the geometry nor
+the model's behaviour. There is no third thing it has been shown to track.
+
+### Two bugs found in our own reporting
+
+1. **The gate's printed "Crop coverage: 29/264 (10.98%)" is a units bug.** It
+   intersected 0-based construct indices `0..263` with the token map's residue
+   NUMBERS `235..456`, so the "surviving" list is exactly `{235..263}` -- an
+   arithmetic artifact. **The real coverage is 200 of 264 residues (76%), and
+   15 of the 20 measured positions**, losing 343, 351, 355, 459, 486. Fix the
+   call site to pass residue numbers.
+2. **The token map under-records the ligand**: 237 non-padding tokens = 200
+   protein + 37 ligand, but the map holds 200 protein entries plus a single
+   ligand entry keyed `('1', 0)`. Harmless for protein-residue attribution,
+   wrong if anything ever needs ligand tokens.
+
+### Where this leaves the interpretability goal
+
+"Which residues does the model deem important" is not answerable on this system
+**because the model does not meaningfully deem any residue important** -- its
+affinity output is near-invariant to the whole sequence. That is a real finding
+about a model the field is building probes and SAEs on, and it is cheap to
+state and hard to argue with: three numbers, 3.80 / 4.62 / 6.56 uM.
+
+What would sharpen it, cheaply and with forward passes only: scramble the
+sequence, substitute an unrelated protein of the same length, and truncate the
+MSA differently -- if affinity stays ~3.8-6.6 uM throughout, sequence-invariance
+is established beyond the two baselines measured here. That is the next run,
+and it is minutes of GPU.
