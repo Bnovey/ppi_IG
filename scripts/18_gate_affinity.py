@@ -48,9 +48,17 @@ log = logging.getLogger("gate_affinity")
 COMPLETENESS_ABS_THRESHOLD = 0.10
 COLLAPSED_SPAN_THRESHOLD = 1e-6
 
+# Minimum |f(x) - f(baseline)| required before running the IG ladder.
+# Below this, completeness error is dominated by integrand noise, not
+# quadrature coarseness, and no step count fixes it (Lundstrom et al.,
+# ICML 2022, PMLR v162). The 0.05 value is 5% of a 1.0 log10 unit span
+# -- a deliberately conservative floor that would have caught the 0.085
+# span that produced 300-700x completeness error in section 20.
+SPAN_GUARD_THRESHOLD = 0.05
+
 M_STEPS_LADDER = [16, 32, 64]
 
-BASELINE_CHOICES = ("zeros", "mean_aa")
+BASELINE_CHOICES = ("zeros", "mean_aa", "shuffled", "unk")
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +101,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Baseline for IG. Default: mean_aa.",
     )
     p.add_argument(
+        "--shuffle-seed", type=int, default=0,
+        help="RNG seed for the shuffled baseline. Default: 0.",
+    )
+    p.add_argument(
+        "--span-probe", type=int, default=None, metavar="N",
+        help="Run N forward-pass span probes (for shuffled: N independent seeds; "
+             "for deterministic baselines: 1 probe regardless of N). "
+             "Reports f(x), f(baseline), span stats, and 5%%-of-span tolerance. "
+             "Exits without running IG.",
+    )
+    p.add_argument(
+        "--force", action="store_true",
+        help="Override the span guard and run IG even if the span is below "
+             f"{SPAN_GUARD_THRESHOLD}.",
+    )
+    p.add_argument(
         "--pdb", default=None,
         help="PDB file with real coordinates for the protein-ligand complex. "
              "Required for a real run: without it, AffinityCropper is geometry-blind.",
@@ -133,6 +157,54 @@ def build_parser() -> argparse.ArgumentParser:
         default=COMPLETENESS_ABS_THRESHOLD,
     )
     return p
+
+
+def compute_span_stats(
+    f_x: float,
+    f_baselines: list[float],
+) -> dict:
+    """Compute span statistics from f(x) and one or more f(baseline) values."""
+    spans = [f_x - fb for fb in f_baselines]
+    abs_spans = [abs(s) for s in spans]
+    mean_span = sum(abs_spans) / len(abs_spans)
+    tolerance_5pct = 0.05 * mean_span
+    return {
+        "f_x": f_x,
+        "f_baselines": f_baselines,
+        "spans": spans,
+        "abs_spans": abs_spans,
+        "mean_abs_span": mean_span,
+        "sd_abs_span": (
+            (sum((s - mean_span) ** 2 for s in abs_spans) / len(abs_spans)) ** 0.5
+            if len(abs_spans) > 1 else 0.0
+        ),
+        "min_abs_span": min(abs_spans),
+        "max_abs_span": max(abs_spans),
+        "completeness_tolerance_5pct": tolerance_5pct,
+        "n_probes": len(f_baselines),
+    }
+
+
+def span_guard_check(
+    mean_abs_span: float,
+    threshold: float = SPAN_GUARD_THRESHOLD,
+) -> tuple[bool, str]:
+    """Return (ok, message). ok is True if span is large enough for IG."""
+    if mean_abs_span < threshold:
+        return False, (
+            f"REFUSED: mean |f(x) - f(baseline)| = {mean_abs_span:.6f} < "
+            f"{threshold} (SPAN_GUARD_THRESHOLD). The baseline does not create "
+            f"enough score separation for IG completeness to be meaningful. "
+            f"Sundararajan et al. (arXiv:1703.01365) recommend a near-zero "
+            f"baseline score; at this span, 5% completeness tolerance is "
+            f"{0.05 * mean_abs_span:.6f}, and integrand noise will dominate "
+            f"quadrature error (Lundstrom et al., ICML 2022). Use --force to "
+            f"override."
+        )
+    return True, (
+        f"Span guard PASSED: mean |f(x) - f(baseline)| = {mean_abs_span:.6f} >= "
+        f"{threshold}"
+    )
 
 
 def check_inconclusive(
@@ -376,6 +448,8 @@ def main(argv: list[str] | None = None) -> int:
         affinity_head_forward,
         build_affinity_feats,
         build_mean_aa_res_type_baseline,
+        build_shuffled_res_type_baseline,
+        build_unk_res_type_baseline,
         build_vocab_order,
         check_crop_coverage,
         enable_confidence_checkpointing,
@@ -496,36 +570,107 @@ def main(argv: list[str] | None = None) -> int:
     if args.score == "affinity_pred_value":
         print("  (log10 IC50 in uM; lower = stronger binding)")
 
-    # ---- Baselines: compute f(baseline) for BOTH zeros and mean_aa ----
+    # ---- Baselines: compute f(baseline) for ALL four baselines ----
     res_type_orig = feats["res_type"]
     num_tokens_vocab = int(res_type_orig.shape[2]) if res_type_orig.dim() == 3 else None
 
     zeros_baseline_rt = torch.zeros_like(res_type_orig)
     mean_aa_baseline_rt = build_mean_aa_res_type_baseline(res_type_orig, feats)
+    shuffled_baseline_rt = build_shuffled_res_type_baseline(
+        res_type_orig, feats, seed=args.shuffle_seed,
+    )
+    unk_baseline_rt = build_unk_res_type_baseline(res_type_orig, feats)
+
+    def _eval_baseline(bl_rt):
+        bl_feats = dict(feats)
+        bl_feats["res_type"] = bl_rt
+        s_bl = model.input_embedder(bl_feats, affinity=True)
+        return float(affinity_head_forward(
+            model, s_bl, z_nograd, x_pred, bl_feats,
+            args.score, flow_through_z=False,
+        ))
 
     with torch.no_grad():
-        bl_feats_zeros = dict(feats)
-        bl_feats_zeros["res_type"] = zeros_baseline_rt
-        s_bl_zeros = model.input_embedder(bl_feats_zeros, affinity=True)
-        f_zeros_baseline = float(affinity_head_forward(
-            model, s_bl_zeros, z_nograd, x_pred, bl_feats_zeros,
-            args.score, flow_through_z=False,
-        ))
+        f_zeros_baseline = _eval_baseline(zeros_baseline_rt)
+        f_mean_aa_baseline = _eval_baseline(mean_aa_baseline_rt)
+        f_shuffled_baseline = _eval_baseline(shuffled_baseline_rt)
+        f_unk_baseline = _eval_baseline(unk_baseline_rt)
 
-        bl_feats_mean = dict(feats)
-        bl_feats_mean["res_type"] = mean_aa_baseline_rt
-        s_bl_mean = model.input_embedder(bl_feats_mean, affinity=True)
-        f_mean_aa_baseline = float(affinity_head_forward(
-            model, s_bl_mean, z_nograd, x_pred, bl_feats_mean,
-            args.score, flow_through_z=False,
-        ))
+    baseline_f_values = {
+        "zeros": f_zeros_baseline,
+        "mean_aa": f_mean_aa_baseline,
+        "shuffled": f_shuffled_baseline,
+        "unk": f_unk_baseline,
+    }
 
-    if args.baseline == "zeros":
-        baseline_res_type = zeros_baseline_rt
-        f_baseline_val = f_zeros_baseline
-    else:
-        baseline_res_type = mean_aa_baseline_rt
-        f_baseline_val = f_mean_aa_baseline
+    baseline_rt_map = {
+        "zeros": zeros_baseline_rt,
+        "mean_aa": mean_aa_baseline_rt,
+        "shuffled": shuffled_baseline_rt,
+        "unk": unk_baseline_rt,
+    }
+
+    baseline_res_type = baseline_rt_map[args.baseline]
+    f_baseline_val = baseline_f_values[args.baseline]
+
+    # ---- Span probe mode (forward passes only, then exit) ----
+    if args.span_probe is not None:
+        n_probes = max(1, args.span_probe)
+        print(f"\n--- Span probe: {n_probes} probe(s), baseline={args.baseline} ---")
+
+        if args.baseline == "shuffled":
+            probe_f_baselines = []
+            for i in range(n_probes):
+                seed_i = args.shuffle_seed + i
+                bl_rt_i = build_shuffled_res_type_baseline(
+                    res_type_orig, feats, seed=seed_i,
+                )
+                with torch.no_grad():
+                    probe_f_baselines.append(_eval_baseline(bl_rt_i))
+                print(f"  probe {i}: seed={seed_i}, f(baseline)={probe_f_baselines[-1]:.6f}")
+        else:
+            probe_f_baselines = [f_baseline_val]
+            print(f"  probe 0: f(baseline)={f_baseline_val:.6f} (deterministic baseline)")
+
+        stats = compute_span_stats(f_x_val, probe_f_baselines)
+        print(f"\n  f(x)                     = {stats['f_x']:.6f}")
+        print(f"  mean |f(x) - f(baseline)| = {stats['mean_abs_span']:.6f}")
+        print(f"  sd   |f(x) - f(baseline)| = {stats['sd_abs_span']:.6f}")
+        print(f"  min  |f(x) - f(baseline)| = {stats['min_abs_span']:.6f}")
+        print(f"  max  |f(x) - f(baseline)| = {stats['max_abs_span']:.6f}")
+        print(f"  5%-of-span tolerance       = {stats['completeness_tolerance_5pct']:.6f}")
+
+        ok, msg = span_guard_check(stats["mean_abs_span"])
+        print(f"\n  {msg}")
+        if ok:
+            print("  VERDICT: span is large enough to attempt IG.")
+        else:
+            print("  VERDICT: span is too small for meaningful IG completeness.")
+
+        print("\n  All baselines for comparison:")
+        for name in ("zeros", "mean_aa", "shuffled", "unk"):
+            fv = baseline_f_values[name]
+            print(f"    f_baseline_{name:7s} = {fv:.6f}  (span {abs(f_x_val - fv):.6f})")
+
+        probe_json = {
+            "mode": "span_probe",
+            "score": args.score,
+            "baseline": args.baseline,
+            "shuffle_seed": args.shuffle_seed,
+            "n_probes": n_probes,
+            "f_x": f_x_val,
+            "span_stats": stats,
+            "span_guard_ok": ok,
+            "span_guard_threshold": SPAN_GUARD_THRESHOLD,
+            "f_baseline_zeros": f_zeros_baseline,
+            "f_baseline_mean_aa": f_mean_aa_baseline,
+            "f_baseline_shuffled": f_shuffled_baseline,
+            "f_baseline_unk": f_unk_baseline,
+        }
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_json.write_text(json.dumps(probe_json, indent=2, default=str) + "\n")
+        log.info("Wrote %s", out_json)
+        return 0
 
     # ---- INCONCLUSIVE pre-check ----
     inconclusive_reason = check_inconclusive(f_x_val, f_baseline_val)
@@ -536,27 +681,58 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Reason: {inconclusive_reason}")
         print(f"  f(input) = {f_x_val}")
         print(f"  f(baseline) [{args.baseline}] = {f_baseline_val}")
-        print(f"  f(baseline) [zeros] = {f_zeros_baseline}")
-        print(f"  f(baseline) [mean_aa] = {f_mean_aa_baseline}")
+        for name in ("zeros", "mean_aa", "shuffled", "unk"):
+            print(f"  f(baseline) [{name:7s}] = {baseline_f_values[name]:.6f}")
         out_json.parent.mkdir(parents=True, exist_ok=True)
         out_json.write_text(json.dumps({
             "gate": "affinity",
             "result": "INCONCLUSIVE",
             "reason": inconclusive_reason,
             "baseline": args.baseline,
+            "shuffle_seed": args.shuffle_seed,
             "f_x": f_x_val,
             "f_baseline": f_baseline_val,
             "f_baseline_zeros": f_zeros_baseline,
             "f_baseline_mean_aa": f_mean_aa_baseline,
+            "f_baseline_shuffled": f_shuffled_baseline,
+            "f_baseline_unk": f_unk_baseline,
         }, indent=2) + "\n")
         return 2
 
+    # ---- Span guard (must pass before IG ladder) ----
     f_diff = f_x_val - f_baseline_val
+    span_ok, span_msg = span_guard_check(abs(f_diff))
+    print(f"\n  {span_msg}")
+    if not span_ok and not args.force:
+        print(f"\n{'=' * 60}")
+        print("Gate Affinity: REFUSED (span guard)")
+        print(f"{'=' * 60}")
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_json.write_text(json.dumps({
+            "gate": "affinity",
+            "result": "REFUSED",
+            "reason": span_msg,
+            "baseline": args.baseline,
+            "shuffle_seed": args.shuffle_seed,
+            "f_x": f_x_val,
+            "f_baseline": f_baseline_val,
+            "f_diff": f_diff,
+            "span_guard_threshold": SPAN_GUARD_THRESHOLD,
+            "f_baseline_zeros": f_zeros_baseline,
+            "f_baseline_mean_aa": f_mean_aa_baseline,
+            "f_baseline_shuffled": f_shuffled_baseline,
+            "f_baseline_unk": f_unk_baseline,
+        }, indent=2) + "\n")
+        return 1
+    if not span_ok and args.force:
+        print("  WARNING: --force overriding span guard. IG results may be meaningless.")
+
     print(f"  f(input)           = {f_x_val:.6f}")
     print(f"  f(baseline) [{args.baseline:7s}] = {f_baseline_val:.6f}")
     print(f"  span [{args.baseline:7s}]      = {abs(f_diff):.6f}")
-    print(f"  f(baseline) [zeros  ] = {f_zeros_baseline:.6f}  (span {abs(f_x_val - f_zeros_baseline):.6f})")
-    print(f"  f(baseline) [mean_aa] = {f_mean_aa_baseline:.6f}  (span {abs(f_x_val - f_mean_aa_baseline):.6f})")
+    for name in ("zeros", "mean_aa", "shuffled", "unk"):
+        fv = baseline_f_values[name]
+        print(f"  f(baseline) [{name:7s}] = {fv:.6f}  (span {abs(f_x_val - fv):.6f})")
 
     # ---- Full-trunk backward (the default, scientifically load-bearing path) ----
     print("\n--- Full-trunk backward (default path) ---")
@@ -784,11 +960,15 @@ def main(argv: list[str] | None = None) -> int:
         "path": "full_trunk",
         "score": args.score,
         "baseline": args.baseline,
+        "shuffle_seed": args.shuffle_seed,
         "x_pred_mode": x_pred_mode,
         "affinity_value": f_x_val,
         "f_baseline": f_baseline_val,
         "f_baseline_zeros": f_zeros_baseline,
         "f_baseline_mean_aa": f_mean_aa_baseline,
+        "f_baseline_shuffled": f_shuffled_baseline,
+        "f_baseline_unk": f_unk_baseline,
+        "span_guard_threshold": SPAN_GUARD_THRESHOLD,
         "f_diff": f_diff,
         "n_protein_residues": n_protein,
         "n_tokens": n_tokens,
@@ -840,6 +1020,7 @@ def main(argv: list[str] | None = None) -> int:
         params={
             "score": args.score,
             "baseline": args.baseline,
+            "shuffle_seed": args.shuffle_seed,
             "x_pred_mode": x_pred_mode,
             "resnum_offset": args.resnum_offset,
             "m_steps": args.m_steps,

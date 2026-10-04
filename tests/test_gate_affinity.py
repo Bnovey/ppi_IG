@@ -796,5 +796,221 @@ class TestVerifyTokenMapIdentity:
         )
 
 
+# ---------------------------------------------------------------------------
+# 20. Shuffled baseline
+# ---------------------------------------------------------------------------
+
+
+class TestBuildShuffledResTypeBaseline:
+    def _make_feats(self, n_protein, n_ligand):
+        import torch
+        L = n_protein + n_ligand
+        num_tokens = 33
+        res_type = torch.zeros(1, L, num_tokens)
+        for i in range(n_protein):
+            res_type[0, i, 2 + (i % 20)] = 1.0
+        for i in range(n_ligand):
+            res_type[0, n_protein + i, 0] = 1.0
+
+        pad_mask = torch.ones(1, L)
+        mol_type = torch.zeros(1, L, dtype=torch.long)
+        mol_type[0, n_protein:] = 2
+        return res_type, {
+            "token_pad_mask": pad_mask,
+            "mol_type": mol_type,
+        }
+
+    def test_composition_preserved(self):
+        import torch
+        from igv.boltz_score import build_shuffled_res_type_baseline
+        res_type, feats = self._make_feats(20, 3)
+        baseline = build_shuffled_res_type_baseline(res_type, feats, seed=42)
+        protein_orig = res_type[0, :20].sort(dim=0).values
+        protein_shuf = baseline[0, :20].sort(dim=0).values
+        assert torch.allclose(protein_orig, protein_shuf)
+
+    def test_is_permutation_not_resample(self):
+        from igv.boltz_score import build_shuffled_res_type_baseline
+        res_type, feats = self._make_feats(20, 3)
+        baseline = build_shuffled_res_type_baseline(res_type, feats, seed=42)
+        orig_set = {tuple(res_type[0, i].tolist()) for i in range(20)}
+        shuf_set = {tuple(baseline[0, i].tolist()) for i in range(20)}
+        assert orig_set == shuf_set
+
+    def test_ligand_rows_untouched(self):
+        import torch
+        from igv.boltz_score import build_shuffled_res_type_baseline
+        res_type, feats = self._make_feats(10, 3)
+        baseline = build_shuffled_res_type_baseline(res_type, feats, seed=7)
+        for i in range(3):
+            assert torch.allclose(baseline[0, 10 + i], res_type[0, 10 + i].float())
+
+    def test_reproducible_under_fixed_seed(self):
+        import torch
+        from igv.boltz_score import build_shuffled_res_type_baseline
+        res_type, feats = self._make_feats(20, 2)
+        b1 = build_shuffled_res_type_baseline(res_type, feats, seed=99)
+        b2 = build_shuffled_res_type_baseline(res_type, feats, seed=99)
+        assert torch.allclose(b1, b2)
+
+    def test_different_seeds_differ(self):
+        import torch
+        from igv.boltz_score import build_shuffled_res_type_baseline
+        res_type, feats = self._make_feats(20, 2)
+        b1 = build_shuffled_res_type_baseline(res_type, feats, seed=0)
+        b2 = build_shuffled_res_type_baseline(res_type, feats, seed=1)
+        assert not torch.allclose(b1, b2)
+
+    def test_only_protein_rows_touched(self):
+        import torch
+        from igv.boltz_score import build_shuffled_res_type_baseline
+        res_type, feats = self._make_feats(15, 5)
+        baseline = build_shuffled_res_type_baseline(res_type, feats, seed=3)
+        for i in range(5):
+            assert torch.allclose(baseline[0, 15 + i], res_type[0, 15 + i].float())
+
+
+# ---------------------------------------------------------------------------
+# 21. UNK baseline
+# ---------------------------------------------------------------------------
+
+
+class TestBuildUnkResTypeBaseline:
+    def _make_feats(self, n_protein, n_ligand):
+        import torch
+        L = n_protein + n_ligand
+        num_tokens = 33
+        res_type = torch.zeros(1, L, num_tokens)
+        for i in range(n_protein):
+            res_type[0, i, 2 + (i % 20)] = 1.0
+        for i in range(n_ligand):
+            res_type[0, n_protein + i, 0] = 1.0
+
+        pad_mask = torch.ones(1, L)
+        mol_type = torch.zeros(1, L, dtype=torch.long)
+        mol_type[0, n_protein:] = 2
+        return res_type, {
+            "token_pad_mask": pad_mask,
+            "mol_type": mol_type,
+        }
+
+    def test_protein_positions_set_to_unk(self):
+        from igv.boltz_score import UNK_TOKEN_INDEX, build_unk_res_type_baseline
+        res_type, feats = self._make_feats(10, 3)
+        baseline = build_unk_res_type_baseline(res_type, feats)
+        for i in range(10):
+            row = baseline[0, i]
+            assert row[UNK_TOKEN_INDEX].item() == pytest.approx(1.0)
+            assert row.sum().item() == pytest.approx(1.0)
+
+    def test_ligand_positions_unchanged(self):
+        import torch
+        from igv.boltz_score import build_unk_res_type_baseline
+        res_type, feats = self._make_feats(10, 3)
+        baseline = build_unk_res_type_baseline(res_type, feats)
+        for i in range(3):
+            assert torch.allclose(baseline[0, 10 + i], res_type[0, 10 + i].float())
+
+    def test_unk_index_is_22(self):
+        from igv.boltz_score import UNK_TOKEN_INDEX, _verify_unk_token_index
+        assert UNK_TOKEN_INDEX == 22
+        assert _verify_unk_token_index() == 22
+
+
+# ---------------------------------------------------------------------------
+# 22. Span stats and guard
+# ---------------------------------------------------------------------------
+
+
+class TestComputeSpanStats:
+    def test_single_baseline(self):
+        stats = gate_affinity.compute_span_stats(5.0, [3.0])
+        assert stats["mean_abs_span"] == pytest.approx(2.0)
+        assert stats["completeness_tolerance_5pct"] == pytest.approx(0.1)
+        assert stats["n_probes"] == 1
+        assert stats["sd_abs_span"] == pytest.approx(0.0)
+
+    def test_multiple_baselines(self):
+        stats = gate_affinity.compute_span_stats(5.0, [3.0, 4.0, 2.0])
+        assert stats["mean_abs_span"] == pytest.approx(2.0)
+        assert stats["min_abs_span"] == pytest.approx(1.0)
+        assert stats["max_abs_span"] == pytest.approx(3.0)
+        assert stats["n_probes"] == 3
+
+    def test_tolerance_scales_with_span(self):
+        stats = gate_affinity.compute_span_stats(10.0, [0.0])
+        assert stats["completeness_tolerance_5pct"] == pytest.approx(0.5)
+
+
+class TestSpanGuardCheck:
+    def test_passes_above_threshold(self):
+        ok, msg = gate_affinity.span_guard_check(0.1)
+        assert ok is True
+        assert "PASSED" in msg
+
+    def test_fails_below_threshold(self):
+        ok, msg = gate_affinity.span_guard_check(0.01)
+        assert ok is False
+        assert "REFUSED" in msg
+
+    def test_custom_threshold(self):
+        ok, msg = gate_affinity.span_guard_check(0.03, threshold=0.02)
+        assert ok is True
+
+    def test_exact_threshold_passes(self):
+        ok, msg = gate_affinity.span_guard_check(0.05)
+        assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# 23. CLI for new arguments
+# ---------------------------------------------------------------------------
+
+
+class TestNewCLIArgs:
+    def test_shuffled_baseline_accepted(self):
+        args = gate_affinity.build_parser().parse_args(["--baseline", "shuffled"])
+        assert args.baseline == "shuffled"
+
+    def test_unk_baseline_accepted(self):
+        args = gate_affinity.build_parser().parse_args(["--baseline", "unk"])
+        assert args.baseline == "unk"
+
+    def test_shuffle_seed_default(self):
+        args = gate_affinity.build_parser().parse_args([])
+        assert args.shuffle_seed == 0
+
+    def test_shuffle_seed_custom(self):
+        args = gate_affinity.build_parser().parse_args(["--shuffle-seed", "42"])
+        assert args.shuffle_seed == 42
+
+    def test_span_probe_default_none(self):
+        args = gate_affinity.build_parser().parse_args([])
+        assert args.span_probe is None
+
+    def test_span_probe_accepts_int(self):
+        args = gate_affinity.build_parser().parse_args(["--span-probe", "5"])
+        assert args.span_probe == 5
+
+    def test_force_default_false(self):
+        args = gate_affinity.build_parser().parse_args([])
+        assert args.force is False
+
+    def test_force_flag(self):
+        args = gate_affinity.build_parser().parse_args(["--force"])
+        assert args.force is True
+
+
+# ---------------------------------------------------------------------------
+# 24. Span guard threshold constant
+# ---------------------------------------------------------------------------
+
+
+class TestSpanGuardThreshold:
+    def test_constant_exists(self):
+        assert hasattr(gate_affinity, "SPAN_GUARD_THRESHOLD")
+        assert gate_affinity.SPAN_GUARD_THRESHOLD == pytest.approx(0.05)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

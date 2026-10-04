@@ -1399,6 +1399,78 @@ def build_mean_aa_res_type_baseline(res_type, feats):
     return baseline
 
 
+# UNK token index, verified against boltz 2.2.1 const.tokens:
+#   tokens[22] == "UNK" == the unknown-protein token.
+# Boltz maps single-letter X -> three-letter UNK -> index 22.
+UNK_TOKEN_INDEX = 22
+
+
+def _verify_unk_token_index() -> int:
+    """Return the UNK protein token index, verifying against the pinned table."""
+    idx = list(_BOLTZ_TOKENS_2_2_1).index("UNK")
+    if idx != UNK_TOKEN_INDEX:
+        raise RuntimeError(
+            f"Pinned UNK index {UNK_TOKEN_INDEX} disagrees with "
+            f"_BOLTZ_TOKENS_2_2_1 lookup {idx}"
+        )
+    return idx
+
+
+def build_unk_res_type_baseline(res_type, feats):
+    """UNK-token baseline: set every protein position to the unknown-residue
+    one-hot (index 22 in boltz 2.2.1). Ligand and padding rows are unchanged.
+    """
+    import torch
+
+    unk_idx = _verify_unk_token_index()
+    baseline = res_type.detach().clone().float()
+
+    pad_mask = feats["token_pad_mask"][0].bool()
+    mol_type = feats.get("mol_type")
+    if mol_type is not None:
+        protein_mask = (mol_type[0] == 0) & pad_mask
+    else:
+        protein_mask = pad_mask
+
+    num_tokens = res_type.shape[-1]
+    unk_onehot = torch.zeros(num_tokens, device=res_type.device, dtype=baseline.dtype)
+    unk_onehot[unk_idx] = 1.0
+    baseline[0, protein_mask] = unk_onehot
+    return baseline
+
+
+def build_shuffled_res_type_baseline(res_type, feats, seed=0):
+    """Composition-matched shuffled-sequence baseline.
+
+    Permutes the protein chain's res_type rows among themselves (protein tokens
+    only -- ligand and padding rows are untouched). Preserves composition
+    exactly because it is a permutation, not a resample.
+
+    The shuffle is seeded for reproducibility.
+    """
+    import numpy as np
+    import torch
+
+    baseline = res_type.detach().clone().float()
+
+    pad_mask = feats["token_pad_mask"][0].bool()
+    mol_type = feats.get("mol_type")
+    if mol_type is not None:
+        protein_mask = (mol_type[0] == 0) & pad_mask
+    else:
+        protein_mask = pad_mask
+
+    protein_indices = protein_mask.nonzero(as_tuple=True)[0].cpu().numpy()
+    if len(protein_indices) < 2:
+        return baseline
+
+    protein_rows = baseline[0, protein_indices].clone()
+    rng = np.random.RandomState(seed)
+    perm = rng.permutation(len(protein_indices))
+    baseline[0, protein_indices] = protein_rows[torch.from_numpy(perm)]
+    return baseline
+
+
 def _featurize_processed_affinity(proc_out_dir: Path, mol_dir: Path, device) -> dict:
     """Like :func:`_featurize_processed` but with ``affinity=True``."""
     import torch
