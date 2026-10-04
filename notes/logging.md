@@ -2530,3 +2530,124 @@ sequence, substitute an unrelated protein of the same length, and truncate the
 MSA differently -- if affinity stays ~3.8-6.6 uM throughout, sequence-invariance
 is established beyond the two baselines measured here. That is the next run,
 and it is minutes of GPU.
+
+## 21. RETRACTION of section 20's headline -- the sequence result is an artifact. 2026-10-04
+
+**Section 20 called "the affinity head barely uses the protein sequence" THE
+HEADLINE. That claim is withdrawn.** The confound noted in passing there is
+fatal, and the literature quantifies exactly how fatal.
+
+### Why the three numbers mean nothing as stated
+
+We injected real all-atom 2HYY coordinates, so residue identity stays
+recoverable from side-chain geometry. That is not a hand-wave -- it is measured:
+
+| method | native sequence recovery from coordinates alone | source |
+|---|---|---|
+| ProteinMPNN | **52.4% overall, 90-95% in the deep core**, ~35% surface | Dauparas et al., Science 2022, PMC9997061 |
+| ESM-IF1 | 51% overall, **72% buried**, from N/CA/C only | bioRxiv 2022.04.10.487779 |
+
+**Imatinib occupies the buried ATP pocket of 2HYY -- precisely where identity is
+most recoverable.** So a 1.2-1.7x shift under sequence erasure is the EXPECTED
+behaviour of a redundant input channel and is no evidence about whether the
+model uses sequence.
+
+**The "single mutations move more than full erasure" point is also withdrawn.**
+A zeroed one-hot is not a valid point in the input space, so that compares two
+incomparable regimes. Majdandzic, Rajesh & Koo (Genome Biology 24:109, 2023)
+give the right vocabulary and state it covers protein as well as DNA/RNA:
+a zeroed `res_type` sums to 0 and is **off the probabilistic simplex entirely**,
+where the network's function is unconstrained and gradients acquire a random
+component; uniform 1/20 is **on the simplex but off the data manifold**. That
+predicts our ordering -- uniform (4.62 uM) moving less than zeros (6.56 uM) --
+without any claim about sequence reliance.
+
+### And the conclusion would not have been novel anyway
+
+"Structure-based affinity models learn protein or ligand identity rather than
+interactions" is an established literature, and all five papers recalled from
+memory were verified:
+
+| paper | finding |
+|---|---|
+| Yang, Shen & Huang, Front Pharmacol 2020, PMC7052818 | refined set: complex R^2 ~0.80, ligand-only ~0.71, **protein-only ~0.84 -- protein-only BEAT the complex** |
+| Volkov et al., J Med Chem 65:7946, 2022 | explicit interaction description gives "no advantage"; "memorization largely dominates true learning" |
+| Boyles, Deane & Morris, Bioinformatics 36:758, 2020 | ligand-features-only RF is "predictive at a level similar to classical scoring functions" |
+| Sieg, Flachsenberg & Rarey, JCIM 59:947, 2019 | "bias is learned implicitly and unnoticed from standard benchmarks" |
+| Chen et al., PLoS ONE 14:e0220113, 2019 | DUD-E CNN enrichment attributable to analogue/decoy bias |
+| Graber et al. (GEMS), Nat Mach Intell 2025, PMC12552120 | CASF2016 RMSE **1.402 with ALL protein information removed**; degrades to 1.609 after de-leaking -- so part of the effect is leakage |
+
+### The gap that IS open, and the paper we would be measured against
+
+No published inference-time input ablation of a **co-folding** affinity head
+with coordinates pinned (AF3 / Boltz / Chai / Protenix). The near-miss is
+"AlphaFold3 for Structure-guided Ligand Discovery", bioRxiv 2025.12.04.692352:
+AF3 given **only ligand SMILES, no protein sequence and no template**, gave
+non-random enrichment on **84% (36/43)** of DUDE-Z targets and matched or beat
+DOCK3 on **47% (20/43)**. Their line -- "AF3 remembers where ligands go, but not
+why they bind" -- is the ligand-side dual of our experiment, and it reads clean
+precisely because removing the protein entirely leaves no redundancy confound.
+
+**Mean-AA substitution specifically: no published instance found** (searched
+flat profiles/PSSMs, masked PLM tokens, uninformative MSAs, composition-only
+baselines). Record as UNVERIFIED-because-absent, i.e. a small genuine gap.
+
+### What IS defensible: the IG baseline is invalid, by the authors' own rule
+
+Section 20 reported the completeness failure as a quadrature problem. **That
+reading is wrong and is corrected here.**
+
+Sundararajan, Taly & Yan (arXiv:1703.01365), the IG paper this project is built
+on, state two things we failed:
+
+1. **"We recommend that developers check that the baseline has a near-zero
+   score."** Our `mean_aa` baseline scores 0.6644 against the input's 0.5797 --
+   not near-zero relative to the input, and the span is only **0.085**.
+2. Completeness should hold **within ~5%** at 20-300 steps.
+
+5% of 0.085 is ~0.004. Our absolute error was **2.1-3.1, i.e. 300-700x the
+authors' own tolerance**, with the sign flipping across m = 16/32/64. Lundstrom,
+Huang & Razaviyayn (ICML 2022, PMLR v162) establish that completeness error of
+an m-step Riemann sum IS the quadrature error of the path integral -- so a
+non-monotone, sign-flipping sequence in m indicates a **high-variation
+integrand, not a coarse grid**. No step count fixes this.
+
+Nearest named mode: Miglani et al., "Investigating Saturation Effects in
+Integrated Gradients" (arXiv:2010.12697) -- gradients in saturated regions
+"contribute disproportionately". Ours is the degenerate limit where the
+ENDPOINTS barely differ. **No established term of art for that, and no
+published numeric minimum-span rule** -- the 5% completeness check is already
+span-normalised and suffices.
+
+**Expected gradients would not rescue it.** Erion et al., Nat Mach Intell 2021:
+EG replaces one baseline with an expectation over data-drawn baselines, so by
+linearity completeness becomes `sum = f(x) - E[f(x')]`. If `f(x) ~= f(x')` for
+all plausible baselines the EG span is also ~0. Averaging cuts variance across
+baseline choice; it cannot manufacture a span the output surface lacks. (This
+step is derived from the completeness axiom, not quoted from the paper.)
+
+### The clean experiment, if this arm continues
+
+1. **Sequence shuffle on fixed coordinates** -- the classic threading-decoy
+   construction: permute the sequence, keep the native structure. It breaks
+   redundancy in the right direction, because the coordinates then DISAGREE with
+   the token, so any model reading the token must move. Doubles as the
+   composition-matched IG baseline (the protein analogue of genomics'
+   dinucleotide-shuffled reference).
+2. **Ligand-channel ablation as positive control.** Without it, "the prediction
+   barely moved" cannot be distinguished from a dead path into the head.
+3. **More than one target.** ABL1/imatinib alone cannot carry a claim about a
+   model.
+4. **Do NOT use backbone-only stripping** -- the recovery numbers above make it
+   useless, worst of all in a buried pocket.
+5. Labelled sensitivity set available: Platinum / mCSM-lig, ~1000 experimental
+   ddG-of-binding mutations, and mCSM-lig predicts from wild-type structure plus
+   mutation identity -- our exact setup, with ground truth.
+
+### Standing correction to how section 20 should be read
+
+Of section 20, what survives is: the gradient reaches `res_type` through the
+full trunk at a 7.12x trunk/shallow ratio; peak VRAM 16.80 GiB; real crop
+coverage 200/264 residues and 15/20 measured positions; and **the baseline is
+invalid for this model and target**. What does NOT survive is any claim about
+the model's sequence reliance.
