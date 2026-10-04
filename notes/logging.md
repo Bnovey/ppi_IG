@@ -2330,3 +2330,75 @@ stopped; recording it so nobody mistakes it for a cheap win.
 
 ~0.6 min of compute for the gate itself. Session total ~$10-12, nearly all of
 it SSH recovery and five rounds of first-contact debugging, not science.
+
+## 19. GOAL REFRAMED -- interpretability, not prediction. 2026-10-04
+
+**The user's stated primary goal is now: look inside the model and see which
+residues it deems most important.** This is an interpretability objective, not
+a prediction objective, and it changes what gates what.
+
+### What this changes
+
+| | old framing | new framing |
+|---|---|---|
+| primary question | does the shortcut predict lab ddG? | what has the model learned to treat as important? |
+| core validation | A vs C (shortcut vs lab) | **A vs B (is the attribution faithful to the model?)** |
+| role of B vs C | **the gate** -- a failure stops the project | **context** -- a caveat on what the model's "importance" means |
+| section 18's negative | a stop condition | a FINDING about the model's internals |
+
+Section 18 stands unchanged as a measurement. Its interpretation changes: "the
+model's notion of importance does not track measured binding energetics" is an
+interpretability result about a model the field is actively building on, not a
+reason to halt.
+
+**The standing priority from 2026-10-02 (do not buy shortcut-vs-scan if the
+model fails against lab data) is hereby SUPERSEDED for this arm.** It was the
+right rule while the goal was prediction. Under an interpretability goal the
+model being wrong about biology does not make its internals uninteresting --
+arguably the opposite. [[model-vs-lab-before-scan]] needs updating.
+
+### B is already in hand, so faithfulness is free
+
+Section 18 produced 18 forward-pass deltas on ABL1 + imatinib. Those ARE the
+ground truth for A-vs-B. Once the IG run yields the `(L, vocab)` attribution,
+faithfulness is a local, zero-cost computation: compare `grad[mut] - grad[wt]`
+against the measured `delta_score` for the same 18 mutations. No extra GPU.
+
+### The trap this arm must not fall into
+
+An interpretability claim with no ground truth is very hard to falsify, and
+this project has already nearly been fooled once. Phase 5's pair map looked
+like it recovered known hot spots -- 80 SKEMPI cycles at the 90.7th percentile,
+10.4x the median -- and it was **geometry**: interface residues are close, and
+the map was simply high on close pairs. Only the distance control separated the
+two readings.
+
+So "which residues does the model deem important" must be reported against:
+
+1. **Faithfulness (A vs B).** Does the attribution predict what the model
+   actually does when the residue is changed? This is the primary check and it
+   is now free.
+2. **Distance to the ligand, as a partial.** If high-attribution residues are
+   simply the pocket residues, the map encodes geometry, not learned chemistry.
+   Report the partial correlation against minimum heavy-atom distance to
+   imatinib ALONGSIDE any enrichment claim. Never the enrichment alone.
+3. **The random-weights control**, which already passes on the confidence path
+   (Spearman 0.077 against a 0.3 threshold), so attribution depends on what the
+   model learned rather than on input geometry. Re-run it on the affinity head.
+4. **IG completeness**, so the attribution is arithmetically accountable to
+   `f(x) - f(baseline)`.
+
+A pretty heat map over the binding site, with none of the above, is the
+convincing false positive this arm is most likely to produce.
+
+### Novelty note
+
+This strengthens rather than weakens the paper's position. The earlier claim
+was attribution of a *structure-confidence* score. Attributing the actual
+**affinity** output is the more valuable object, and PairSAE -- the closest
+prior work, which has Boltz-2 + affinity + protein-ligand -- is SAE-based and
+deliberately token-level, engineering around the quadratic object rather than
+producing it. Section 18's failed correlation is also a usable result for that
+paper: it is evidence that affinity-head representations are not aligned with
+binding energetics, which bears directly on the probing and SAE literature
+built on those representations.
