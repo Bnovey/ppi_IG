@@ -2651,3 +2651,104 @@ full trunk at a 7.12x trunk/shallow ratio; peak VRAM 16.80 GiB; real crop
 coverage 200/264 residues and 15/20 measured positions; and **the baseline is
 invalid for this model and target**. What does NOT survive is any claim about
 the model's sequence reliance.
+
+## 22. The baseline was NOT the problem. IG does not converge on this head. 2026-10-04
+
+Section 21 diagnosed the completeness failure as an invalid baseline and said
+one run would settle whether that was the whole story. It was not.
+
+### The span probe -- and the clean threading control
+
+`--span-probe 5`, forward passes only, seconds of GPU. f(x) = 0.579723.
+
+| baseline | f(baseline) | span |
+|---|---|---|
+| shuffled, 5 seeds | 0.642, 0.647, 0.744, 0.597, 0.657 | mean **0.078**, sd **0.048**, min 0.017, max 0.164 |
+| `mean_aa` | 0.664421 | 0.085 |
+| zeros | 0.817172 | 0.237 |
+| **`unk`** | **1.008340** | **0.429** |
+
+**The shuffled result is the retraction-proof version of section 20's withdrawn
+claim.** Composition preserved exactly, a valid one-hot at every position, and
+with coordinates pinned at 2HYY the geometry now DISAGREES with the token -- so
+the redundancy that killed the section-20 reading is broken in the right
+direction. Scrambling all 264 residues moves predicted affinity by a factor of
+**1.04 to 1.46**.
+
+And the **sd is 61% of the mean span**: variation BETWEEN scrambles is
+comparable to the effect OF scrambling. There is no consistent sequence signal,
+it is noise-level. That is stronger than a small mean alone.
+
+`unk` -- boltz's own unknown-residue token, verified `tokens[22] == "UNK"` in
+`const.py` with `unk_token["PROTEIN"]` and `prot_letter_to_token["X"]` agreeing
+-- gives the largest span at 0.429, 5.1x `mean_aa`. It is also the baseline the
+attribution literature prefers, being genuine in-distribution missingness
+rather than nonsense (zeros) or a wrong answer (shuffled).
+
+### The decisive comparison: absolute error is BASELINE-INDEPENDENT
+
+| baseline | span | m | ig_sum | abs error | rel error |
+|---|---|---|---|---|---|
+| `mean_aa` | 0.085 | 16 | -2.234 | 2.150 | 25.4 |
+| `mean_aa` | 0.085 | 32 | +2.994 | 3.079 | 36.4 |
+| `mean_aa` | 0.085 | 64 | +1.184 | 1.269 | 15.0 |
+| `unk` | 0.429 | 16 | +1.789 | 2.217 | 5.17 |
+| `unk` | 0.429 | 32 | +1.348 | 1.777 | 4.15 |
+| `unk` | 0.429 | 64 | **-1.504** | 1.075 | 2.51 |
+
+**A 5.1x larger span left the ABSOLUTE error unchanged** -- mean 2.17 under
+`mean_aa` against 1.69 under `unk`. Relative error improved only because we
+divided by a bigger number. **And the sign of `ig_sum` still flips across m
+under BOTH baselines** (+1.348 -> -1.504 between m=32 and m=64 for `unk`).
+
+That is the answer. The path integral carries intrinsic variation of magnitude
+~1-3 along ANY path through this function, which swamps endpoint differences of
+0.085 and 0.429 alike. Per Lundstrom et al. (ICML 2022, PMLR v162), completeness
+error IS the quadrature error, so a non-monotone sign-flipping sequence in m
+means a **high-variation integrand**. Enlarging the span does not reduce the
+variation. **No baseline choice and no step count fixes this.**
+
+### Faithfulness is not merely wrong, it is unstable
+
+Same model, same 18 mutations, same B. Only the baseline changed:
+
+| baseline | Spearman(A, B) |
+|---|---|
+| `mean_aa` | **-0.4964** (p = 0.036) |
+| `unk` | **+0.2487** (p = 0.320) |
+
+Note `grad_res_type` in the artifact is the PATH-AVERAGED gradient at the top
+rung, not the gradient at x, so it legitimately depends on the baseline -- but
+that is the point: **the attribution flips sign under an arbitrary baseline
+choice and neither value is robust.** Section 20's -0.4964, which I called
+"suggestive of systematic anti-correlation", is hereby downgraded to
+baseline-dependent noise. The IG product at m=64 gives +0.1208 (p=0.633),
+likewise null.
+
+### VERDICT on IG for Boltz-2's affinity head
+
+Measured, not inferred:
+
+1. **Completeness does not converge**, under a span-0.085 baseline or a
+   span-0.429 one, with absolute error ~1-3 in both and the sign flipping in m.
+2. **Faithfulness against the model's own behaviour is unstable**, swinging
+   -0.50 to +0.25 on baseline choice alone, neither significant.
+3. **The one fixable hypothesis was tested and rejected.** The baseline was a
+   real defect -- section 21's diagnosis stands as far as it went -- but it was
+   not the cause.
+
+So IG is not salvageable on this target by baseline selection. Any future claim
+that it works here must first exhibit a convergent completeness ladder.
+
+What remains untested: whether the non-convergence is specific to the affinity
+head or general to this trunk at these token counts. The confidence path
+reached rel err 0.0442 at m=32 and 0.0036 at m=5 on the pair layer, so the
+trunk is not inherently pathological -- which points at the affinity module's
+distance-bucketised, `.detach()`-heavy construction as the likely locus. That is
+a hypothesis, not a result.
+
+### Housekeeping
+
+Peak VRAM 23.87 GiB on the `unk` run, up from 16.80 -- so a 24 GB L4 is
+marginal, not safe. The printed "Crop coverage: 29/264" units bug from section
+20 is STILL present and still needs the call site fixed to pass residue numbers.
