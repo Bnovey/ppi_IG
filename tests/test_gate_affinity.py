@@ -1012,5 +1012,60 @@ class TestSpanGuardThreshold:
         assert gate_affinity.SPAN_GUARD_THRESHOLD == pytest.approx(0.05)
 
 
+# ---------------------------------------------------------------------------
+# 25. Crop coverage uses residue numbers, not 0-based indices (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestCropCoverageResnumRegression:
+    """Regression for section 20's 'Crop coverage: 29/264 (10.98%)' bug.
+
+    The bug: ``all_sites = list(range(n_protein))`` produces 0-based indices
+    [0..263], but the token map with ``resnum_offset=235`` uses residue
+    numbers [235..498]. The intersection is {235..263} -- a 29-element
+    arithmetic artifact, not real coverage.
+
+    The fix: ``list(range(resnum_offset, resnum_offset + n_protein))`` so that
+    sites are in the same numbering space as the token map keys.
+    """
+
+    def test_with_offset_matches_token_map(self):
+        resnum_offset = 235
+        n_protein = 264
+        n_surviving_map = 200
+        token_map = {
+            ("0", resnum_offset + i): i
+            for i in range(n_surviving_map)
+        }
+        sites = list(range(resnum_offset, resnum_offset + n_protein))
+        result = check_crop_coverage(token_map, chain_id="0", sites=sites)
+        assert result["n_surviving"] == n_surviving_map
+        assert result["n_requested"] == n_protein
+        assert result["n_cropped"] == n_protein - n_surviving_map
+
+    def test_zero_offset_unchanged(self):
+        token_map = {("0", i): i for i in range(200)}
+        sites = list(range(264))
+        result = check_crop_coverage(token_map, chain_id="0", sites=sites)
+        assert result["n_surviving"] == 200
+        assert result["n_cropped"] == 64
+
+    def test_old_bug_gives_wrong_count(self):
+        """Demonstrates the bug: 0-based indices vs offset residue numbers."""
+        resnum_offset = 235
+        n_protein = 264
+        token_map = {
+            ("0", resnum_offset + i): i
+            for i in range(200)
+        }
+        buggy_sites = list(range(n_protein))
+        buggy = check_crop_coverage(token_map, chain_id="0", sites=buggy_sites)
+        assert buggy["n_surviving"] == 29, "Expected the old bug's count"
+
+        fixed_sites = list(range(resnum_offset, resnum_offset + n_protein))
+        fixed = check_crop_coverage(token_map, chain_id="0", sites=fixed_sites)
+        assert fixed["n_surviving"] == 200
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

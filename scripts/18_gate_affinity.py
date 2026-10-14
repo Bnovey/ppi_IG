@@ -915,7 +915,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n  Gate Affinity: {gate_result}")
 
     # ---- Crop coverage ----
-    all_sites = list(range(n_protein))
+    # Sites must be residue NUMBERS (matching the token map's keys), not
+    # 0-based indices.  With resnum_offset the token map keys are e.g.
+    # 235..498 for ABL1; passing 0..263 would intersect the wrong range.
+    all_sites = list(range(args.resnum_offset, args.resnum_offset + n_protein))
     crop_coverage = check_crop_coverage(
         token_map, chain_id="0", sites=all_sites,
     )

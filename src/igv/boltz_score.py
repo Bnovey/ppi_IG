@@ -1327,12 +1327,14 @@ def check_crop_coverage(
 
     Parameters
     ----------
-    token_map : dict[(chain_id, residue_index), token_index]
+    token_map : dict[(chain_id, residue_number), token_index]
         From :func:`_build_affinity_token_map` or :func:`_build_token_map`.
     chain_id : str
         The chain to check (string id or ``str(asym_id)``).
     sites : list[int]
-        0-based residue indices to check.
+        Residue numbers in the same numbering space as the token map keys.
+        When ``resnum_offset`` was used to build the token map, sites must
+        include that offset (e.g. ``range(235, 235 + n_protein)`` for ABL1).
 
     Returns
     -------
