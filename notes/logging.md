@@ -3147,3 +3147,105 @@ coordinates with rebuilt mutant atom features, so part of that response may be
 the model reacting to a sequence-structure inconsistency rather than to the
 mutation. **The coordinate-consistent control (re-predict geometry for the
 mutant) has not been run and is the next thing that matters.**
+
+## 26. All three comparisons, at last: the shortcut beats the model it reads. 2026-10-14
+
+Section 1 named three comparisons. Two were open until today.
+
+| comparison | what it asks | result | clears null |
+|---|---|---|---|
+| **shortcut vs slow way** (A-B) | is attribution faithful to the model? | **+0.518** | **4 of 4** |
+| **model vs lab** (B-C) | is the model right about biology? | +0.235, p=0.19 | 2 of 4 |
+| **shortcut vs lab** (A-C) | what does a practitioner get? | +0.265, p=0.17 | 2 of 4 |
+
+**The shortcut reproduces the model far better than the model reproduces
+nature.** That ordering is the project's answer, and it is the one the original
+plan said would be most informative: attribution is not the weak link.
+
+### Model vs lab, resswap scan against SKEMPI ddG
+
+| complex | n | Spearman | CI | perm p | partial (distance) |
+|---|---|---|---|---|---|
+| 3S9D A | 54 | **+0.4205** | [+0.183, +0.626] | **0.0015** | +0.4199 |
+| 1JTG B | 30 | **+0.4376** | [+0.011, +0.708] | **0.0151** | **+0.5368** |
+| 3HFM Y | 42 | +0.2530 | [-0.039, +0.503] | 0.109 | +0.1921 |
+| 2JEL P | 44 | -0.1693 | [-0.453, +0.139] | 0.268 | -0.2090 |
+
+Mean +0.2354, sd 0.2824, t=+1.67, **p=0.19**. Dropping SKEMPI's exact-zero rows
+(1-sig-fig Kd) lifts 3S9D to **+0.5521** (n=46, p<0.0001).
+
+### Shortcut vs lab
+
+| complex | n | IG | perm p | plain_grad | perm p |
+|---|---|---|---|---|---|
+| 3S9D A | 54 | **+0.4678** | **0.0008** | +0.1196 | 0.386 |
+| 1JTG B | 30 | **+0.5591** | **0.0013** | +0.2618 | 0.165 |
+| 2JEL P | 44 | +0.0385 | 0.802 | +0.1482 | 0.334 |
+| 3HFM Y | 42 | -0.0049 | 0.975 | -0.0442 | 0.781 |
+
+IG mean +0.2651 (2/4 clear null); **plain_grad mean +0.1214, 0 of 4**. Against
+experiment IG beats plain_grad by +0.35 and +0.30 on the two complexes that
+work -- a far larger margin than the +0.09 it wins by against the model.
+Section 24's "path integration buys magnitude, not ranking" is now wrong twice
+over: it buys ranking on the hardest complex (section 25) and it buys most of
+the usable signal against experiment.
+
+The quadrature rung is irrelevant at this n: 1JTG m=32 gives +0.5613 against
+m=64's +0.5591.
+
+### Sign orientation, verified rather than assumed
+
+`complex_pde` is a predicted distance error (lower = better, confirmed against
+`12_compare.LOWER_IS_BETTER`); SKEMPI ddG is positive = destabilising. Same
+axis, no negation, agreement is a POSITIVE correlation. Checked before any
+number was quoted: 1JTG's five largest measured ddGs -- W150A, K74A, H41A,
+F36A, Y53A, the canonical BLIP hot spots -- **all carry positive deltas**, and
+3HFM's top two (K96, K97, the HyHEL-10 epitope) likewise. Hot-spot vs neutral
+separation: 3S9D p=0.0004, 1JTG p=0.039. 2JEL's anchor inverts but at p=0.145,
+i.e. 2JEL has no signal rather than a flipped sign.
+
+### Why 2JEL fails, and it is not the attribution
+
+**A-vs-B on 2JEL collapses to 0.1574 on the 44 SKEMPI rows against 0.4042 on
+the full 608-row scan.** 2JEL's measured panel is only **14% alanine**, against
+87% and 80% on 3S9D and 1JTG. So faithfulness fails on precisely the rows
+experiment happened to choose. That is the cleanest available explanation of
+2JEL's null and it implicates the panel, not the method.
+
+### The bound, and why it is not violated
+
+A-vs-C exceeds B-vs-C numerically on three complexes (+0.047, +0.122, +0.208).
+A data-processing bound would only bind if A were a deterministic function of
+B; A agrees with B at 0.16-0.76 on these rows, so the two make different errors
+against C, and +/-0.2 is ordinary sampling noise at n=30-54. Every CI overlaps.
+**No claim here depends on the shortcut beating the model.**
+
+### Caveats that limit what this can support
+
+1. **n = 30-54.** Four complexes, t=+1.67, p=0.19. Section 14's "1 of 8 is what
+   noise looks like" is NOT overturned -- 2 of 4 is better, and still not
+   significant at four.
+2. **The positive complexes are 80-87% alanine.** They mostly answer "which
+   positions matter", not the per-amino-acid claim the project set out to make,
+   and that confound cannot be controlled with this data.
+3. **Refeaturise is untestable against experiment**: the `token_to_rep_atom`
+   survivors contain **0** SKEMPI mutations on 3S9D and 1JTG (18 and 3 on the
+   others).
+4. **3HFM cannot test the geometry confound** -- all 42 mutations lie within
+   2.3-3.9 A. A second independent reason to distrust it, beyond section 14's
+   15-position flag.
+5. **A trap, recorded and NOT quoted as a result**: 2JEL refeaturise plain_grad
+   vs ddG reads +0.7234 (n=18, p=0.0010) and is **geometry** -- distance
+   correlates -0.938 with ddG on those rows, the partial falls to +0.607 with a
+   CI straddling zero, and A-vs-B there is -0.08.
+6. The lab column is not the bottleneck: split-half reliability 0.960 / 0.881 /
+   0.844 (2JEL not estimable). Where the model works it reaches about half its
+   ceiling.
+
+### Supersedes section 14 on two complexes, confirms its verdict
+
+Like-for-like against |ddG|: sec14 simplex +0.4683 / +0.1714 / -0.3396 /
++0.1573 (mean +0.1143, p=0.54) vs new |A_IG| +0.4774 / +0.5195 / -0.0315 /
++0.0422 (mean +0.2519, p=0.18). Complex ordering is preserved (rho +0.80);
+1JTG triples; 2JEL's anti-predictive -0.34 relaxes to a flat -0.03. The
+four-complex t-test still misses 0.05, so section 14's headline verdict stands.
