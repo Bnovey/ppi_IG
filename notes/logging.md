@@ -2987,3 +2987,86 @@ and is the one most likely to fail for reasons that have nothing to do with IG.
 Report per-target, and state which question each target can answer.
 
 Tests 1,330 passing, ruff down from 14 to 1.
+
+## 25. Replication, partial: 1JTG confirms 3S9D. 2JEL/3HFM stranded. 2026-10-14
+
+The 3S9D faithfulness number (section 24) was one complex, and section 24's own
+first caveat said it must not be quoted until the other three had run. They
+ran. **Two of the four are read out below; the other two are measured but their
+artifacts are stuck on a VM that cannot restart.**
+
+### Faithfulness, resswap ground truth
+
+| complex | n | method | Spearman | CI | null p95 | partial vs distance | scale ratio |
+|---|---|---|---|---|---|---|---|
+| 3S9D A | 950 | IG m=64 | **0.5937** | [0.540, 0.640] | 0.053 | 0.5722 | 0.748 |
+| 3S9D A | 950 | plain_grad | 0.5885 | [0.535, 0.638] | 0.053 | 0.5653 | 0.438 |
+| **1JTG B** | **532** | **IG m=32** | **0.6326** | **[0.569, 0.691]** | **0.072** | **0.6317** | **0.721** |
+| 1JTG B | 532 | plain_grad | 0.5449 | [0.474, 0.615] | 0.070 | 0.5502 | 0.543 |
+
+**It replicates.** Two complexes, 0.59 and 0.63, both ~9-11x their own
+permutation null. On 1JTG the distance partial costs **0.0009** (0.6326 ->
+0.6317); on 3S9D it cost 0.0215. Phase 5's hot-spot result died under exactly
+this control. This one does not move.
+
+IG beats plain_grad on scale ratio on both complexes (0.72/0.75 vs 0.54/0.44)
+while ranking within 0.09, reproducing section 24's reading: path integration
+buys calibrated magnitude, not ranking.
+
+### Refeaturise stays null, and n collapses
+
+| complex | n scored | IG | plain_grad |
+|---|---|---|---|
+| 3S9D | 103 / 950 | -0.0123 (p=0.90) | -0.0783 (p=0.44) |
+| 1JTG | **32 / 532** | 0.2053, CI [-0.177, 0.539] | -0.2496, CI [-0.540, 0.077] |
+
+1JTG keeps only **32 of 532** mutants past the `token_to_rep_atom` guard -- a
+94% skip against 3S9D's 89%. Both 1JTG CIs straddle zero and both scale ratios
+are ~0.007, i.e. A is ~140x too small. Nothing here contradicts section 24;
+nothing here is powered enough to confirm it either.
+
+### A prediction registered before the run, and falsified
+
+`notes/_sec25_predictions_registered.md` called it: "the 3S9D 0.5937 will NOT
+cleanly replicate at that magnitude... expect mean ~0.4-0.5 with sd >0.15, and
+expect at least one complex to land materially lower." 1JTG came in **higher**
+(0.6326), with a tighter distance partial. **The prediction is wrong so far**,
+and is recorded as wrong. Two complexes cannot settle it; 2JEL and 3HFM can.
+
+### Status of 2JEL and 3HFM -- measured, not yet readable
+
+The overnight chain completed both headline arms (`3HFM headline rc=0` at
+09:29 UTC, `2JEL headline rc=0` at 13:27 UTC) and 1JTG's m=64 attribution
+(13:27-15:17), then self-halted via `sudo shutdown -h now` as designed.
+
+**The artifacts were never synced.** The VM is TERMINATED and
+`us-central1-a` is returning `STOCKOUT` for a2-ultragpu-1g, so it cannot be
+restarted to collect them. The boot disk is zonal and retained; the data is
+safe but unreachable until capacity frees. A patient retrier is polling.
+
+**Do not quote a four-complex verdict until those two land.** Two of four,
+both positive, is not the test section 14 demands -- that section's lesson was
+that 1 of 8 clearing its null is what noise looks like at eight looks.
+
+### Operational
+
+- The 12h cap raise worked and the VM's self-shutdown worked. The local
+  auto-stop watcher **reported `STOPPED_ON_COMPLETE` while its stop command had
+  errored** -- it did not stop anything, and the cap is still 43200s. Do not
+  trust a watcher's own success line; verify state. Restoring 2h is pending the
+  same stockout.
+- 2JEL/3HFM m=32 artifacts from section 14 were revalidated before reuse by
+  reproducing f(x) at HEAD: 2JEL 1.4196462631225586, 3HFM 0.9989417791366577,
+  both identical to the 0bf19ef values. Completeness also reproduced exactly
+  (2.3726%, 11.1378%). Their ladders will be **m=32 only** -- m=64 was
+  unaffordable -- and both FAIL the 5% gate at that rung.
+- A driver bug was caught that would have voided two complexes silently: `.DONE`
+  markers were stamped on stages that were *skipped*, so 2JEL and 3HFM were
+  logged `COMPLEX ... COMPLETE` with no scan data. Found by listing artifacts,
+  not by reading the log.
+- **VRAM: section 24's "peak 20.2 GiB, the 80 GB card is unnecessary" is
+  withdrawn.** Measured peaks: 1JTG ig_m32 42.6 GiB, 2JEL plain_grad 61.2 GiB,
+  3HFM plain_grad 70.1 GiB of 80. These are `nvidia-smi memory.used`
+  (driver-reserved, incl. allocator pool), so an upper bound -- read as "80 GB
+  suffices, 24 GB does not", not as live tensor footprint. 20.2 GiB was the
+  smallest complex and never generalised.

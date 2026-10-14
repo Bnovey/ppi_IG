@@ -48,3 +48,4 @@ probe_msa3.py
 
 # macOS AppleDouble sidecars, which arrive when a tarball is built on the Mac.
 ._*
+logs/
