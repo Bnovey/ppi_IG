@@ -1,0 +1,67 @@
+# Build: docker build -t igv-protenix -f docker/Dockerfile.protenix .   (context = repo root)
+# Run:   docker run --gpus all --shm-size=32g --ipc=host igv-protenix
+#
+# Protenix conflicts with boltz==2.2.1 (numpy, biopython, gemmi, etc.) and
+# pins cuequivariance 0.8.0 which segfaults on A100. This image installs
+# protenix with --no-deps and an explicit dependency list, excluding
+# cuequivariance and deepspeed. LAYERNORM_TYPE is set to avoid the nvcc JIT.
+#
+# Uses ONLY the Apache-2.0 protenix_base_default_v1.0.0 weights.
+
+FROM nvidia/cuda:12.6.2-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+ENV LAYERNORM_TYPE=torch_layernorm
+
+# Python 3.11
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common curl ca-certificates && \
+    add-apt-repository ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-dev python3.11-distutils && \
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11 && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# torch (cu126 wheel index)
+RUN python3 -m pip install --no-cache-dir \
+        torch==2.7.1+cu126 --index-url https://download.pytorch.org/whl/cu126
+
+# protenix with --no-deps, then its actual dependencies minus the problematic ones
+RUN python3 -m pip install --no-cache-dir --no-deps protenix==2.0.0
+
+RUN python3 -m pip install --no-cache-dir \
+        numpy==2.4.1 \
+        scipy \
+        biopython==1.85 \
+        gemmi==0.6.7 \
+        scikit-learn==1.7.1 \
+        modelcif==1.4 \
+        ml-collections \
+        biotite \
+        rdkit \
+        pandas \
+        requests \
+        wandb==0.21.1 \
+        einops \
+        pyyaml \
+        tqdm \
+        pyarrow
+
+# Clone Protenix repo for configs/ and runner/ (not in pip package)
+RUN apt-get update && apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch v2.0.0 \
+        https://github.com/bytedance/Protenix.git /opt/protenix
+
+WORKDIR /app
+COPY . /app
+RUN python3 -m pip install --no-cache-dir -e ".[dev]"
+
+RUN git config --global --add safe.directory /app
+
+# Verify protenix imports work without cuequivariance
+RUN python3 -c "import protenix; print('protenix', protenix.__version__)"
+
+CMD ["python3", "-m", "pytest", "tests/test_protenix_score.py", "-v"]
