@@ -3070,3 +3070,80 @@ that 1 of 8 clearing its null is what noise looks like at eight looks.
   (driver-reserved, incl. allocator pool), so an upper bound -- read as "80 GB
   suffices, 24 GB does not", not as live tensor footprint. 20.2 GiB was the
   smallest complex and never generalised.
+
+### COMPLETION of 25 -- all four complexes, 2026-10-14
+
+The stockout cleared, the artifacts synced, the VM is TERMINATED and the 2h
+`maxRunDuration` cap is restored (verified 7200).
+
+| complex | n | rung | Spearman | CI | null p95 | partial vs distance | drop | scale |
+|---|---|---|---|---|---|---|---|---|
+| 1JTG B | 532 | IG m=64 | **0.6678** | [0.608, 0.722] | 0.071 | 0.6653 | 0.4% | 0.759 |
+| 3S9D A | 950 | IG m=64 | 0.5937 | [0.540, 0.640] | 0.053 | 0.5722 | 3.6% | 0.748 |
+| 3HFM Y | 285 | IG m=32 | 0.4054 | [0.289, 0.509] | 0.098 | 0.4043 | 0.3% | 0.438 |
+| 2JEL P | 608 | IG m=32 | 0.4042 | [0.331, 0.471] | 0.068 | **0.2629** | **35.0%** | 0.783 |
+
+**Mean 0.5178, sd 0.1339, range 0.404-0.668. 4 of 4 clear their own
+permutation null**, every CI excludes zero, and the weakest complex (0.4042)
+still sits ~6x its null. Against section 14, where 1 of 8 cleared its null and
+the sign flipped across complexes, this is a different regime.
+
+### The registered prediction was broadly RIGHT, and an earlier call of mine was wrong
+
+`_sec25_predictions_registered.md` said: "expect mean ~0.4-0.5 with sd >0.15,
+and expect at least one complex to land materially lower", and that all four
+would still clear their null. Outcome: mean **0.518** (just above the band), sd
+**0.134** (just below), spread 0.404-0.668 (materially lower: yes, two of
+them), 4/4 clear null (correct).
+
+**Section 25's first pass declared this prediction "FALSIFIED" on the strength
+of 1JTG alone.** That was premature and is retracted here. 1JTG is the
+best-performing complex of the four; calling the prediction on the single most
+favourable draw is the same error the project made with 3S9D, one iteration
+later. The prediction was substantially correct.
+
+### 2JEL is where the geometry control finally bites
+
+The distance-to-partner partial costs 0.4% on 1JTG, 0.3% on 3HFM, 3.6% on
+3S9D -- and **35.0% on 2JEL** (0.4042 -> 0.2629). So "the attribution is not
+geometry" is true on three complexes and only two-thirds true on the fourth.
+2JEL was also the complex where section 14's corrected pair map was actively
+anti-predictive (AUROC 0.365). Report the partial per complex; never quote the
+mean partial alone.
+
+### IG beats plain_grad, and the margin is largest where the signal is weakest
+
+| complex | IG | plain_grad | delta |
+|---|---|---|---|
+| 3HFM | 0.4054 | 0.1819 | **+0.2235** |
+| 1JTG | 0.6678 | 0.5449 | +0.1229 |
+| 3S9D | 0.5937 | 0.5885 | +0.0052 |
+| 2JEL | 0.4042 | 0.3920 | +0.0122 |
+
+On 3HFM plain_grad is barely above its null (0.1819 vs p95 0.098) while IG is
+4x it. Section 24 concluded from 3S9D alone that "path integration buys
+calibrated magnitude, not ranking" -- that holds where both methods are strong,
+but on the hardest complex IG buys ranking too. Amend the claim.
+
+### Completeness ladders remain incomplete
+
+1JTG has the full ladder (m=32 -> m=64) and m=64 improved faithfulness
+0.6326 -> 0.6678. **2JEL and 3HFM are m=32 only** -- m=64 at ~234 and ~259 min
+did not fit the window. 3HFM FAILS the 5% gate at that rung (11.14%); 2JEL
+PASSES (2.37%). So the one complex whose attribution is least arithmetically
+accountable, 3HFM, is also the one where IG most outperforms plain_grad. That
+is not explained, and it is the obvious thing for a referee to ask about.
+
+### What this does and does not establish
+
+Establishes: on Boltz-2's `complex_pde`, gradient attribution predicts the
+model's own one-hot substitution response at 0.40-0.67 across four complexes,
+4/4 above null, and on three of four this is not reducible to distance.
+
+Does NOT establish: anything about real mutations. The refeaturise arm stays
+null everywhere and its n collapses (103/950 on 3S9D, 32/532 on 1JTG). And the
+36x median-|B| gap is still confounded -- refeaturise reuses wild-type
+coordinates with rebuilt mutant atom features, so part of that response may be
+the model reacting to a sequence-structure inconsistency rather than to the
+mutation. **The coordinate-consistent control (re-predict geometry for the
+mutant) has not been run and is the next thing that matters.**
