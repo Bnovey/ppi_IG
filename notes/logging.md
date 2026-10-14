@@ -2752,3 +2752,238 @@ a hypothesis, not a result.
 Peak VRAM 23.87 GiB on the `unk` run, up from 16.80 -- so a 24 GB L4 is
 marginal, not safe. The printed "Crop coverage: 29/264" units bug from section
 20 is STILL present and still needs the call site fixed to pass residue numbers.
+
+## 23. Paper build-out: no GPU this session, four arms made runnable. 2026-10-12
+
+Goal restated by the user: write the paper, on IG applied to Boltz-2 and/or
+Protenix. Cost is explicitly not a constraint from here on.
+**Nothing ran on a GPU this session.** Everything below is code, controls and
+target selection, all uncommitted, all pending the runs listed at the end.
+
+### The GPU never started, and why that was lucky
+
+The faithfulness run (below) was dispatched first and never reached the VM:
+`~/.ssh/google_compute_engine` carries a passphrase and the agent is empty, so
+SSH failed with `Permission denied (publickey)`. That is the exact trap
+`HANDOFF.md` warns about. The VM ran ~12 min and was stopped, TERMINATED, no job
+started. **Unblock with `ssh-add --apple-use-keychain
+~/.ssh/google_compute_engine` in Terminal.app.**
+
+Lucky, because `04_scan.py` would have produced an uninterpretable scan: see
+below. Buying ~2,300 forward passes against zeroed geometry would have been the
+most expensive mistake available this session.
+
+### `04_scan.py` was not fit to be the faithfulness ground truth
+
+Four defects, all fixed:
+
+1. **Geometry was empty.** `x_pred = ref_feats["coords"]`, which section 14
+   measured as all zeros for sequence-only input, while stage 03 uses
+   `predict_structure_coords`. Scan and attribution would have been computed on
+   *different geometry*, which voids the comparison outright.
+2. **The MSA was not pinned** -- every mutant re-queried the server, against
+   section 16's standing instruction.
+3. **No wild-type row**, so no `delta` could be formed at all.
+4. **No resume on the SKEMPI path**, so any interruption appended duplicates.
+
+### The design decision: `resswap` is the primary ground truth
+
+Attribution differentiates f w.r.t. the one-hot `res_type` with every other
+feature held at wild type. So the faithful B is the *same function* evaluated at
+a swapped one-hot -- not a re-featurised mutant. `--mode resswap` (now default)
+changes `res_type[pos]` and nothing else; `--mode refeaturise` keeps the real
+mutant as a secondary measurement of model behaviour.
+
+**The `token_to_rep_atom` hazard is confirmed, not hypothetical.** From the
+installed boltz source, `featurizer.py:726` builds
+`token_to_rep_atom` from per-token `disto_idx`, and `loss/confidence.py:188-189`
+uses it to select one representative atom per token out of the atom table. A
+Gly->Trp mutation (4 vs 14 heavy atoms) shifts that table, so reusing wild-type
+`x_pred` under `refeaturise` reads the wrong atoms for every token after the
+mutation. `refeaturise` now guards on both the shape AND the content of
+`token_to_rep_atom` and skips rather than lying.
+
+**Section 18 is unaffected and stands.** `20_affinity_scan.py` already
+implemented `resswap` (it featurises once and edits only `res_type`), so the 18
+ABL1 deltas ARE the function the gradient differentiates. Had it re-featurised,
+section 18's faithfulness numbers would have compared two different functions.
+
+### The affinity-head diagnostic, and the control it was missing
+
+Section 22 left one hypothesis standing: non-convergence is specific to the
+affinity module, not the trunk, because the confidence path converges (rel err
+0.0442 at m=32). `scripts/23_affinity_path_profile.py` tests it directly --
+f(alpha) on a 257-point grid plus the autograd directional derivative
+<grad f, x - b> at 65 alphas, **both heads, same path, same complex**.
+
+Review caught three defects that would have produced a confident, wrong figure:
+
+1. **The profile and the gradient ran different code.** f(alpha) went through
+   `model.msa_module`; the derivative went through `_msa_forward_checkpointed`.
+   FD-vs-autograd disagreement would then have been a code-path artifact. Both
+   now call the same `affinity_forward`/`confidence_forward`, and
+   `max_profile_vs_grad_diff` is reported as the check.
+2. **No noise floor.** TV and sign-flip counts are the whole claim, and nothing
+   separated them from fp32 GEMM nondeterminism. Now: 5 alphas x 3 repeats,
+   `noise_sd` reported, plus `--deterministic`.
+3. **The sign-change threshold was 1e-30**, i.e. every float wobble counted.
+   Now `3*noise_sd*sqrt(2)`, and TV is reported both raw and above-noise.
+
+Also fixed: the **"Crop coverage: 29/264" units bug** from sections 20-22 is
+closed (`18_gate_affinity.py`, sites now passed as residue NUMBERS), real
+coverage 200/264, with a regression test and the misleading
+`check_crop_coverage` docstring corrected.
+
+### Protenix is the second model -- for the confidence path only
+
+Verified against `bytedance/Protenix` @ 85767b8 (= v2.0.0), written up in
+`notes/draft_protenix_feasibility.md`. `restype` is a float one-hot concatenated
+into `s_inputs` with no embedding lookup -- the same seam as Boltz. Four
+blockers, all patched at runtime without a fork: the recycling loop under
+`set_grad_enabled(self.training)`; an in-place MSA slice update (the root cause
+of the unsolved CopySlices error in IG_Agros); `ConfidenceHead.stop_gradient`;
+and a `@torch.no_grad()` summary-score function.
+
+- **No affinity head exists**, across every variant checked. The ligand-affinity
+  arm stays Boltz-only.
+- **PLAN.md's hard-max question is answered: yes.** pTM and ipTM take a max over
+  tokens in *both* Protenix and Boltz-2. `complex_pde` avoids it and is the
+  score that transfers.
+- Trunk is smaller (48 pairformer blocks vs 64). Estimated ~10-21 GiB at 4
+  recycles, ~450 tokens -- unmeasured.
+- Separate image required: protenix conflicts with `boltz==2.2.1` and pins
+  cuequivariance 0.8.0, the A100 crash from IG_Agros. v1.0.0 weights only
+  (Apache-2.0); v2 is proprietary and now refused in code.
+- **Chai-1 rejected**: compiled trunk blocks per-block checkpointing, and
+  full-trunk backward already OOM'd on a 141 GB H200.
+
+### Targets: one complex cannot carry a claim about a model
+
+`notes/draft_ligand_targets.md`. Recommended ABL1 + EGFR + Mpro, with PimA
+fourth.
+
+| target | ligand (CCD) | PDB | singles / positions | assay |
+|---|---|---|---|---|
+| EGFR KD | AQ4 erlotinib, IRE gefitinib | 1M17 | 27 / 20, x18 TKIs | Ba/F3 viability, 3 reps |
+| SARS-CoV-2 Mpro | 4WI nirmatrelvir | 8DZ2 (dimer) | 102 / 12 | enzymatic Ki |
+| PimA | GDD, GDP | 3OKP / 3OKC | 16 x2 / 13 | Kd |
+
+- **EGFR is not Hauser.** Median replicate sd **0.080 log10** against a 5-log10
+  range (S/N 12.2), vs Hauser's ~0.6. Technical repeatability only; the
+  IC50-vs-Kd systematic gap stays unmeasured. Sign convention confirmed from the
+  data (positive = resistance, as SKEMPI), anchored on T790M **reversing sign**
+  between erlotinib (+1.56) and osimertinib (-0.76) -- a stronger qualitative
+  anchor than T315I/ponatinib because it is a sign change, not a magnitude.
+- **Mpro must be run as the dimer.** On 8DZ2, E166 sits 2.6 A and H172 3.2 A
+  from the partner protomer; monomeric 7VH8 deletes a contact the measured Ki
+  depends on. Its value is *within-position depth* (~8.5 substitutions/position,
+  Q192 has 11) -- the within-position ranking section 17 lost on Hauser.
+- **Leakage:** Mpro has **0** Platinum rows and EGFR **1**, so mCSM-lig is a
+  usable external baseline on both. All WT structures predate the 2023-06-01
+  cutoff; flagged, unfixable.
+- **Numbering trap:** 1M17 is mature-protein numbered, offset exactly **-24**
+  (unique in [-40,+40], 20/20 agreement). Same class as the 2HYY residue-275 bug.
+
+**Correction to our own record.** ABL1 was written up as having ~2 positions
+beyond 6 A of imatinib. Recomputed from 2HYY it is **6 within / 13 beyond,
+3.0-27.2 A**. So ABL1 always had the near/far spread, EGFR's spread is not a
+unique advantage, and section 17's invalidity flag 1 (near/far confounded with
+modellable/unmodellable) **applies to ABL1 too and always did**. PimA is the
+only candidate whose far sites are not allosteric.
+
+**Rejected so it is not re-searched:** HIV-1 protease (max 8 positions for a
+fixed ligand, best literature panel 7 singles / 5 positions, homodimer); every
+kinase but ABL1 for *biochemical* singles (Davis 2011 tops out at 5). **MET DMS
+(Estevam 2025, ~5764 variants) is flagged, not buried** -- it is the only thing
+that would solve the degrees-of-freedom problem, excluded solely because the
+readout is growth enrichment rather than affinity. If that objection is ever
+resolved, MET beats everything here.
+
+### Registered before the runs
+
+- Completeness will converge on `complex_pde` and fail on `affinity_pred_value`
+  on the SAME complex and path (that is the point of the two-head profile).
+- `total_variation_above_noise` will be large for the affinity head and ~0 for
+  the confidence head.
+- Faithfulness on 3S9D `resswap` will beat the section-22 affinity numbers.
+- Protenix `complex_pde` completeness will land near Boltz's (~0.04 at m=32).
+
+Written down so a failure counts.
+
+### The queue, in order
+
+1. **3S9D chain A, confidence path.** Stage 03 IG m=64 then m=128
+   (`mean_aa`, `--x-pred predicted`), then `04_scan.py --mode resswap`, then
+   `--mode refeaturise`, then `24_faithfulness.py`. ~2,330 forward passes.
+   This is the paper's missing headline: the shortcut-vs-slow-way number.
+2. **Affinity path profile**, ABL1/imatinib, three baselines + `--deterministic`.
+   ~804 forward-equivalents each, ~40-67 min.
+3. **Protenix**: build the image, memory ladder, parity test, then `complex_pde`
+   plain_grad and IG (m=32, 64) on 1JTG and 3S9D.
+4. **EGFR and PimA** affinity runs once ground truth lands; Mpro needs
+   `oc3c00538_si_001.pdf` fetched by hand (publisher blocks scripts) and dimer
+   support in the affinity CLIs.
+
+### Housekeeping
+
+1,227 tests passing, ruff unchanged at its pre-existing count. Nothing
+committed. `04_scan.py`, `18_gate_affinity.py`, `boltz_score.py` and the
+Makefile are modified; `23_affinity_path_profile.py`, `24_faithfulness.py`,
+`03_attribute_protenix.py`, `08_memscale_protenix.py`, `protenix_score.py`,
+`Dockerfile.protenix` and four test files are new.
+
+### ADDENDUM to 23 -- ground truth landed for all four targets, 2026-10-13
+
+All parsed, all guarded, none committed. Mpro's supplement was fetched by hand
+(publisher blocks scripts); its sha256 is recorded and verified before parsing.
+
+| target | rows | positions | guard |
+|---|---|---|---|
+| Mpro / nirmatrelvir (8DZ2) | 102 subs (+10 del, 2 double) | 12 | WT Ki 1.88 nM; 102/102 residues match 8DZ2 |
+| EGFR (1M17) | 486 = 27 muts x 18 TKIs | 20 | 27/27 match at offset -24; T790M sign reversal confirmed |
+| PimA-GDD (3OKP) | 16 | 13 | 16/16 |
+| PimA-GDP (3OKC) | 16 | 13 | 16/16 |
+
+EGFR median replicate sd **0.0797 log units** (ddof=1), confirming the 0.080
+figure. **The log base is NOT stated anywhere in the supplement** -- recorded as
+`log_base: "unknown"`, not assumed. Magnitudes are consistent with log10
+(T790M/erlotinib +1.56 implies ~36-fold) but that is inference. It would
+corrupt a calibration slope, not a rank correlation.
+
+Only 54 of 102 Mpro substitutions carry a Ki; 44 are IC50-only. Kept in separate
+columns, never merged.
+
+### The distance distributions are the real finding here
+
+Minimum heavy-atom distance from each measured position to the ligand:
+
+| target | within 6 A | beyond 6 A | range |
+|---|---|---|---|
+| **Mpro** | **12 / 12** (11 within 4 A) | **0** | 1.9 - 9.1 A |
+| **EGFR** | 3 / 20 | **17 / 20** | 3.3 - 21.3 A |
+| PimA (both ligands) | 5 / 13 | 8 / 13 | 2.7 - 16.9 A |
+| ABL1 (recomputed, 2HYY) | 6 / 19 | 13 / 19 | 3.0 - 27.2 A |
+
+**Mpro cannot test the geometry confound at all.** Every measured position is a
+drug-site residue, so the distance partial -- the control that saved this
+project from Phase 5's false positive -- is unidentifiable on Mpro by
+construction. Mpro's value is within-position depth (18 substitutions at Q192,
+17 at H172, 16 at S144) and nothing else. Say so before quoting any Mpro
+enrichment.
+
+**EGFR is the mirror image and carries the opposite risk.** Only 3 of 20
+positions are within 6 A; 17 are distal, out to 21.3 A. That is the regime
+section 17 flagged as invalidity 1: distal resistance mutations act through
+conformational equilibrium, which a co-folding model scoring a PINNED structure
+cannot represent even in principle. So EGFR's 17 far positions are plausibly
+*unmodellable* rather than merely hard, and a null on them would not be evidence
+about attribution.
+
+**Consequence for the paper: the four targets are complementary, not
+redundant, and must not be pooled into one correlation.** Mpro tests
+within-position ranking with geometry held constant; PimA and ABL1 carry the
+near/far contrast with non-allosteric far sites; EGFR tests the distal regime
+and is the one most likely to fail for reasons that have nothing to do with IG.
+Report per-target, and state which question each target can answer.
+
+Tests 1,330 passing, ruff down from 14 to 1.
