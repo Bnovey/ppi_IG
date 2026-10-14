@@ -17,7 +17,7 @@ SANITY   := results/sanity_$(DATASET)_$(SCORE).json
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup test lint fetch library deltas attribute scan predict metrics sanity memscale memscale-plan path-profile path-profile-plan stage0 all clean
+.PHONY: help setup test lint fetch library deltas attribute scan predict metrics sanity memscale memscale-plan path-profile path-profile-plan affinity-path-profile affinity-path-profile-plan faithfulness stage0 all clean
 
 help: ## Print this help
 	@echo "IG validation pipeline"
@@ -101,6 +101,22 @@ path-profile: ## Gradient fidelity profile along the IG path [GPU, diagnostic]
 path-profile-plan: ## Print the path-profile plan, no GPU (CPU)
 	$(PY) $(SCRIPTS)/09_path_profile.py --dataset $(DATASET) --score $(SCORE) --dry-run
 
+# DIAGNOSTIC -- deliberately NOT in `all`. Profiles the IG path integrand
+# for both affinity and confidence heads on a protein-ligand complex.
+# Requires --protein-sequence, --ligand-ccd/--ligand-smiles, and --pdb.
+# Pass BASELINE=mean_aa|unk|shuffled to select the baseline.
+BASELINE ?= mean_aa
+affinity-path-profile: ## Integrand profile for affinity + confidence heads [GPU, diagnostic]
+	$(PY) $(SCRIPTS)/23_affinity_path_profile.py \
+		$(if $(PROTEIN_SEQ),--protein-sequence $(PROTEIN_SEQ),) \
+		$(if $(LIGAND_CCD),--ligand-ccd $(LIGAND_CCD),) \
+		$(if $(PDB_FILE),--pdb $(PDB_FILE),) \
+		$(if $(RESNUM_OFFSET),--resnum-offset $(RESNUM_OFFSET),) \
+		--baseline $(BASELINE)
+
+affinity-path-profile-plan: ## Print the affinity path profile plan, no GPU (CPU)
+	$(PY) $(SCRIPTS)/23_affinity_path_profile.py --dry-run
+
 stage0: ## Cheapest end-to-end go/no-go on 4fqi_h1 (CPU stages only)
 	$(MAKE) fetch library DATASET=4fqi_h1
 	@echo "stage0 passed -- CPU pipeline works for 4fqi_h1"
@@ -109,3 +125,30 @@ all: fetch library deltas sanity attribute scan predict metrics ## Run the full 
 
 clean: ## Remove all generated data and results
 	rm -rf data/raw data/processed results/*.csv results/*.npz results/*.json
+
+# ---------------------------------------------------------------------------
+# Protenix targets (separate image; see docker/Dockerfile.protenix)
+# ---------------------------------------------------------------------------
+
+PROTENIX_N_CYCLE ?= 4
+
+attribute-protenix: ## Protenix attribution [GPU, protenix image]
+	$(PY) $(SCRIPTS)/03_attribute_protenix.py --dataset $(DATASET) --chain H \
+		--score $(SCORE) --method $(METHOD) --n-cycle $(PROTENIX_N_CYCLE)
+
+memscale-protenix: ## Protenix memory ladder [GPU, diagnostic]
+	$(PY) $(SCRIPTS)/08_memscale_protenix.py --sizes 300,450 --cycles 1,2,4,10
+
+memscale-protenix-plan: ## Print the Protenix memory ladder plan (CPU)
+	$(PY) $(SCRIPTS)/08_memscale_protenix.py --dry-run
+
+FAITH    := results/$(DATASET)_$(SCORE)_faithfulness.json
+
+faithfulness: ## Compare gradient attribution against scan (CPU)
+	$(PY) $(SCRIPTS)/24_faithfulness.py \
+		--attribution $(GRAD) \
+		--scan $(SCAN) \
+		--dataset $(DATASET) \
+		--score $(SCORE) \
+		--chain H \
+		--out $(FAITH)
