@@ -1,0 +1,24 @@
+[06:00:48] NOTSELECTED 1JTG_ig_m32
+[06:00:48] NOTSELECTED 1JTG_ig_m64
+[06:00:48] NOTSELECTED 1JTG_plain_grad
+CSV_OK results/1JTG_complex_pde_scan.csv (220 data rows)
+[06:00:49] START 1JTG_scan_resswap (est 4200s, 40673s left) -> results/1JTG_complex_pde_scan.csv.DONE
+[06:58:58] END   1JTG_scan_resswap rc=0 elapsed=3489s
+[06:58:58] VRAM_PEAK_SAMPLED 1JTG_scan_resswap 11498 MiB
+[06:58:58] START 1JTG_scan_refeat (est 1500s, 37183s left) -> results/1JTG_complex_pde_scan_refeaturise.csv.DONE
+[07:21:33] END   1JTG_scan_refeat rc=0 elapsed=1355s
+[07:21:33] VRAM_PEAK_SAMPLED 1JTG_scan_refeat 12082 MiB
+[07:21:33] NOATTR skip faith ig64 (missing results/1JTG_complex_pde_ig_grad.npz)
+[07:21:33] START 1JTG_faith_ig32_resswap (est 120s, 35828s left) -> results/1JTG_faith_ig32_resswap.json
+[07:22:03] END   1JTG_faith_ig32_resswap rc=0 elapsed=30s
+[07:22:03] VRAM_PEAK_SAMPLED 1JTG_faith_ig32_resswap 6 MiB
+[07:22:03] START 1JTG_faith_ig32_refeat (est 120s, 35798s left) -> results/1JTG_faith_ig32_refeat.json
+[07:22:32] END   1JTG_faith_ig32_refeat rc=0 elapsed=29s
+[07:22:32] VRAM_PEAK_SAMPLED 1JTG_faith_ig32_refeat 2622 MiB
+[07:22:32] START 1JTG_faith_plaingrad_resswap (est 120s, 35769s left) -> results/1JTG_faith_plaingrad_resswap.json
+[07:23:02] END   1JTG_faith_plaingrad_resswap rc=0 elapsed=30s
+[07:23:02] VRAM_PEAK_SAMPLED 1JTG_faith_plaingrad_resswap 16738 MiB
+[07:23:02] START 1JTG_faith_plaingrad_refeat (est 120s, 35739s left) -> results/1JTG_faith_plaingrad_refeat.json
+[07:23:31] END   1JTG_faith_plaingrad_refeat rc=0 elapsed=29s
+[07:23:31] VRAM_PEAK_SAMPLED 1JTG_faith_plaingrad_refeat 16740 MiB
+[07:23:31] COMPLEX 1JTG COMPLETE

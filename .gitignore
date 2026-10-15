@@ -49,3 +49,5 @@ probe_msa3.py
 # macOS AppleDouble sidecars, which arrive when a tarball is built on the Mac.
 ._*
 logs/
+notes/vm_logs_sec25/*_scan_*.log
+notes/vm_logs_sec25/*.vram_samples

@@ -1,0 +1,13 @@
+[15:17:42] NOTSELECTED 2JEL_ig_m32
+[15:17:42] DEFER 2JEL_ig_m64: need 14040s, only 7259s left in window
+[15:17:42] NOTSELECTED 2JEL_plain_grad
+CSV_OK results/2JEL_complex_pde_scan.csv (609 data rows)
+[15:17:42] NOTSELECTED 2JEL_scan_resswap
+CSV_OK results/2JEL_complex_pde_scan_refeaturise.csv (609 data rows)
+[15:17:42] NOTSELECTED 2JEL_scan_refeat
+[15:17:42] NOATTR skip faith ig64 (missing results/2JEL_complex_pde_ig_grad.npz)
+[15:17:42] SKIP 2JEL_faith_ig32_resswap (exists: results/2JEL_faith_ig32_resswap.json)
+[15:17:42] SKIP 2JEL_faith_ig32_refeat (exists: results/2JEL_faith_ig32_refeat.json)
+[15:17:42] SKIP 2JEL_faith_plaingrad_resswap (exists: results/2JEL_faith_plaingrad_resswap.json)
+[15:17:42] SKIP 2JEL_faith_plaingrad_refeat (exists: results/2JEL_faith_plaingrad_refeat.json)
+[15:17:42] COMPLEX 2JEL COMPLETE

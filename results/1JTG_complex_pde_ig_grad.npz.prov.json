@@ -10,38 +10,45 @@
     "--method",
     "ig",
     "--m-steps",
-    "32"
+    "64",
+    "--baseline",
+    "mean_aa",
+    "--x-pred",
+    "predicted",
+    "--out",
+    "results/1JTG_complex_pde_ig_grad.npz"
   ],
   "arm": {
     "autocast": "off",
     "chain": "B",
     "chunk_profile": "auto",
-    "coords_abs_max": 0.0,
+    "coords_abs_max": 31.565383911132812,
     "dataset": "1JTG",
     "dtype": "fp32",
-    "m_steps": 32,
+    "m_steps": 64,
     "method": "ig",
     "pf_chunk": null,
     "pf_group_size": 4,
     "score": "complex_pde",
-    "tri_attn_ckpt": true,
+    "tri_attn_ckpt": false,
     "trunk": "full",
-    "use_kernels": false
+    "use_kernels": false,
+    "x_pred_mode": "predicted"
   },
-  "created_utc": "2026-09-24T23:30:24+00:00",
+  "created_utc": "2026-10-14T15:16:42+00:00",
   "env": {
     "boltz": "2.2.1",
     "cuda_available": true,
     "gpu_count": 1,
     "gpu_name": "NVIDIA A100-SXM4-80GB",
     "gpu_total_gib": 79.2,
-    "hostname": "c4e55067ebcf",
-    "platform": "Linux-6.8.0-1066-gcp-x86_64-with-glibc2.35",
+    "hostname": "ad47cdffd6ef",
+    "platform": "Linux-6.8.0-1070-gcp-x86_64-with-glibc2.35",
     "python": "3.11.15",
     "torch": "2.7.1+cu126"
   },
-  "git_commit": "6f1024f62027744d3a40132295efa61c8ba118ac",
-  "git_dirty": false,
+  "git_commit": "420a456778b174a98d57a67efe068cbb39b948f8",
+  "git_dirty": true,
   "inputs": {
     "cache_dir": "data/raw",
     "checkpoint_dir": "/root/.boltz",
@@ -52,11 +59,13 @@
   "notes": null,
   "output": "results/1JTG_complex_pde_ig_grad.npz",
   "params": {
-    "baseline": "zeros",
+    "baseline": "mean_aa",
     "chain": "B",
-    "m_steps": 32,
+    "m_steps": 64,
     "method": "ig",
-    "score": "complex_pde"
+    "res_type_grad": true,
+    "score": "complex_pde",
+    "x_pred_mode": "predicted"
   },
   "stage": "03_attribute"
 }

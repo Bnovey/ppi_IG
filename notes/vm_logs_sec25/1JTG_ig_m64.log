@@ -1,0 +1,468 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.6.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+13:27:28 igv.gpu INFO GPU 0: 79.2 GiB
+13:27:28 __main__ INFO SKEMPI complex 1jtg (chain=B)
+13:27:28 __main__ INFO Chain subset: ['A', 'B']  L=427
+13:27:28 __main__ INFO Complex chains: {'A': 262, 'B': 165}
+13:27:28 __main__ INFO Loading model from /root/.boltz
+13:27:32 igv.boltz_score INFO Checkpoints present: ['boltz2_aff.ckpt', 'boltz2_conf.ckpt'] -- selected boltz2_conf.ckpt
+13:27:32 igv.boltz_score INFO Loading Boltz-2 from /root/.boltz/boltz2_conf.ckpt (boltz 2.2.1)
+/usr/local/lib/python3.11/dist-packages/pytorch_lightning/utilities/migration/utils.py:56: The loaded checkpoint was produced with Lightning v2.5.0.post0, which is newer than your current Lightning version: v2.5.0
+13:28:13 igv.boltz_score INFO Boltz-2 loaded, confidence_module present: True
+13:28:14 __main__ INFO Building complex features (use_msa_server=True, cache=data/raw/boltz_attr/1JTG_B)
+13:28:14 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:15 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:15 __main__ INFO s_inputs shape: [1, 427, 384]
+13:28:15 __main__ INFO x_pred mode: predicted
+13:28:15 igv.boltz_score INFO Loading cached predicted coords from data/raw/predicted_coords/1JTG_A262_B165-f606f983/x_pred.pt
+13:28:15 igv.boltz_score INFO Cached x_pred validated: shape [1, 3264, 3], abs max 31.5654
+13:28:15 __main__ INFO x_pred (mode=predicted, shape [1, 3264, 3]), coords.abs().max()=31.5654
+13:28:15 __main__ INFO Computing mean-AA baseline (20 homopolymer embeddings)
+13:28:15 igv.boltz_score INFO Homopolymer A: featurising (data/raw/boltz_homopolymer/A_A262_B165-28c464b2)
+13:28:15 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:15 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:15 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:15 igv.boltz_score INFO Homopolymer A: embedding shape [165, 384]
+13:28:15 igv.boltz_score INFO Homopolymer C: featurising (data/raw/boltz_homopolymer/C_A262_B165-f0def1c4)
+13:28:15 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:15 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:16 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:16 igv.boltz_score INFO Homopolymer C: embedding shape [165, 384]
+13:28:16 igv.boltz_score INFO Homopolymer D: featurising (data/raw/boltz_homopolymer/D_A262_B165-f814c970)
+13:28:16 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:16 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:16 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:16 igv.boltz_score INFO Homopolymer D: embedding shape [165, 384]
+13:28:16 igv.boltz_score INFO Homopolymer E: featurising (data/raw/boltz_homopolymer/E_A262_B165-d06401f3)
+13:28:16 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:16 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:16 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:16 igv.boltz_score INFO Homopolymer E: embedding shape [165, 384]
+13:28:16 igv.boltz_score INFO Homopolymer F: featurising (data/raw/boltz_homopolymer/F_A262_B165-f3a6ae19)
+13:28:16 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:16 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:17 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:17 igv.boltz_score INFO Homopolymer F: embedding shape [165, 384]
+13:28:17 igv.boltz_score INFO Homopolymer G: featurising (data/raw/boltz_homopolymer/G_A262_B165-d7b30595)
+13:28:17 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:17 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:17 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:17 igv.boltz_score INFO Homopolymer G: embedding shape [165, 384]
+13:28:17 igv.boltz_score INFO Homopolymer H: featurising (data/raw/boltz_homopolymer/H_A262_B165-27b09ea2)
+13:28:17 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:17 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:17 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:17 igv.boltz_score INFO Homopolymer H: embedding shape [165, 384]
+13:28:17 igv.boltz_score INFO Homopolymer I: featurising (data/raw/boltz_homopolymer/I_A262_B165-8d6cc707)
+13:28:17 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:17 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:18 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:18 igv.boltz_score INFO Homopolymer I: embedding shape [165, 384]
+13:28:18 igv.boltz_score INFO Homopolymer K: featurising (data/raw/boltz_homopolymer/K_A262_B165-1fa2fd56)
+13:28:18 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:18 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:18 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:18 igv.boltz_score INFO Homopolymer K: embedding shape [165, 384]
+13:28:18 igv.boltz_score INFO Homopolymer L: featurising (data/raw/boltz_homopolymer/L_A262_B165-cd9b74e8)
+13:28:18 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:18 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:18 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:18 igv.boltz_score INFO Homopolymer L: embedding shape [165, 384]
+13:28:18 igv.boltz_score INFO Homopolymer M: featurising (data/raw/boltz_homopolymer/M_A262_B165-591e1bfa)
+13:28:18 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:18 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:19 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:19 igv.boltz_score INFO Homopolymer M: embedding shape [165, 384]
+13:28:19 igv.boltz_score INFO Homopolymer N: featurising (data/raw/boltz_homopolymer/N_A262_B165-373ab902)
+13:28:19 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:19 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:19 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:19 igv.boltz_score INFO Homopolymer N: embedding shape [165, 384]
+13:28:19 igv.boltz_score INFO Homopolymer P: featurising (data/raw/boltz_homopolymer/P_A262_B165-3fa1d54c)
+13:28:19 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:19 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:19 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:19 igv.boltz_score INFO Homopolymer P: embedding shape [165, 384]
+13:28:19 igv.boltz_score INFO Homopolymer Q: featurising (data/raw/boltz_homopolymer/Q_A262_B165-a6aa04d7)
+13:28:19 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:19 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:20 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:20 igv.boltz_score INFO Homopolymer Q: embedding shape [165, 384]
+13:28:20 igv.boltz_score INFO Homopolymer R: featurising (data/raw/boltz_homopolymer/R_A262_B165-828a2b63)
+13:28:20 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:20 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:20 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:20 igv.boltz_score INFO Homopolymer R: embedding shape [165, 384]
+13:28:20 igv.boltz_score INFO Homopolymer S: featurising (data/raw/boltz_homopolymer/S_A262_B165-e309063e)
+13:28:20 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:20 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:20 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:20 igv.boltz_score INFO Homopolymer S: embedding shape [165, 384]
+13:28:20 igv.boltz_score INFO Homopolymer T: featurising (data/raw/boltz_homopolymer/T_A262_B165-77744103)
+13:28:20 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:20 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:21 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:21 igv.boltz_score INFO Homopolymer T: embedding shape [165, 384]
+13:28:21 igv.boltz_score INFO Homopolymer V: featurising (data/raw/boltz_homopolymer/V_A262_B165-7a7d3868)
+13:28:21 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:21 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:21 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:21 igv.boltz_score INFO Homopolymer V: embedding shape [165, 384]
+13:28:21 igv.boltz_score INFO Homopolymer W: featurising (data/raw/boltz_homopolymer/W_A262_B165-3c39d201)
+13:28:21 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:21 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:21 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:21 igv.boltz_score INFO Homopolymer W: embedding shape [165, 384]
+13:28:21 igv.boltz_score INFO Homopolymer Y: featurising (data/raw/boltz_homopolymer/Y_A262_B165-f3744f6e)
+13:28:21 igv.boltz_score INFO YAML msa spec: 'empty' (default None emits no msa key)
+13:28:22 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+13:28:22 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+13:28:22 igv.boltz_score INFO Homopolymer Y: embedding shape [165, 384]
+13:28:22 __main__ INFO mean_aa baseline built, shape [1, 427, 384]
+13:28:22 __main__ INFO Running ig attribution (score=complex_pde)
+13:28:22 igv.attrib INFO IG step 1/64
+13:28:22 igv.boltz_score INFO Confidence pairformer stack: per-block checkpointing enabled (8 layers)
+13:28:22 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:29:13 igv.attrib INFO IG step 2/64
+13:29:13 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:30:03 igv.attrib INFO IG step 3/64
+13:30:03 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:30:54 igv.attrib INFO IG step 4/64
+13:30:54 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:31:45 igv.attrib INFO IG step 5/64
+13:31:45 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:32:35 igv.attrib INFO IG step 6/64
+13:32:35 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:33:26 igv.attrib INFO IG step 7/64
+13:33:26 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:34:16 igv.attrib INFO IG step 8/64
+13:34:16 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:35:07 igv.attrib INFO IG step 9/64
+13:35:07 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:35:58 igv.attrib INFO IG step 10/64
+13:35:58 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:36:48 igv.attrib INFO IG step 11/64
+13:36:48 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:37:39 igv.attrib INFO IG step 12/64
+13:37:39 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:38:29 igv.attrib INFO IG step 13/64
+13:38:29 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:39:20 igv.attrib INFO IG step 14/64
+13:39:20 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:40:11 igv.attrib INFO IG step 15/64
+13:40:11 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:41:01 igv.attrib INFO IG step 16/64
+13:41:01 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:41:52 igv.attrib INFO IG step 17/64
+13:41:52 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:42:42 igv.attrib INFO IG step 18/64
+13:42:42 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:43:33 igv.attrib INFO IG step 19/64
+13:43:33 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:44:24 igv.attrib INFO IG step 20/64
+13:44:24 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:45:14 igv.attrib INFO IG step 21/64
+13:45:14 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:46:05 igv.attrib INFO IG step 22/64
+13:46:05 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:46:55 igv.attrib INFO IG step 23/64
+13:46:55 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:47:46 igv.attrib INFO IG step 24/64
+13:47:46 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:48:37 igv.attrib INFO IG step 25/64
+13:48:37 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:49:27 igv.attrib INFO IG step 26/64
+13:49:27 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:50:18 igv.attrib INFO IG step 27/64
+13:50:18 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:51:08 igv.attrib INFO IG step 28/64
+13:51:08 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:51:59 igv.attrib INFO IG step 29/64
+13:51:59 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:52:50 igv.attrib INFO IG step 30/64
+13:52:50 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:53:40 igv.attrib INFO IG step 31/64
+13:53:40 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:54:31 igv.attrib INFO IG step 32/64
+13:54:31 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:55:21 igv.attrib INFO IG step 33/64
+13:55:21 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:56:12 igv.attrib INFO IG step 34/64
+13:56:12 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:57:03 igv.attrib INFO IG step 35/64
+13:57:03 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:57:53 igv.attrib INFO IG step 36/64
+13:57:53 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:58:44 igv.attrib INFO IG step 37/64
+13:58:44 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+13:59:34 igv.attrib INFO IG step 38/64
+13:59:34 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:00:25 igv.attrib INFO IG step 39/64
+14:00:25 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:01:16 igv.attrib INFO IG step 40/64
+14:01:16 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:02:06 igv.attrib INFO IG step 41/64
+14:02:06 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:02:57 igv.attrib INFO IG step 42/64
+14:02:57 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:03:47 igv.attrib INFO IG step 43/64
+14:03:47 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:04:38 igv.attrib INFO IG step 44/64
+14:04:38 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:05:29 igv.attrib INFO IG step 45/64
+14:05:29 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:06:19 igv.attrib INFO IG step 46/64
+14:06:19 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:07:10 igv.attrib INFO IG step 47/64
+14:07:10 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:08:00 igv.attrib INFO IG step 48/64
+14:08:00 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:08:51 igv.attrib INFO IG step 49/64
+14:08:51 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:09:42 igv.attrib INFO IG step 50/64
+14:09:42 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:10:32 igv.attrib INFO IG step 51/64
+14:10:32 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:11:23 igv.attrib INFO IG step 52/64
+14:11:23 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:12:13 igv.attrib INFO IG step 53/64
+14:12:13 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:13:04 igv.attrib INFO IG step 54/64
+14:13:04 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:13:54 igv.attrib INFO IG step 55/64
+14:13:54 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:14:45 igv.attrib INFO IG step 56/64
+14:14:45 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:15:35 igv.attrib INFO IG step 57/64
+14:15:36 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:16:26 igv.attrib INFO IG step 58/64
+14:16:26 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:17:17 igv.attrib INFO IG step 59/64
+14:17:17 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:18:07 igv.attrib INFO IG step 60/64
+14:18:07 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:18:58 igv.attrib INFO IG step 61/64
+14:18:58 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:19:48 igv.attrib INFO IG step 62/64
+14:19:48 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:20:39 igv.attrib INFO IG step 63/64
+14:20:39 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:21:30 igv.attrib INFO IG step 64/64
+14:21:30 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:22:20 __main__ INFO Attribution completed in 3238.2 s (54.0 min)
+14:22:20 __main__ INFO Computing res_type gradient (method=ig)
+14:22:20 __main__ INFO res_type IG step 1/64
+14:22:20 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:23:11 __main__ INFO res_type IG step 2/64
+14:23:11 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:24:01 __main__ INFO res_type IG step 3/64
+14:24:01 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:24:52 __main__ INFO res_type IG step 4/64
+14:24:52 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:25:42 __main__ INFO res_type IG step 5/64
+14:25:42 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:26:33 __main__ INFO res_type IG step 6/64
+14:26:33 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:27:24 __main__ INFO res_type IG step 7/64
+14:27:24 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:28:14 __main__ INFO res_type IG step 8/64
+14:28:14 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:29:05 __main__ INFO res_type IG step 9/64
+14:29:05 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:29:55 __main__ INFO res_type IG step 10/64
+14:29:55 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:30:46 __main__ INFO res_type IG step 11/64
+14:30:46 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:31:37 __main__ INFO res_type IG step 12/64
+14:31:37 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:32:27 __main__ INFO res_type IG step 13/64
+14:32:27 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:33:18 __main__ INFO res_type IG step 14/64
+14:33:18 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:34:08 __main__ INFO res_type IG step 15/64
+14:34:08 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:34:59 __main__ INFO res_type IG step 16/64
+14:34:59 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:35:50 __main__ INFO res_type IG step 17/64
+14:35:50 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:36:40 __main__ INFO res_type IG step 18/64
+14:36:40 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:37:31 __main__ INFO res_type IG step 19/64
+14:37:31 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:38:21 __main__ INFO res_type IG step 20/64
+14:38:21 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:39:12 __main__ INFO res_type IG step 21/64
+14:39:12 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:40:03 __main__ INFO res_type IG step 22/64
+14:40:03 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:40:53 __main__ INFO res_type IG step 23/64
+14:40:53 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:41:44 __main__ INFO res_type IG step 24/64
+14:41:44 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:42:35 __main__ INFO res_type IG step 25/64
+14:42:35 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:43:25 __main__ INFO res_type IG step 26/64
+14:43:25 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:44:16 __main__ INFO res_type IG step 27/64
+14:44:16 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:45:06 __main__ INFO res_type IG step 28/64
+14:45:06 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:45:57 __main__ INFO res_type IG step 29/64
+14:45:57 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:46:48 __main__ INFO res_type IG step 30/64
+14:46:48 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:47:38 __main__ INFO res_type IG step 31/64
+14:47:38 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:48:29 __main__ INFO res_type IG step 32/64
+14:48:29 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:49:19 __main__ INFO res_type IG step 33/64
+14:49:20 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:50:10 __main__ INFO res_type IG step 34/64
+14:50:10 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:51:01 __main__ INFO res_type IG step 35/64
+14:51:01 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:51:52 __main__ INFO res_type IG step 36/64
+14:51:52 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:52:42 __main__ INFO res_type IG step 37/64
+14:52:42 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:53:33 __main__ INFO res_type IG step 38/64
+14:53:33 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:54:24 __main__ INFO res_type IG step 39/64
+14:54:24 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:55:14 __main__ INFO res_type IG step 40/64
+14:55:14 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:56:05 __main__ INFO res_type IG step 41/64
+14:56:05 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:56:56 __main__ INFO res_type IG step 42/64
+14:56:56 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:57:46 __main__ INFO res_type IG step 43/64
+14:57:46 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:58:37 __main__ INFO res_type IG step 44/64
+14:58:37 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+14:59:27 __main__ INFO res_type IG step 45/64
+14:59:27 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:00:18 __main__ INFO res_type IG step 46/64
+15:00:18 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:01:09 __main__ INFO res_type IG step 47/64
+15:01:09 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:01:59 __main__ INFO res_type IG step 48/64
+15:01:59 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:02:50 __main__ INFO res_type IG step 49/64
+15:02:50 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:03:41 __main__ INFO res_type IG step 50/64
+15:03:41 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:04:31 __main__ INFO res_type IG step 51/64
+15:04:31 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:05:22 __main__ INFO res_type IG step 52/64
+15:05:22 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:06:13 __main__ INFO res_type IG step 53/64
+15:06:13 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:07:03 __main__ INFO res_type IG step 54/64
+15:07:03 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:07:54 __main__ INFO res_type IG step 55/64
+15:07:54 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:08:45 __main__ INFO res_type IG step 56/64
+15:08:45 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:09:35 __main__ INFO res_type IG step 57/64
+15:09:35 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:10:26 __main__ INFO res_type IG step 58/64
+15:10:26 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:11:17 __main__ INFO res_type IG step 59/64
+15:11:17 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:12:07 __main__ INFO res_type IG step 60/64
+15:12:07 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:12:57 __main__ INFO res_type IG step 61/64
+15:12:57 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:13:48 __main__ INFO res_type IG step 62/64
+15:13:48 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:14:39 __main__ INFO res_type IG step 63/64
+15:14:39 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:15:29 __main__ INFO res_type IG step 64/64
+15:15:29 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:16:20 __main__ INFO res_type gradient: shape (165, 33), computed in 3240.1 s
+15:16:20 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+/usr/local/lib/python3.11/dist-packages/torch/utils/checkpoint.py:86: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+15:16:31 __main__ INFO f(x) = 1.432957
+15:16:31 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+15:16:42 __main__ INFO f(baseline) = 3.519017
+15:16:42 __main__ INFO Completeness error: 0.1872 (18.72%) — FAILS 5% criterion
+15:16:42 __main__ INFO grad_chain shape: (165, 384)
+15:16:42 __main__ INFO Wrote results/1JTG_complex_pde_ig_grad.npz
+15:16:42 __main__ INFO Done.

@@ -1,0 +1,4 @@
+[03:58:19] START 1JTG_ig_m32 (est 1700s, 6487s left) -> results/1JTG_complex_pde_ig_grad_m32.npz
+[04:53:41] END   1JTG_ig_m32 rc=0 elapsed=3322s
+[04:53:41] VRAM_PEAK_SAMPLED 1JTG_ig_m32 43608 MiB
+[04:53:41] DEFER 1JTG_ig_m64: need 3200s, only 3165s left in window

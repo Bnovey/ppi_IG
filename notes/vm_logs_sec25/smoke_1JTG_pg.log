@@ -1,0 +1,49 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.6.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+03:55:01 igv.gpu INFO GPU 0: 79.2 GiB
+03:55:01 __main__ INFO SKEMPI complex 1jtg (chain=B)
+03:55:01 __main__ INFO Chain subset: ['A', 'B']  L=427
+03:55:01 __main__ INFO Complex chains: {'A': 262, 'B': 165}
+03:55:01 __main__ INFO Loading model from /root/.boltz
+03:55:09 igv.boltz_score INFO Checkpoints present: ['boltz2_aff.ckpt', 'boltz2_conf.ckpt'] -- selected boltz2_conf.ckpt
+03:55:09 igv.boltz_score INFO Loading Boltz-2 from /root/.boltz/boltz2_conf.ckpt (boltz 2.2.1)
+/usr/local/lib/python3.11/dist-packages/pytorch_lightning/utilities/migration/utils.py:56: The loaded checkpoint was produced with Lightning v2.5.0.post0, which is newer than your current Lightning version: v2.5.0
+03:55:57 igv.boltz_score INFO Boltz-2 loaded, confidence_module present: True
+03:55:57 __main__ INFO Building complex features (use_msa_server=True, cache=data/raw/boltz_attr/1JTG_B)
+03:55:57 igv.deterministic INFO deterministic_featurisation: seed=42
+All inputs are already processed.
+Processing 0 inputs with 0 threads.
+0it [00:00, ?it/s]0it [00:00, ?it/s]
+03:55:58 igv.boltz_score INFO feats['coords'].abs().max() = 0 (0.0 means the sequence-only YAML produced no geometry, i.e. x_pred is zeros)
+03:55:59 __main__ INFO s_inputs shape: [1, 427, 384]
+03:55:59 __main__ INFO x_pred mode: predicted
+03:55:59 igv.boltz_score INFO Loading cached predicted coords from data/raw/predicted_coords/1JTG_A262_B165-f606f983/x_pred.pt
+03:55:59 igv.boltz_score INFO Cached x_pred validated: shape [1, 3264, 3], abs max 31.5654
+03:55:59 __main__ INFO x_pred (mode=predicted, shape [1, 3264, 3]), coords.abs().max()=31.5654
+03:55:59 __main__ INFO Running plain_grad attribution (score=complex_pde)
+03:55:59 igv.boltz_score INFO Confidence pairformer stack: per-block checkpointing enabled (8 layers)
+03:55:59 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+03:56:49 __main__ INFO Attribution completed in 50.2 s (0.8 min)
+03:56:49 __main__ INFO Computing res_type gradient (method=plain_grad)
+03:56:50 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+03:57:40 __main__ INFO res_type gradient: shape (165, 33), computed in 51.2 s
+03:57:40 igv.boltz_score INFO chunk profile: large (n_tokens=427, threshold=384, pf_chunk=128)
+/usr/local/lib/python3.11/dist-packages/torch/utils/checkpoint.py:86: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+03:57:51 __main__ INFO f(x) = 1.432957
+03:57:51 __main__ INFO grad_chain shape: (165, 384)
+03:57:51 __main__ INFO Wrote results/1JTG_complex_pde_plain_grad_grad.npz
+03:57:51 __main__ INFO Done.

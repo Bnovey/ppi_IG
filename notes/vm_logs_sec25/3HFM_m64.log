@@ -1,0 +1,13 @@
+[15:17:42] NOTSELECTED 3HFM_ig_m32
+[15:17:42] DEFER 3HFM_ig_m64: need 15540s, only 7259s left in window
+[15:17:42] NOTSELECTED 3HFM_plain_grad
+CSV_OK results/3HFM_complex_pde_scan.csv (286 data rows)
+[15:17:42] NOTSELECTED 3HFM_scan_resswap
+CSV_OK results/3HFM_complex_pde_scan_refeaturise.csv (286 data rows)
+[15:17:42] NOTSELECTED 3HFM_scan_refeat
+[15:17:42] NOATTR skip faith ig64 (missing results/3HFM_complex_pde_ig_grad.npz)
+[15:17:42] SKIP 3HFM_faith_ig32_resswap (exists: results/3HFM_faith_ig32_resswap.json)
+[15:17:42] SKIP 3HFM_faith_ig32_refeat (exists: results/3HFM_faith_ig32_refeat.json)
+[15:17:42] SKIP 3HFM_faith_plaingrad_resswap (exists: results/3HFM_faith_plaingrad_resswap.json)
+[15:17:42] SKIP 3HFM_faith_plaingrad_refeat (exists: results/3HFM_faith_plaingrad_refeat.json)
+[15:17:42] COMPLEX 3HFM COMPLETE

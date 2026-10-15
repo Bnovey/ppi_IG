@@ -1,0 +1,24 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.6.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+2026-10-14 15:16:46,728 INFO Matched 532 mutations between attribution and scan
+2026-10-14 15:16:51,355 INFO Spearman = 0.6678 [0.6079, 0.7222]
+2026-10-14 15:16:51,355 INFO Pearson  = 0.6303 [0.5712, 0.6862]
+2026-10-14 15:17:04,703 INFO Permutation null: p5=-0.0715 p95=0.0711 p_two_sided=0.0000
+2026-10-14 15:17:04,703 INFO Scale ratio median|A|/median|B| = 0.7585
+2026-10-14 15:17:09,745 INFO Per-position (n=28): sum_spearman=0.5375 max_spearman=0.3268
+2026-10-14 15:17:12,827 INFO Partial Spearman (controlling distance_to_partner) = 0.6653
+2026-10-14 15:17:12,831 INFO Partial Spearman (all 8 confounds) = 0.6186
+2026-10-14 15:17:12,831 INFO Wrote results/1JTG_faith_ig64_resswap.json

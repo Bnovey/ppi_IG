@@ -1,0 +1,23 @@
+[09:29:51] NOTSELECTED 2JEL_ig_m32
+[09:29:51] NOTSELECTED 2JEL_ig_m64
+[09:29:51] NOTSELECTED 2JEL_plain_grad
+[09:29:51] START 2JEL_scan_resswap (est 9840s, 28130s left) -> results/2JEL_complex_pde_scan.csv.DONE
+[12:33:19] END   2JEL_scan_resswap rc=0 elapsed=11008s
+[12:33:19] VRAM_PEAK_SAMPLED 2JEL_scan_resswap 15740 MiB
+[12:33:19] START 2JEL_scan_refeat (est 2100s, 17122s left) -> results/2JEL_complex_pde_scan_refeaturise.csv.DONE
+[13:25:30] END   2JEL_scan_refeat rc=0 elapsed=3131s
+[13:25:30] VRAM_PEAK_SAMPLED 2JEL_scan_refeat 15920 MiB
+[13:25:30] NOATTR skip faith ig64 (missing results/2JEL_complex_pde_ig_grad.npz)
+[13:25:30] START 2JEL_faith_ig32_resswap (est 120s, 13991s left) -> results/2JEL_faith_ig32_resswap.json
+[13:25:58] END   2JEL_faith_ig32_resswap rc=0 elapsed=28s
+[13:25:58] VRAM_PEAK_SAMPLED 2JEL_faith_ig32_resswap 0 MiB
+[13:25:58] START 2JEL_faith_ig32_refeat (est 120s, 13963s left) -> results/2JEL_faith_ig32_refeat.json
+[13:26:25] END   2JEL_faith_ig32_refeat rc=0 elapsed=27s
+[13:26:25] VRAM_PEAK_SAMPLED 2JEL_faith_ig32_refeat 0 MiB
+[13:26:25] START 2JEL_faith_plaingrad_resswap (est 120s, 13936s left) -> results/2JEL_faith_plaingrad_resswap.json
+[13:26:54] END   2JEL_faith_plaingrad_resswap rc=0 elapsed=29s
+[13:26:54] VRAM_PEAK_SAMPLED 2JEL_faith_plaingrad_resswap 0 MiB
+[13:26:54] START 2JEL_faith_plaingrad_refeat (est 120s, 13907s left) -> results/2JEL_faith_plaingrad_refeat.json
+[13:27:21] END   2JEL_faith_plaingrad_refeat rc=0 elapsed=27s
+[13:27:21] VRAM_PEAK_SAMPLED 2JEL_faith_plaingrad_refeat 0 MiB
+[13:27:21] COMPLEX 2JEL COMPLETE

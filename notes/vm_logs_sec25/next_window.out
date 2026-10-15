@@ -1,0 +1,28 @@
+[05:01:18] NOTSELECTED 2JEL_ig_m32
+[05:01:18] NOTSELECTED 2JEL_ig_m64
+[05:01:18] START 2JEL_plain_grad (est 700s, 2708s left) -> results/2JEL_complex_pde_plain_grad_grad.npz
+[05:05:23] END   2JEL_plain_grad rc=0 elapsed=245s
+[05:05:23] VRAM_PEAK_SAMPLED 2JEL_plain_grad 62708 MiB
+[05:05:23] NOTSELECTED 2JEL_scan_resswap
+[05:05:23] NOTSELECTED 2JEL_scan_refeat
+[05:05:23] NOATTR skip faith ig64 (missing results/2JEL_complex_pde_ig_grad.npz)
+[05:05:23] NOATTR skip faith ig32 (missing results/2JEL_complex_pde_ig_grad_m32.npz)
+[05:05:23] NOTSELECTED 2JEL_faith_plaingrad_resswap
+[05:05:23] NOTSELECTED 2JEL_faith_plaingrad_refeat
+[05:05:23] COMPLEX 2JEL COMPLETE
+[05:05:23] NOTSELECTED 3HFM_ig_m32
+[05:05:23] NOTSELECTED 3HFM_ig_m64
+[05:05:23] START 3HFM_plain_grad (est 800s, 2463s left) -> results/3HFM_complex_pde_plain_grad_grad.npz
+[05:09:54] END   3HFM_plain_grad rc=0 elapsed=271s
+[05:09:54] VRAM_PEAK_SAMPLED 3HFM_plain_grad 71828 MiB
+[05:09:54] NOTSELECTED 3HFM_scan_resswap
+[05:09:54] NOTSELECTED 3HFM_scan_refeat
+[05:09:54] NOATTR skip faith ig64 (missing results/3HFM_complex_pde_ig_grad.npz)
+[05:09:54] NOATTR skip faith ig32 (missing results/3HFM_complex_pde_ig_grad_m32.npz)
+[05:09:54] NOTSELECTED 3HFM_faith_plaingrad_resswap
+[05:09:54] NOTSELECTED 3HFM_faith_plaingrad_refeat
+[05:09:54] COMPLEX 3HFM COMPLETE
+[05:09:54] NOTSELECTED 1JTG_ig_m32
+[05:09:54] NOTSELECTED 1JTG_ig_m64
+[05:09:54] NOTSELECTED 1JTG_plain_grad
+[05:09:54] START 1JTG_scan_resswap (est 600s, 2192s left) -> results/1JTG_complex_pde_scan.csv.DONE

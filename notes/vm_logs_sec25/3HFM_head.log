@@ -1,0 +1,23 @@
+[07:21:55] NOTSELECTED 3HFM_ig_m32
+[07:21:55] NOTSELECTED 3HFM_ig_m64
+[07:21:55] NOTSELECTED 3HFM_plain_grad
+[07:21:55] START 3HFM_scan_resswap (est 5280s, 35806s left) -> results/3HFM_complex_pde_scan.csv.DONE
+[09:02:01] END   3HFM_scan_resswap rc=0 elapsed=6006s
+[09:02:01] VRAM_PEAK_SAMPLED 3HFM_scan_resswap 16740 MiB
+[09:02:01] START 3HFM_scan_refeat (est 1080s, 29800s left) -> results/3HFM_complex_pde_scan_refeaturise.csv.DONE
+[09:27:59] END   3HFM_scan_refeat rc=0 elapsed=1558s
+[09:27:59] VRAM_PEAK_SAMPLED 3HFM_scan_refeat 16740 MiB
+[09:27:59] NOATTR skip faith ig64 (missing results/3HFM_complex_pde_ig_grad.npz)
+[09:27:59] START 3HFM_faith_ig32_resswap (est 120s, 28242s left) -> results/3HFM_faith_ig32_resswap.json
+[09:28:27] END   3HFM_faith_ig32_resswap rc=0 elapsed=28s
+[09:28:27] VRAM_PEAK_SAMPLED 3HFM_faith_ig32_resswap 0 MiB
+[09:28:27] START 3HFM_faith_ig32_refeat (est 120s, 28214s left) -> results/3HFM_faith_ig32_refeat.json
+[09:28:55] END   3HFM_faith_ig32_refeat rc=0 elapsed=28s
+[09:28:55] VRAM_PEAK_SAMPLED 3HFM_faith_ig32_refeat 0 MiB
+[09:28:55] START 3HFM_faith_plaingrad_resswap (est 120s, 28186s left) -> results/3HFM_faith_plaingrad_resswap.json
+[09:29:23] END   3HFM_faith_plaingrad_resswap rc=0 elapsed=28s
+[09:29:23] VRAM_PEAK_SAMPLED 3HFM_faith_plaingrad_resswap 0 MiB
+[09:29:23] START 3HFM_faith_plaingrad_refeat (est 120s, 28158s left) -> results/3HFM_faith_plaingrad_refeat.json
+[09:29:51] END   3HFM_faith_plaingrad_refeat rc=0 elapsed=28s
+[09:29:51] VRAM_PEAK_SAMPLED 3HFM_faith_plaingrad_refeat 0 MiB
+[09:29:51] COMPLEX 3HFM COMPLETE

@@ -1,0 +1,24 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.6.2
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+2026-10-14 09:28:29,875 INFO Matched 29 mutations between attribution and scan
+2026-10-14 09:28:34,327 INFO Spearman = 0.2527 [-0.1636, 0.6481]
+2026-10-14 09:28:34,327 INFO Pearson  = 0.1646 [-0.1821, 0.5333]
+2026-10-14 09:28:47,135 INFO Permutation null: p5=-0.3054 p95=0.3020 p_two_sided=0.1748
+2026-10-14 09:28:47,135 INFO Scale ratio median|A|/median|B| = 0.0231
+2026-10-14 09:28:52,224 INFO Per-position (n=11): sum_spearman=0.4727 max_spearman=-0.0636
+2026-10-14 09:28:54,089 INFO Partial Spearman (controlling distance_to_partner) = 0.2379
+2026-10-14 09:28:54,091 INFO Partial Spearman (all 8 confounds) = 0.3778
+2026-10-14 09:28:54,092 INFO Wrote results/3HFM_faith_ig32_refeat.json
