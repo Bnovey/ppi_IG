@@ -332,9 +332,17 @@ featurised and skipped before any forward pass, and the lost m=128.
 
 **Peak VRAM 20.2 GiB** (20648 MiB) during the m=64 attribution. During the
 no-grad scans a sampled reading was 5.3 GiB; that is a sample, not a measured
-peak. Either way **the 80 GB card is not needed for this arm**, consistent with
-section 20's 16.80 GiB and section 22's 23.87 GiB. A 24 GB L4 is marginal on the
-attribution stage; 40 GB would be comfortable.
+peak.
+
+> **WITHDRAWN 2026-10-14 — this paragraph originally concluded "the 80 GB card
+> is not needed for this arm" and that "a 24 GB L4 is marginal; 40 GB would be
+> comfortable". Both are wrong.** 20.2 GiB is 3S9D, the SMALLEST complex (307
+> tokens), and does not generalise. Section 25 measured 42.6 GiB (1JTG IG
+> m=32), 61.2 GiB (2JEL plain_grad) and **70.1 GiB of 80 (3HFM plain_grad)**.
+> Neither 24 GB nor 40 GB fits the three larger complexes. See
+> `logging.md` section 25 COMPLETION and `docs/OVERVIEW.md` section 3 for the
+> per-job table. Generalising a hardware requirement from one complex is the
+> same error in kind as quoting one complex's faithfulness as "the" number.
 
 ## 7. What went wrong operationally, and the m=128 rung
 
